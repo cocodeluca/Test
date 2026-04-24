@@ -113,6 +113,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <h1 className={`truncate text-[1.26rem] font-medium tracking-[-0.04em] ${appTextStrongClass}`}>
               {t('app.title')}
             </h1>
+            <span className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[0.68rem] font-medium uppercase tracking-[0.14em] ${appBorderClass} ${appTextMutedClass}`}>
+              Safe Mode Ready
+            </span>
             <p className={`mt-0.5 truncate text-[0.78rem] font-normal tracking-[-0.02em] ${appTextMutedClass}`}>
               {t('app.subtitle')}
             </p>
