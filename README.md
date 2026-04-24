@@ -17,6 +17,9 @@ This is the initial release focused on:
 - 🔄 Mortgages management (placeholder)
 - ⏳ CRUD operations (coming next)
 
+### Safe Development Note
+Keep changes small and branch-based while the app is still being hardened. Favor read-only UI or documentation updates before touching persistence, auth, ingestion, backups, or recovery flows.
+
 ## Key Features
 
 ### Cross-Platform
