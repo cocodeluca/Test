@@ -1,0 +1,80 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+build/
+coverage/
+
+# Expo / Metro / Vite caches
+.expo/
+.expo-shared/
+.vite/
+.turbo/
+.cache/
+.parcel-cache/
+
+# Local app data and browser profiles
+.data/
+.tmp-chrome-cdp/
+.tmp-chrome-cdp-2/
+.tmp-chrome-cdp-3/
+.tmp-edge-profile/
+
+# Logs and debug output
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Local databases and storage
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.ldb
+*.sst
+
+# Temporary and recovery artifacts
+*.tmp
+*.bak
+*.old
+*.orig
+*.rej
+tmp/
+temp/
+.tmp/
+.recovery/
+
+# Nested copies / local sandbox repos
+Test/
+real-estate-portfolio/
+
+# Editor directories and files
+.vscode/
+!.vscode/extensions.json
+.idea/
+.history/
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Build and tool lock files that are generated locally only
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
