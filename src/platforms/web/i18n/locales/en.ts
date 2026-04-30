@@ -644,6 +644,9 @@ export const en = {
     appearance: 'Appearance',
     localization: 'Localization',
     taxProfile: 'Tax Profile',
+    currencyDisplayTitle: 'Portfolio Currency Display',
+    currencyDisplayDescription:
+      'Choose whether the portfolio uses one consolidated reporting currency or separates value and operating metrics by logical currency.',
     profileDescription: 'Manage identity and investor profile details shown across your workspace.',
     preferencesDescription: 'Choose how portfolio values, dates, numbers, and dashboard defaults are displayed.',
     appearanceDescription: 'Adjust the visual theme and density of the interface.',
@@ -656,6 +659,9 @@ export const en = {
       notes: 'Notes',
       currency: 'Currency format',
       reportingCurrency: 'Reporting currency',
+      valueCurrency: 'Value currency',
+      operatingCurrency: 'Operating currency',
+      displayMode: 'Display mode',
       usdToEurRate: 'USD to EUR rate',
       eurToUsdRate: 'EUR to USD rate',
       language: 'Language',
@@ -696,6 +702,8 @@ export const en = {
       system: 'System',
       comfortable: 'Comfortable',
       compact: 'Compact',
+      singleReportingCurrency: 'Single reporting currency',
+      mixedLogicalCurrencies: 'Mixed logical currencies',
       overview: 'Overview',
       cashflow: 'Cashflow',
       performance: 'Performance',
@@ -708,7 +716,14 @@ export const en = {
     },
     helpers: {
       currency: 'Formatting only. No exchange-rate conversion is applied.',
-      reportingCurrency: 'Used as the portfolio reporting currency for real value conversion.',
+      displayMode:
+        'Single reporting currency shows all portfolio metrics in one currency. Mixed logical currencies keeps value metrics and operating metrics in the currencies you set below.',
+      reportingCurrency:
+        'Used for consolidated reporting and any metric that should always appear in one currency.',
+      valueCurrency:
+        'Used for portfolio value metrics such as property values, equity, debt, purchase price, and estimated value.',
+      operatingCurrency:
+        'Used for operating metrics such as rent, expenses, mortgage payments, and cashflow.',
       usdToEurRate: 'Daily USD to EUR reference rate used to convert broker balances automatically.',
       fxRateSource: 'Source: {{source}}. Published on: {{date}}.',
       language: 'Switch the full interface language between English and Spanish.',

@@ -27,6 +27,14 @@ import {
   workspaceGoals,
   workspaceStrategies,
 } from '../../../common/utils/workspace';
+import {
+  beginOnboarding,
+  completeOnboarding,
+  markReadyToComplete,
+  markTutorialEntryResolved,
+  markWorkspaceInitialized,
+  type OnboardingStateMachineSnapshot,
+} from '../../../common/utils/onboardingStateMachine';
 import { IngestionReviewModal } from './IngestionReviewModal';
 import { WorkspaceReviewScreen } from './WorkspaceReviewScreen';
 import { useSettings } from '../context/SettingsContext';
@@ -47,8 +55,10 @@ interface PostSignupWorkspaceSetupProps {
   initialStage?: OnboardingStep | null;
   initialTrackingPreference?: TrackingPreference;
   initialOnboarding?: ReturnType<typeof createOnboardingProfile> | null;
+  initialOnboardingFlow?: OnboardingStateMachineSnapshot | null;
   onChooseStarterPath: (path: 'manual-property' | 'import-file' | 'explore-demo') => void;
   onUpdateStep?: (step: OnboardingStep) => void;
+  onUpdateOnboardingFlow?: (state: OnboardingStateMachineSnapshot) => void;
   onComplete: (payload: {
     onboarding: ReturnType<typeof createOnboardingProfile>;
     workspaceConfig: WorkspaceConfig;
@@ -64,8 +74,10 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
   initialStage = 'welcome',
   initialTrackingPreference = 'properties-and-rent',
   initialOnboarding = null,
+  initialOnboardingFlow = null,
   onChooseStarterPath,
   onUpdateStep,
+  onUpdateOnboardingFlow,
   onComplete,
 }) => {
   const { t } = useSettings();
@@ -90,6 +102,9 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
   const [workspaceRecommendation, setWorkspaceRecommendation] = useState<WorkspaceRecommendation | null>(null);
   const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig | null>(null);
   const [isAnalyzingWorkspace, setIsAnalyzingWorkspace] = useState(false);
+  const [onboardingFlow, setOnboardingFlow] = useState<OnboardingStateMachineSnapshot>(
+    initialOnboardingFlow ?? beginOnboarding('')
+  );
 
   const toggleSelection = <T extends string,>(
     value: T,
@@ -119,6 +134,11 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
   };
 
   const runWorkspaceAnalysis = () => {
+    const resolvedFlow = markWorkspaceInitialized(
+      markTutorialEntryResolved(
+        onboardingFlow.selectedUseCaseId ? onboardingFlow : beginOnboarding('properties-and-rent')
+      )
+    );
     setIsAnalyzingWorkspace(true);
     const recommendation = analyzeWorkspaceProfile({
       strategies: selectedStrategies,
@@ -128,6 +148,8 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
     const nextConfig = workspaceConfigFromRecommendation(recommendation, userId);
     setWorkspaceRecommendation(recommendation);
     setWorkspaceConfig(nextConfig);
+    setOnboardingFlow(markReadyToComplete(resolvedFlow));
+    onUpdateOnboardingFlow?.(markReadyToComplete(resolvedFlow));
     setIsAnalyzingWorkspace(false);
   };
 
@@ -208,11 +230,22 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
       workspaceConfig:
         selectedUserMode === 'basic'
           ? buildBasicWorkspaceConfig(selectedUserMode, trackingPreference)
-          : createMinimalWorkspaceConfig(userId, 'mixed-strategy'),
+        : createMinimalWorkspaceConfig(userId, 'mixed-strategy'),
     });
+    setOnboardingFlow(completeOnboarding(onboardingFlow));
+    onUpdateOnboardingFlow?.(completeOnboarding(onboardingFlow));
   };
 
   const completeWithStarterPath = (path: 'manual-property' | 'import-file' | 'explore-demo') => {
+    const selectedUseCaseId =
+      path === 'manual-property'
+        ? 'properties-and-rent'
+        : path === 'import-file'
+        ? 'properties-and-mortgages'
+        : 'full-portfolio';
+    const startedFlow = beginOnboarding(selectedUseCaseId);
+    setOnboardingFlow(startedFlow);
+    onUpdateOnboardingFlow?.(startedFlow);
     completeWithDefault();
     onChooseStarterPath(path);
   };
@@ -227,6 +260,11 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
       });
     const nextConfig =
       workspaceConfig ?? workspaceConfigFromRecommendation(recommendation, userId);
+    const completedFlow = completeOnboarding(
+      markReadyToComplete(
+        markTutorialEntryResolved(markWorkspaceInitialized(onboardingFlow))
+      )
+    );
 
     onComplete({
       dashboardSetupMode: 'connected',
@@ -248,6 +286,8 @@ export const PostSignupWorkspaceSetup: React.FC<PostSignupWorkspaceSetupProps> =
             : 'accepted',
       },
     });
+    setOnboardingFlow(completedFlow);
+    onUpdateOnboardingFlow?.(completedFlow);
   };
 
   return (

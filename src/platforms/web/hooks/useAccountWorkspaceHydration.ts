@@ -6,9 +6,13 @@ import {
   DEMO_ACCOUNT_EMAIL,
   LocalAccountUser,
   UserAccountBackup,
+  clearDemoSessionState,
   exportUserAccountBackup,
   hasMeaningfulPortfolioData,
+  hasActiveDemoSession,
   importUserAccountBackup,
+  isValidDemoSessionBackup,
+  loadDemoSessionBackup,
   normalizeDemoAccountState,
   normalizeUserOnboardingState,
   recoverLegacyPortfolioForUser,
@@ -20,6 +24,8 @@ import { loadBackupFromServer, saveBackupToServer } from '../services/accountBac
 type HydrationResult = {
   shouldRefreshSession: boolean;
 };
+
+export type AccountBootstrapMode = 'session-restore' | 'login' | 'register';
 
 const WORKSPACE_HYDRATION_LOG_PREFIX = '[workspace-hydration]';
 
@@ -71,13 +77,29 @@ const logWorkspaceHydration = (
 export const useAccountWorkspaceHydration = () => {
   const { canAutoWrite } = useAppSafety();
   const hydrateAccountWorkspace = useCallback(
-    async (currentUser: LocalAccountUser): Promise<HydrationResult> => {
+    async (
+      currentUser: LocalAccountUser,
+      options?: { allowExternalRestore?: boolean }
+    ): Promise<HydrationResult> => {
       const normalizedEmail = currentUser.email.trim().toLowerCase();
+      const allowExternalRestore = options?.allowExternalRestore ?? true;
 
       if (normalizedEmail === DEMO_ACCOUNT_EMAIL) {
         try {
-          normalizeDemoAccountState(currentUser);
-          logWorkspaceHydration('restored', { source: 'demo-account' });
+          if (hasActiveDemoSession()) {
+            const demoSnapshot = loadDemoSessionBackup();
+            if (isValidDemoSessionBackup(demoSnapshot)) {
+              importUserAccountBackup(currentUser, demoSnapshot);
+              logWorkspaceHydration('restored', { source: 'demo-session-snapshot' });
+            } else {
+              clearDemoSessionState();
+              normalizeDemoAccountState(currentUser);
+              logWorkspaceHydration('restored', { source: 'demo-account' });
+            }
+          } else {
+            normalizeDemoAccountState(currentUser);
+            logWorkspaceHydration('restored', { source: 'demo-account' });
+          }
         } catch (error) {
           logWorkspaceHydration('fallback', {
             source: 'demo-account',
@@ -91,17 +113,19 @@ export const useAccountWorkspaceHydration = () => {
       let shouldRefreshSession = false;
       let localBackup: UserAccountBackup | null = null;
 
-      try {
-        const restored = restoreUserRecoverySnapshotIfNeeded(currentUser);
-        if (restored.restored) {
-          shouldRefreshSession = true;
-          logWorkspaceHydration('restored', { source: 'recovery-snapshot' });
+      if (allowExternalRestore) {
+        try {
+          const restored = restoreUserRecoverySnapshotIfNeeded(currentUser);
+          if (restored.restored) {
+            shouldRefreshSession = true;
+            logWorkspaceHydration('restored', { source: 'recovery-snapshot' });
+          }
+        } catch (error) {
+          logWorkspaceHydration('corrupted', {
+            source: 'recovery-snapshot',
+            reason: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        logWorkspaceHydration('corrupted', {
-          source: 'recovery-snapshot',
-          reason: error instanceof Error ? error.message : String(error),
-        });
       }
 
       try {
@@ -117,81 +141,83 @@ export const useAccountWorkspaceHydration = () => {
         return { shouldRefreshSession };
       }
 
-      try {
-        const serverBackup = await loadBackupFromServer(currentUser.email);
-        const payload = serverBackup.payload;
+      if (allowExternalRestore) {
+        try {
+          const serverBackup = await loadBackupFromServer(currentUser.email);
+          const payload = serverBackup.payload;
 
-        if (!hasValidBackupShape(payload)) {
-          logWorkspaceHydration('corrupted', { source: 'server-backup' });
-        } else {
-          const localPortfolioItemCount =
-            localBackup.portfolio.properties.length +
-            localBackup.portfolio.mortgages.length +
-            localBackup.portfolio.cashAccounts.length +
-            localBackup.portfolio.bankConnections.length +
-            localBackup.portfolio.investmentAccounts.length +
-            localBackup.portfolio.opportunities.length +
-            localBackup.portfolio.rehabProjects.length +
-            localBackup.portfolio.reports.length;
-          const serverPortfolioItemCount =
-            payload.portfolio.properties.length +
-            payload.portfolio.mortgages.length +
-            payload.portfolio.cashAccounts.length +
-            payload.portfolio.bankConnections.length +
-            payload.portfolio.investmentAccounts.length +
-            payload.portfolio.opportunities.length +
-            payload.portfolio.rehabProjects.length +
-            payload.portfolio.reports.length;
-          const localHasMeaningfulState =
-            hasMeaningfulPortfolioData(localBackup.portfolio) ||
-            Boolean(localBackup.settings.onboardingCompleted ?? localBackup.settings.onboarding.completed);
-          const serverHasMeaningfulState =
-            hasMeaningfulPortfolioData(payload.portfolio) ||
-            Boolean(payload.settings.onboardingCompleted ?? payload.settings.onboarding.completed);
-          const shouldImportServerBackup =
-            (!localHasMeaningfulState && serverHasMeaningfulState) ||
-            serverPortfolioItemCount > localPortfolioItemCount ||
-            (!(localBackup.settings.onboardingCompleted ?? localBackup.settings.onboarding.completed) &&
-              Boolean(payload.settings.onboardingCompleted ?? payload.settings.onboarding.completed));
+          if (!hasValidBackupShape(payload)) {
+            logWorkspaceHydration('corrupted', { source: 'server-backup' });
+          } else {
+            const localPortfolioItemCount =
+              localBackup.portfolio.properties.length +
+              localBackup.portfolio.mortgages.length +
+              localBackup.portfolio.cashAccounts.length +
+              localBackup.portfolio.bankConnections.length +
+              localBackup.portfolio.investmentAccounts.length +
+              localBackup.portfolio.opportunities.length +
+              localBackup.portfolio.rehabProjects.length +
+              localBackup.portfolio.reports.length;
+            const serverPortfolioItemCount =
+              payload.portfolio.properties.length +
+              payload.portfolio.mortgages.length +
+              payload.portfolio.cashAccounts.length +
+              payload.portfolio.bankConnections.length +
+              payload.portfolio.investmentAccounts.length +
+              payload.portfolio.opportunities.length +
+              payload.portfolio.rehabProjects.length +
+              payload.portfolio.reports.length;
+            const localHasMeaningfulState =
+              hasMeaningfulPortfolioData(localBackup.portfolio) ||
+              Boolean(localBackup.settings.onboardingCompleted ?? localBackup.settings.onboarding.completed);
+            const serverHasMeaningfulState =
+              hasMeaningfulPortfolioData(payload.portfolio) ||
+              Boolean(payload.settings.onboardingCompleted ?? payload.settings.onboarding.completed);
+            const shouldImportServerBackup =
+              (!localHasMeaningfulState && serverHasMeaningfulState) ||
+              serverPortfolioItemCount > localPortfolioItemCount ||
+              (!(localBackup.settings.onboardingCompleted ?? localBackup.settings.onboarding.completed) &&
+                Boolean(payload.settings.onboardingCompleted ?? payload.settings.onboarding.completed));
 
-          if (shouldImportServerBackup) {
-            try {
-              const mergedPayload = mergeImportedBackupWithLocalMode({
-                localSettings: localBackup.settings,
-                serverBackup: payload,
-              });
+            if (shouldImportServerBackup) {
+              try {
+                const mergedPayload = mergeImportedBackupWithLocalMode({
+                  localSettings: localBackup.settings,
+                  serverBackup: payload,
+                });
 
-              importUserAccountBackup(currentUser, mergedPayload);
-              shouldRefreshSession = true;
-              localBackup = exportUserAccountBackup(currentUser);
-              logWorkspaceHydration('restored', { source: 'server-backup' });
-            } catch (error) {
-              logWorkspaceHydration('fallback', {
-                source: 'server-backup',
-                reason: error instanceof Error ? error.message : String(error),
-              });
+                importUserAccountBackup(currentUser, mergedPayload);
+                shouldRefreshSession = true;
+                localBackup = exportUserAccountBackup(currentUser);
+                logWorkspaceHydration('restored', { source: 'server-backup' });
+              } catch (error) {
+                logWorkspaceHydration('fallback', {
+                  source: 'server-backup',
+                  reason: error instanceof Error ? error.message : String(error),
+                });
+              }
             }
           }
+        } catch (error) {
+          logWorkspaceHydration('fallback', {
+            source: 'server-backup',
+            reason: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        logWorkspaceHydration('fallback', {
-          source: 'server-backup',
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
 
-      try {
-        const { recovered } = recoverLegacyPortfolioForUser(currentUser);
-        if (recovered) {
-          shouldRefreshSession = true;
-          localBackup = exportUserAccountBackup(currentUser);
-          logWorkspaceHydration('restored', { source: 'legacy-portfolio' });
+        try {
+          const { recovered } = recoverLegacyPortfolioForUser(currentUser);
+          if (recovered) {
+            shouldRefreshSession = true;
+            localBackup = exportUserAccountBackup(currentUser);
+            logWorkspaceHydration('restored', { source: 'legacy-portfolio' });
+          }
+        } catch (error) {
+          logWorkspaceHydration('migration-failed', {
+            source: 'legacy-portfolio',
+            reason: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        logWorkspaceHydration('migration-failed', {
-          source: 'legacy-portfolio',
-          reason: error instanceof Error ? error.message : String(error),
-        });
       }
 
       let normalizedSettings: AppSettings;

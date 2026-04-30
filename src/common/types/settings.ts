@@ -1,4 +1,5 @@
 export type DisplayCurrency = 'EUR' | 'USD' | 'ARS';
+export type PortfolioDisplayMode = 'single-reporting-currency' | 'mixed-logical-currencies';
 export type AppLanguage = 'en' | 'es' | 'pt';
 export type AppTheme = 'light' | 'dark' | 'system';
 export type DateFormat = 'en-US' | 'en-GB' | 'es-ES';
@@ -424,10 +425,15 @@ export interface AppSettings {
   profile: UserProfileSettings;
   taxProfile: UserTaxProfileSettings;
   userMode: UserMode;
+  onboardingFlow?: import('../utils/onboardingStateMachine').OnboardingStateMachineSnapshot | null;
   onboardingCompleted?: boolean;
   onboardingStep?: OnboardingStep | null;
   showAdvancedBasicModeFeatures?: boolean;
   currency: DisplayCurrency;
+  displayMode?: PortfolioDisplayMode;
+  valueCurrency?: DisplayCurrency;
+  operatingCurrency?: DisplayCurrency;
+  reportingCurrency?: DisplayCurrency;
   usdToEurRate: number;
   arsToEurRate: number;
   usdToEurRateSource?: 'manual' | 'ECB';

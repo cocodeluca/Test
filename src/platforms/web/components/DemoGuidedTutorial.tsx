@@ -39,7 +39,9 @@ interface DemoGuidedTutorialProps {
   targetStatus?: 'pending' | 'ready' | 'timed-out';
   onBack: () => void;
   onNext: () => void;
+  onClose: () => void;
   onSkip: () => void;
+  onExitDemo?: () => void;
 }
 
 export const DemoGuidedTutorial: React.FC<DemoGuidedTutorialProps> = ({
@@ -49,7 +51,9 @@ export const DemoGuidedTutorial: React.FC<DemoGuidedTutorialProps> = ({
   targetStatus = 'ready',
   onBack,
   onNext,
+  onClose,
   onSkip,
+  onExitDemo,
 }) => {
   const { t } = useSettings();
   const modalRef = useRef<HTMLDivElement | null>(null);
@@ -179,7 +183,10 @@ export const DemoGuidedTutorial: React.FC<DemoGuidedTutorialProps> = ({
             </div>
             <button
               type="button"
-              onClick={onSkip}
+              onClick={() => {
+                console.info('[demo-tutorial] X clicked');
+                onClose();
+              }}
               className={`pointer-events-auto rounded-full p-2 ${appButtonMutedClass} ${appTextMutedClass}`}
               title={t('tutorial.ui.close')}
             >
@@ -204,11 +211,23 @@ export const DemoGuidedTutorial: React.FC<DemoGuidedTutorialProps> = ({
               ) : null}
               <button
                 type="button"
-                onClick={onSkip}
+                onClick={() => {
+                  console.info('[demo-tutorial] Saltar clicked');
+                  onSkip();
+                }}
                 className={`pointer-events-auto rounded-xl px-4 py-2.5 text-sm font-medium ${appButtonMutedClass} ${appTextMutedClass}`}
               >
                 {t('tutorial.ui.skip')}
               </button>
+              {onExitDemo ? (
+                <button
+                  type="button"
+                  onClick={onExitDemo}
+                  className={`pointer-events-auto rounded-xl px-4 py-2.5 text-sm font-medium ${appButtonMutedClass} ${appTextStrongClass}`}
+                >
+                  {t('demoPreview.exit')}
+                </button>
+              ) : null}
               {!step.requiresAction ? (
                 <button
                   type="button"

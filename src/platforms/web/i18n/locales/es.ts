@@ -643,6 +643,9 @@ export const es = {
     appearance: 'Apariencia',
     localization: 'Localizacion',
     taxProfile: 'Perfil fiscal',
+    currencyDisplayTitle: 'Visualizacion de moneda de la cartera',
+    currencyDisplayDescription:
+      'Elige si la cartera usa una sola moneda de reporte consolidada o separa las metricas de valor y operacion por moneda logica.',
     profileDescription: 'Gestiona los datos de identidad y perfil inversor visibles en tu espacio de trabajo.',
     preferencesDescription: 'Elige como se muestran importes, fechas, numeros y la vista preferida del dashboard.',
     appearanceDescription: 'Ajusta el tema visual y la densidad de la interfaz.',
@@ -655,6 +658,9 @@ export const es = {
       notes: 'Notas',
       currency: 'Formato de moneda',
       reportingCurrency: 'Moneda de reporte',
+      valueCurrency: 'Moneda de valor',
+      operatingCurrency: 'Moneda operativa',
+      displayMode: 'Modo de visualizacion',
       usdToEurRate: 'Tipo USD a EUR',
       eurToUsdRate: 'Tipo EUR a USD',
       language: 'Idioma',
@@ -695,6 +701,8 @@ export const es = {
       system: 'Sistema',
       comfortable: 'Comoda',
       compact: 'Compacta',
+      singleReportingCurrency: 'Una sola moneda de reporte',
+      mixedLogicalCurrencies: 'Monedas logicas mixtas',
       overview: 'Resumen',
       cashflow: 'Cashflow',
       performance: 'Rendimiento',
@@ -707,7 +715,14 @@ export const es = {
     },
     helpers: {
       currency: 'Solo afecta al formato. No aplica conversion de tipo de cambio.',
-      reportingCurrency: 'Se usa como moneda de reporte para convertir el valor real de la cartera.',
+      displayMode:
+        'Una sola moneda de reporte muestra todas las metricas de la cartera en una sola moneda. Monedas logicas mixtas mantiene separadas las metricas de valor y las metricas operativas segun lo configures abajo.',
+      reportingCurrency:
+        'Se usa para el reporte consolidado y para cualquier metrica que deba aparecer siempre en una sola moneda.',
+      valueCurrency:
+        'Se usa para metricas de valor de la cartera como valor de inmuebles, equity, deuda, precio de compra y valor estimado.',
+      operatingCurrency:
+        'Se usa para metricas operativas como renta, gastos, cuotas hipotecarias y cashflow.',
       usdToEurRate: 'Tipo diario de referencia USD a EUR usado para convertir automaticamente los saldos del broker.',
       fxRateSource: 'Fuente: {{source}}. Publicado el: {{date}}.',
       language: 'Cambia toda la interfaz entre ingles y espanol.',

@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { ChevronLeft, ChevronRight, Home, Wallet } from 'lucide-react';
 import type { Property } from '../../../common/types';
 import { createManualProperty } from '../../../common/utils/manualProperty';
+import { formatLocaleNumberInput } from '../../../common/utils/formatting';
 import { useSettings } from '../context/SettingsContext';
 import { CompactEditModal } from './CompactEditModal';
+import { LocalizedNumberInput } from './LocalizedNumberInput';
 import {
   appButtonMutedClass,
   appButtonPrimaryClass,
@@ -157,12 +159,11 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
               </div>
               <div>
                 <label className={labelClass}>{t('basicModeSetupWizard.propertyValueLabel')}</label>
-                <input
-                  type="number"
-                  value={propertyValue || ''}
-                  onChange={(event) => setPropertyValue(Number(event.target.value) || 0)}
-                  className={appInputClass}
-                />
+              <LocalizedNumberInput
+                value={propertyValue}
+                onValueChange={(value) => setPropertyValue(value ?? 0)}
+                className={appInputClass}
+              />
                 <p className={helperTextClass}>{t('basicModeSetupWizard.propertyValueHint')}</p>
               </div>
             </div>
@@ -177,10 +178,9 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
             <p className={helperTextClass}>{t('basicModeSetupWizard.addRentDescription')}</p>
             <div className="mt-5">
               <label className={labelClass}>{t('basicModeSetupWizard.monthlyRentLabel')}</label>
-              <input
-                type="number"
-                value={monthlyRent || ''}
-                onChange={(event) => setMonthlyRent(Number(event.target.value) || 0)}
+              <LocalizedNumberInput
+                value={monthlyRent}
+                onValueChange={(value) => setMonthlyRent(value ?? 0)}
                 className={appInputClass}
               />
               <p className={helperTextClass}>{t('basicModeSetupWizard.monthlyRentHint')}</p>
@@ -196,10 +196,9 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
             <p className={helperTextClass}>{t('basicModeSetupWizard.addExpensesDescription')}</p>
             <div className="mt-5">
               <label className={labelClass}>{t('basicModeSetupWizard.monthlyExpensesLabel')}</label>
-              <input
-                type="number"
-                value={monthlyExpenses || ''}
-                onChange={(event) => setMonthlyExpenses(Number(event.target.value) || 0)}
+              <LocalizedNumberInput
+                value={monthlyExpenses}
+                onValueChange={(value) => setMonthlyExpenses(value ?? 0)}
                 className={appInputClass}
               />
               <p className={helperTextClass}>{t('basicModeSetupWizard.monthlyExpensesHint')}</p>
@@ -218,14 +217,14 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
                 <p className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   {t('basicModeSetupWizard.cardPropertyValue')}
                 </p>
-                <p className={`mt-2 text-lg font-semibold ${appTextStrongClass}`}>{propertyValue}</p>
+                <p className={`mt-2 text-lg font-semibold ${appTextStrongClass}`}>{formatLocaleNumberInput(propertyValue)}</p>
               </div>
               <div className={`${appPanelClass} rounded-2xl p-4`}>
                 <p className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   {t('basicModeSetupWizard.cardMonthlyRent')}
                 </p>
                 <p className={`mt-2 text-lg font-semibold text-emerald-700 dark:text-emerald-300`}>
-                  {monthlyRent}
+                  {formatLocaleNumberInput(monthlyRent)}
                 </p>
               </div>
               <div className={`${appPanelClass} rounded-2xl p-4`}>
@@ -233,7 +232,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
                   {t('basicModeSetupWizard.cardMonthlyExpenses')}
                 </p>
                 <p className={`mt-2 text-lg font-semibold text-amber-700 dark:text-amber-300`}>
-                  {monthlyExpenses}
+                  {formatLocaleNumberInput(monthlyExpenses)}
                 </p>
               </div>
               <div className={`${appPanelClass} rounded-2xl p-4`}>
@@ -247,7 +246,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
                       : 'text-rose-700 dark:text-rose-300'
                   }`}
                 >
-                  {monthlyRent - monthlyExpenses}
+                  {formatLocaleNumberInput(monthlyRent - monthlyExpenses)}
                 </p>
               </div>
             </div>

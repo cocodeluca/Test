@@ -4,6 +4,7 @@ import {
   convertCurrency,
   getCurrencyFractionDigits,
 } from './currency';
+import { getMetricCurrencyDomain, resolveDisplayCurrency } from './metricCurrency';
 import { translateCurrentLanguage } from '../../platforms/web/i18n/translations';
 
 const languageLocaleMap = {
@@ -46,26 +47,6 @@ export const formatCurrency = (
   return formatCurrencyValue(convertedValue, targetCurrency);
 };
 
-export const getPortfolioDisplayCurrency = (
-  sourceCurrency: DisplayCurrency,
-  domain: 'valuation' | 'operating' | 'reporting',
-  reportingCurrency: DisplayCurrency = getCurrencyCode()
-): DisplayCurrency => {
-  if (reportingCurrency !== 'ARS') {
-    return domain === 'reporting' ? reportingCurrency : sourceCurrency;
-  }
-
-  if (domain === 'valuation') {
-    return 'USD';
-  }
-
-  if (domain === 'operating') {
-    return 'ARS';
-  }
-
-  return reportingCurrency;
-};
-
 export const formatPortfolioDisplayCurrency = (
   value: number,
   sourceCurrency: DisplayCurrency,
@@ -75,10 +56,21 @@ export const formatPortfolioDisplayCurrency = (
     rateOverrides?: number | Partial<Record<DisplayCurrency, number>>;
     minimumFractionDigits?: number;
     maximumFractionDigits?: number;
+    settings?: ReturnType<typeof getCurrentSettings>;
   }
 ): string => {
-  const reportingCurrency = options?.reportingCurrency ?? getCurrencyCode();
-  const targetCurrency = getPortfolioDisplayCurrency(sourceCurrency, domain, reportingCurrency);
+  const settings = options?.settings ?? getCurrentSettings();
+  const reportingCurrency = options?.reportingCurrency ?? resolveDisplayCurrency({
+    domain: 'reporting',
+    settings,
+  });
+  const targetCurrency = resolveDisplayCurrency({
+    domain: domain === 'valuation' ? 'value' : domain === 'operating' ? 'operating' : 'reporting',
+    settings: {
+      ...settings,
+      reportingCurrency,
+    },
+  });
   const convertedValue = convertCurrency(value, sourceCurrency, targetCurrency, options?.rateOverrides);
 
   return formatCurrencyValue(convertedValue, targetCurrency, {
@@ -86,6 +78,9 @@ export const formatPortfolioDisplayCurrency = (
     maximumFractionDigits: options?.maximumFractionDigits ?? 0,
   });
 };
+
+export const isCurrencyDomainMetric = (metricType: string): boolean =>
+  getMetricCurrencyDomain(metricType as Parameters<typeof getMetricCurrencyDomain>[0]) !== 'none';
 
 export const formatPercentage = (value: number, decimals: number = 1): string => {
   return new Intl.NumberFormat(getNumberLocale(), {
@@ -100,6 +95,54 @@ export const formatNumber = (value: number, decimals: number = 0): string => {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(value);
+};
+
+const getLocaleNumberSymbols = (locale: string) => {
+  const parts = new Intl.NumberFormat(locale).formatToParts(12345.6);
+  return {
+    group: parts.find((part) => part.type === 'group')?.value ?? ',',
+    decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
+  };
+};
+
+export const formatLocaleNumberInput = (
+  value: number | null | undefined,
+  options?: {
+    minimumFractionDigits?: number;
+    maximumFractionDigits?: number;
+  }
+): string => {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '';
+  }
+
+  return new Intl.NumberFormat(getNumberLocale(), {
+    minimumFractionDigits: options?.minimumFractionDigits ?? 0,
+    maximumFractionDigits: options?.maximumFractionDigits ?? 20,
+  }).format(value);
+};
+
+export const parseLocaleNumberInput = (value: string): number | null => {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  const locale = getNumberLocale();
+  const { group, decimal } = getLocaleNumberSymbols(locale);
+  const normalized = trimmedValue
+    .replace(new RegExp(`\\s`, 'g'), '')
+    .replace(new RegExp(`\\${group}`, 'g'), '')
+    .replace(decimal, '.')
+    .replace(/[^0-9.-]/g, '');
+
+  if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isNaN(parsed) ? null : parsed;
 };
 
 export const formatDate = (dateString: string): string => {

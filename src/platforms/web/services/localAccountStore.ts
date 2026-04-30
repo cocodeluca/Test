@@ -12,6 +12,13 @@ import {
   ReportBrandingConfig,
 } from '../../../common/types';
 import { DEFAULT_SETTINGS } from '../../../common/utils/settingsStore';
+import {
+  beginOnboarding,
+  completeOnboarding,
+  createPendingOnboardingState,
+  isOnboardingComplete,
+  resumeOnboardingState,
+} from '../../../common/utils/onboardingStateMachine';
 import { defaultReportBranding, defaultReportTemplates } from '../../../common/utils/reports';
 import { normalizeTrackingPreference } from '../../../common/utils/appModes';
 import { createDemoPropertiesOnlyWorkspaceConfig } from '../../../common/utils/workspace';
@@ -26,6 +33,8 @@ import {
 
 const LOCAL_USERS_STORAGE_KEY = 're-portfolio-local-users';
 const LOCAL_SESSION_STORAGE_KEY = 're-portfolio-local-session';
+const DEMO_SESSION_ACTIVE_KEY = 're-portfolio-demo-session-active';
+const DEMO_SESSION_BACKUP_KEY = 're-portfolio-demo-session-backup';
 const USER_PORTFOLIO_STORAGE_KEY_PREFIX = 're-portfolio-user-data';
 const USER_RECOVERY_SNAPSHOT_KEY_PREFIX = 're-portfolio-user-recovery';
 const LEGACY_CASH_ACCOUNTS_STORAGE_KEY = 're-portfolio-cash-accounts';
@@ -110,6 +119,7 @@ export interface AccountRegistration extends AccountCredentials {
   name: string;
   userMode?: AppSettings['userMode'];
   dashboardSetupMode?: AppSettings['dashboardSetupMode'];
+  onboardingFlow?: AppSettings['onboardingFlow'];
   onboardingCompleted?: AppSettings['onboardingCompleted'];
   onboarding?: AppSettings['onboarding'];
   workspaceConfig?: AppSettings['workspaceConfig'];
@@ -132,6 +142,9 @@ const mergeUserSettings = (
 ): AppSettings => ({
   ...DEFAULT_SETTINGS,
   ...storedSettings,
+  onboardingFlow: storedSettings?.onboardingFlow
+    ? resumeOnboardingState(storedSettings.onboardingFlow)
+    : null,
   onboardingCompleted:
     storedSettings?.onboardingCompleted ?? storedSettings?.onboarding?.completed ?? false,
   onboardingStep:
@@ -418,6 +431,149 @@ const clearDemoAccountSelectionState = (user: Pick<LocalAccountUser, 'id'>) => {
   setStoredSelectedUseCaseId(settingsStorageKey, null);
 };
 
+export const clearDemoAuthArtifacts = (email?: string | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const normalizedEmail = email?.trim().toLowerCase();
+
+  try {
+    clearDemoSessionState();
+    window.localStorage.removeItem('re-portfolio-demo-onboarding-dismissed');
+    window.localStorage.removeItem('re-portfolio-demo-tutorial-dismissed');
+    window.localStorage.removeItem('re-portfolio-demo-tutorial-restart-request');
+    window.localStorage.removeItem('re-portfolio-demo-advanced-session');
+
+    if (normalizedEmail) {
+      window.localStorage.removeItem(`re-portfolio-demo-tutorial-dismissed:${normalizedEmail}`);
+      window.localStorage.removeItem(`re-portfolio-demo-tutorial-restart-request:${normalizedEmail}`);
+      window.localStorage.removeItem(`re-portfolio-demo-advanced-session:${normalizedEmail}`);
+    }
+
+    window.sessionStorage.removeItem('re-portfolio-demo-onboarding-flow');
+    window.sessionStorage.removeItem('re-portfolio-demo-selected-use-case');
+    window.sessionStorage.removeItem('re-portfolio-demo-onboarding-stage');
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo auth artifact clear failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+export const clearDemoAccountSessionPointers = (): void => {
+  clearDemoSessionState();
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem('re-portfolio-demo-onboarding-dismissed');
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo pointer clear failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const setDemoSessionActive = (active: boolean) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (active) {
+      window.sessionStorage.setItem(DEMO_SESSION_ACTIVE_KEY, 'true');
+      return;
+    }
+
+    window.sessionStorage.removeItem(DEMO_SESSION_ACTIVE_KEY);
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo session marker update failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+export const clearDemoSessionState = (): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(DEMO_SESSION_ACTIVE_KEY);
+    window.sessionStorage.removeItem(DEMO_SESSION_BACKUP_KEY);
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo session state clear failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+export const hasActiveDemoSession = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return window.sessionStorage.getItem(DEMO_SESSION_ACTIVE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+};
+
+export const saveDemoSessionBackup = (backup: UserAccountBackup | null): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (!backup) {
+      window.sessionStorage.removeItem(DEMO_SESSION_BACKUP_KEY);
+      return;
+    }
+
+    const serialized = safeJsonStringify(backup);
+    if (!serialized) {
+      return;
+    }
+
+    window.sessionStorage.setItem(DEMO_SESSION_BACKUP_KEY, serialized);
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo session backup update failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+export const loadDemoSessionBackup = (): UserAccountBackup | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    const rawValue = window.sessionStorage.getItem(DEMO_SESSION_BACKUP_KEY);
+    return safeJsonParse<UserAccountBackup | null>(rawValue, null);
+  } catch (error) {
+    console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} demo session backup read failed`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
+
+export const isValidDemoSessionBackup = (backup: unknown): backup is UserAccountBackup =>
+  Boolean(
+    backup &&
+      typeof backup === 'object' &&
+      (backup as UserAccountBackup).version === 1 &&
+      (backup as UserAccountBackup).user &&
+      normalizeEmail((backup as UserAccountBackup).user.email) === DEMO_ACCOUNT_EMAIL &&
+      (backup as UserAccountBackup).portfolio &&
+      (backup as UserAccountBackup).settings
+  );
+
 export const normalizeDemoAccountState = (
   user: LocalAccountUser,
   portfolio: UserPortfolioData | null = null
@@ -432,6 +588,7 @@ export const normalizeDemoAccountState = (
   saveUserSettings(user, {
     ...currentSettings,
     userMode: 'basic',
+    onboardingFlow: currentSettings.onboardingFlow ?? null,
     onboardingCompleted: true,
     onboardingStep: null,
     onboarding: {
@@ -451,6 +608,9 @@ export const normalizeDemoAccountState = (
   });
 
   clearDemoAccountSelectionState(user);
+  if (isDemoLocalAccount(user)) {
+    setDemoSessionActive(true);
+  }
   return { normalized: true };
 };
 
@@ -469,10 +629,21 @@ export const hasMeaningfulPortfolioData = (data: UserPortfolioData): boolean => 
 const hasMeaningfulWorkspaceConfig = (settings: AppSettings): boolean => {
   const currentWorkspace = settings.workspaceConfig;
   const defaultWorkspace = DEFAULT_SETTINGS.workspaceConfig;
+  const dashboardSectionsChanged =
+    currentWorkspace.dashboardSections.length !== defaultWorkspace.dashboardSections.length ||
+    currentWorkspace.dashboardSections.some((section, index) => {
+      const defaultSection = defaultWorkspace.dashboardSections[index];
+
+      return (
+        !defaultSection ||
+        section.id !== defaultSection.id ||
+        section.title !== defaultSection.title ||
+        section.cards.join('|') !== defaultSection.cards.join('|')
+      );
+    });
 
   return Boolean(
-    currentWorkspace.userId ||
-      currentWorkspace.primaryStrategy !== defaultWorkspace.primaryStrategy ||
+    currentWorkspace.primaryStrategy !== defaultWorkspace.primaryStrategy ||
       currentWorkspace.secondaryStrategies.length > 0 ||
       currentWorkspace.detectedProfile !== defaultWorkspace.detectedProfile ||
       currentWorkspace.detectedProfileConfidence !== defaultWorkspace.detectedProfileConfidence ||
@@ -486,10 +657,13 @@ const hasMeaningfulWorkspaceConfig = (settings: AppSettings): boolean => {
       currentWorkspace.preferredDashboardCards.join('|') !==
         defaultWorkspace.preferredDashboardCards.join('|') ||
       currentWorkspace.preferredCards.join('|') !== defaultWorkspace.preferredCards.join('|') ||
-      currentWorkspace.dashboardSections.length > 0 ||
-      currentWorkspace.dashboardLayout.highlightedSections.length > 0 ||
-      currentWorkspace.dashboardLayout.quickActionModules.length > 0 ||
-      currentWorkspace.dashboardLayout.prioritizedAlerts.length > 0 ||
+      dashboardSectionsChanged ||
+      currentWorkspace.dashboardLayout.highlightedSections.join('|') !==
+        defaultWorkspace.dashboardLayout.highlightedSections.join('|') ||
+      currentWorkspace.dashboardLayout.quickActionModules.join('|') !==
+        defaultWorkspace.dashboardLayout.quickActionModules.join('|') ||
+      currentWorkspace.dashboardLayout.prioritizedAlerts.join('|') !==
+        defaultWorkspace.dashboardLayout.prioritizedAlerts.join('|') ||
       currentWorkspace.budgetCategories.length > 0 ||
       currentWorkspace.customCategories.length > 0 ||
       currentWorkspace.suggestedBudgetCategories.length > 0 ||
@@ -508,7 +682,9 @@ const hasMeaningfulWorkspaceConfig = (settings: AppSettings): boolean => {
       currentWorkspace.aiRecommendationSummary !== defaultWorkspace.aiRecommendationSummary ||
       currentWorkspace.syncStatus !== defaultWorkspace.syncStatus ||
       currentWorkspace.confidenceScore !== defaultWorkspace.confidenceScore ||
-      Object.values(currentWorkspace.userOverrides).some(Boolean) ||
+      Object.entries(currentWorkspace.userOverrides).some(
+        ([key, value]) => value !== defaultWorkspace.userOverrides[key as keyof typeof defaultWorkspace.userOverrides]
+      ) ||
       currentWorkspace.lastAiRecommendation !== null
   );
 };
@@ -536,6 +712,10 @@ const hasMeaningfulSettings = (settings: AppSettings, user: Pick<LocalAccountUse
   hasMeaningfulWorkspaceConfig(settings) ||
   settings.userMode !== DEFAULT_SETTINGS.userMode ||
   settings.dashboardSetupMode !== DEFAULT_SETTINGS.dashboardSetupMode ||
+  settings.displayMode !== DEFAULT_SETTINGS.displayMode ||
+  settings.valueCurrency !== DEFAULT_SETTINGS.valueCurrency ||
+  settings.operatingCurrency !== DEFAULT_SETTINGS.operatingCurrency ||
+  settings.reportingCurrency !== DEFAULT_SETTINGS.reportingCurrency ||
   settings.currency !== DEFAULT_SETTINGS.currency ||
   settings.language !== DEFAULT_SETTINGS.language ||
   settings.theme !== DEFAULT_SETTINGS.theme ||
@@ -592,7 +772,24 @@ export const getLocalSessionDebugInfo = (
   };
 };
 
-export const restoreLocalSession = (now = new Date()): LocalSessionRestoreResult => {
+const findStoredAccountByIdentity = (
+  authenticatedUser: Pick<LocalAccountUser, 'id' | 'email'>
+): StoredAccountRecord | null => {
+  const email = normalizeEmail(authenticatedUser.email);
+  const accounts = readStoredAccounts();
+
+  return (
+    accounts.find((candidate) => candidate.id === authenticatedUser.id) ??
+    accounts.find((candidate) => candidate.email === email) ??
+    null
+  );
+};
+
+export const restoreLocalSession = (
+  now = new Date(),
+  authenticatedUser?: Pick<LocalAccountUser, 'id' | 'email'> | null,
+  options?: { skipDemoRestore?: boolean }
+): LocalSessionRestoreResult => {
   if (typeof window === 'undefined') {
     const debug: LocalSessionDebugInfo = {
       ...getLocalSessionDebugInfo(now),
@@ -604,6 +801,8 @@ export const restoreLocalSession = (now = new Date()): LocalSessionRestoreResult
   }
 
   const session = readStoredSession();
+  const restoredSessionUserId = session?.userId ?? null;
+  const skipDemoRestore = options?.skipDemoRestore ?? false;
 
   if (!session?.userId) {
     const debug: LocalSessionDebugInfo = {
@@ -616,7 +815,34 @@ export const restoreLocalSession = (now = new Date()): LocalSessionRestoreResult
     return { user: null, debug };
   }
 
-  const account = readStoredAccounts().find((candidate) => candidate.id === session.userId);
+  if (skipDemoRestore) {
+    const account = authenticatedUser
+      ? findStoredAccountByIdentity(authenticatedUser)
+      : readStoredAccounts().find((candidate) => candidate.id === session.userId);
+
+    if (account) {
+      const debug: LocalSessionDebugInfo = {
+        ...getLocalSessionDebugInfo(now),
+        restored: true,
+        refreshed: false,
+        reason: 'session-restored',
+      };
+      debugAuth('Persisted session restored with demo restore disabled.', {
+        restoredSessionUserId,
+        authenticatedUser,
+        debug,
+      });
+      return { user: toPublicUser(account), debug };
+    }
+  }
+
+  const account = authenticatedUser
+    ? findStoredAccountByIdentity(authenticatedUser)
+    : readStoredAccounts().find((candidate) => candidate.id === session.userId);
+
+  if (authenticatedUser && account && account.id !== session.userId) {
+    writeStoredSession(account.id);
+  }
 
   if (!account) {
     writeStoredSessionRecord(null);
@@ -628,6 +854,28 @@ export const restoreLocalSession = (now = new Date()): LocalSessionRestoreResult
     };
     debugAuth('Stored session user no longer exists. Clearing session.', debug);
     return { user: null, debug };
+  }
+
+  if (authenticatedUser) {
+    const normalizedEmail = normalizeEmail(authenticatedUser.email);
+    const matchesAuthenticatedIdentity =
+      account.id === authenticatedUser.id && normalizeEmail(account.email) === normalizedEmail;
+
+    if (!matchesAuthenticatedIdentity) {
+      writeStoredSessionRecord(null);
+      const debug: LocalSessionDebugInfo = {
+        ...getLocalSessionDebugInfo(now),
+        restored: false,
+        refreshed: false,
+        reason: 'missing-user',
+      };
+      debugAuth('Authenticated user did not match stored account. Clearing stale session.', {
+        restoredSessionUserId,
+        authenticatedUser,
+        debug,
+      });
+      return { user: null, debug };
+    }
   }
 
   if (!session.accessToken || !session.refreshToken) {
@@ -739,6 +987,9 @@ export const registerLocalAccount = (
     payload.onboardingCompleted ?? payload.onboarding?.completed ?? DEFAULT_SETTINGS.onboardingCompleted;
   const onboarding = payload.onboarding ?? DEFAULT_SETTINGS.onboarding;
   const workspaceConfig = payload.workspaceConfig ?? DEFAULT_SETTINGS.workspaceConfig;
+  const onboardingFlow = payload.onboardingFlow
+    ? resumeOnboardingState(payload.onboardingFlow)
+    : createPendingOnboardingState();
 
   if (!name || !email || !password) {
     throw new Error('Name, email, and password are required.');
@@ -765,6 +1016,7 @@ export const registerLocalAccount = (
     { id: account.id, name, email },
     {
       userMode,
+      onboardingFlow,
       onboardingCompleted,
       onboardingStep: onboardingCompleted ? null : 'welcome',
       dashboardSetupMode,
@@ -798,6 +1050,12 @@ export const loginLocalAccount = (
   const email = normalizeEmail(credentials.email);
   const password = credentials.password;
 
+  debugAuth('Login requested.', {
+    email,
+    passwordProvided: Boolean(password),
+    session: getLocalSessionDebugInfo(),
+  });
+
   const account = readStoredAccounts().find(
     (candidate) => candidate.email === email && candidate.password === password
   );
@@ -807,6 +1065,8 @@ export const loginLocalAccount = (
   }
 
   writeStoredSession(account.id);
+  clearDemoSessionState();
+  clearDemoAccountSelectionState(toPublicUser(account));
   debugAuth('Login succeeded and session was persisted.', {
     userId: account.id,
     email,
@@ -817,6 +1077,7 @@ export const loginLocalAccount = (
 
 export const logoutLocalAccount = () => {
   writeStoredSession(null);
+  clearDemoSessionState();
   debugAuth('Logout cleared persisted session.', {
     session: getLocalSessionDebugInfo(),
   });
@@ -864,10 +1125,17 @@ export const normalizeUserOnboardingState = (
   portfolio: UserPortfolioData,
   settings: AppSettings
 ): AppSettings => {
+  const hasSnapshot = Boolean(settings.onboardingFlow);
+  const normalizedFlow = hasSnapshot
+    ? resumeOnboardingState(settings.onboardingFlow as NonNullable<AppSettings['onboardingFlow']>)
+    : createPendingOnboardingState();
+  const flowIsFinal = isOnboardingComplete(normalizedFlow);
   const hasExistingAccountData =
     hasMeaningfulPortfolioData(portfolio) || hasMeaningfulSettings(settings, user);
   const alreadyCompleted = Boolean(settings.onboardingCompleted ?? settings.onboarding.completed);
-  const shouldAutoComplete = hasExistingAccountData || alreadyCompleted;
+  const shouldAutoComplete = hasSnapshot
+    ? flowIsFinal && (hasExistingAccountData || alreadyCompleted)
+    : hasExistingAccountData || alreadyCompleted;
   const basicModeSetupCompleted =
     settings.onboarding.basicModeSetupCompleted || portfolio.properties.length > 0;
   const requiresBasicModeStep =
@@ -879,6 +1147,11 @@ export const normalizeUserOnboardingState = (
 
   return mergeUserSettings(user, {
     ...settings,
+    onboardingFlow: hasSnapshot
+      ? normalizedFlow
+      : settings.onboardingCompleted
+      ? completeOnboarding(beginOnboarding('properties-and-rent'))
+      : null,
     onboardingCompleted: shouldAutoComplete,
     onboardingStep: requiresBasicModeStep
       ? 'basic-mode-setup'
@@ -887,7 +1160,7 @@ export const normalizeUserOnboardingState = (
       : settings.onboardingStep ?? 'welcome',
     onboarding: {
       ...settings.onboarding,
-      completed: shouldAutoComplete,
+      completed: hasSnapshot ? (flowIsFinal ? shouldAutoComplete : false) : shouldAutoComplete,
       basicModeSetupCompleted,
       trackingPreference: normalizeTrackingPreference(settings.onboarding.trackingPreference),
     },
@@ -1165,6 +1438,17 @@ export const resetDemoAccountData = (
   }
 
   normalizeDemoAccountState(user, seedPortfolio);
+  setDemoSessionActive(true);
+  saveDemoSessionBackup({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    user: {
+      name: user.name,
+      email: user.email,
+    },
+    portfolio: loadUserPortfolio(user.id),
+    settings: loadUserSettings(user),
+  });
 
   return { reset: true };
 };

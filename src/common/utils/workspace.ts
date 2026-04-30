@@ -171,17 +171,16 @@ export const getVisibleWorkspaceModules = (settings: AppSettings): WorkspaceModu
     normalizedWorkspaceConfig.enabledModules,
     defaultWorkspaceConfig.enabledModules
   );
+  const trackingPreference = normalizeTrackingPreference(settings.onboarding.trackingPreference);
   const trackingModules =
     settings.userMode === 'basic'
-      ? getModulesForTrackingPreference(
-          normalizeTrackingPreference(settings.onboarding.trackingPreference),
-          settings.userMode
-        )
+      ? getModulesForTrackingPreference(trackingPreference, settings.userMode)
       : [];
+  const isTrackingPreferenceDrivingVisibility =
+    settings.userMode === 'basic' && trackingPreference !== 'full-portfolio';
   const enabledModules = Array.from(
     new Set<WorkspaceModule>([
-      ...trackingModules,
-      ...workspaceEnabledModules,
+      ...(isTrackingPreferenceDrivingVisibility ? trackingModules : workspaceEnabledModules),
       'settings',
     ])
   );

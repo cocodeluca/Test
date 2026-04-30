@@ -3,6 +3,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { DisplayCurrency } from '../../../common/types/settings';
 import { getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { formatPercentage, formatPortfolioDisplayCurrency } from '../../../common/utils/formatting';
+import { resolveDisplayCurrency } from '../../../common/utils/metricCurrency';
 import { useSettings } from '../context/SettingsContext';
 import {
   chartDotRingClass,
@@ -85,10 +86,11 @@ export const PortfolioCompositionChart: React.FC<PortfolioCompositionChartProps>
 }) => {
   const { settings } = useSettings();
   const fxRates = getSettingsCurrencyRates(settings);
-  const resolvedCurrency = displayCurrency ?? settings.currency;
+  const resolvedCurrency =
+    displayCurrency ?? resolveDisplayCurrency({ domain: 'value', settings });
   const formatAmount = (value: number) =>
     formatPortfolioDisplayCurrency(value, resolvedCurrency, 'valuation', {
-      reportingCurrency: settings.currency,
+      reportingCurrency: resolveDisplayCurrency({ domain: 'reporting', settings }),
       rateOverrides: fxRates,
     });
   const safeTotal = segments.reduce((sum, segment) => sum + Math.max(segment.value, 0), 0);

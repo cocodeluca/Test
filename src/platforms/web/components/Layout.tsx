@@ -23,6 +23,7 @@ interface LayoutProps {
   currentUserName: string;
   currentUserEmail: string;
   onLogout: () => void;
+  onExitDemo?: () => void;
   tutorialTargetId?: string | null;
   workspaceModeState: WorkspaceModeState;
   demoPreview?: {
@@ -41,6 +42,7 @@ export const Layout: React.FC<LayoutProps> = ({
   currentUserName,
   currentUserEmail,
   onLogout,
+  onExitDemo = undefined,
   tutorialTargetId = null,
   workspaceModeState,
   demoPreview = null,
@@ -115,6 +117,7 @@ export const Layout: React.FC<LayoutProps> = ({
         currentUserName={currentUserName}
         currentUserEmail={currentUserEmail}
         onLogout={onLogout}
+        onExitDemo={onExitDemo}
         tutorialTargetId={tutorialTargetId}
       />
       <main className="flex-1 overflow-auto lg:pl-[224px]">

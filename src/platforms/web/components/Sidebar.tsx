@@ -36,6 +36,7 @@ interface SidebarProps {
   currentUserName: string;
   currentUserEmail: string;
   onLogout: () => void;
+  onExitDemo?: () => void;
   tutorialTargetId?: string | null;
 }
 
@@ -45,6 +46,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentUserName,
   currentUserEmail,
   onLogout,
+  onExitDemo = undefined,
   tutorialTargetId = null,
 }) => {
   const { settings, t } = useSettings();
@@ -211,11 +213,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <button
           type="button"
-          onClick={onLogout}
+          onClick={onExitDemo ?? onLogout}
           className={`mt-3 inline-flex min-w-[146px] items-center gap-2 rounded-[18px] px-3.5 py-2 text-[0.85rem] font-medium ${appButtonMutedClass} ${appTextStrongClass}`}
         >
           <LogOut className="h-3.5 w-3.5" strokeWidth={1.8} />
-          <span>{t('common.logOut')}</span>
+          <span>{onExitDemo ? 'Salir de demo' : t('common.logOut')}</span>
         </button>
       </div>
     </aside>

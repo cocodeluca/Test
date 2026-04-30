@@ -4,6 +4,7 @@ import type { Lease, Property, RentUpdateIndexType, RentUpdateRuleType } from '.
 import { createDefaultLease, getActiveLease, rentUpdateIndexTypes, rentUpdateRuleTypes } from '../../../common/utils/leaseUpdates';
 import { defaultPropertyType, propertyTypeValues } from '../../../common/utils/propertyTypes';
 import { CompactEditModal } from './CompactEditModal';
+import { LocalizedNumberInput } from './LocalizedNumberInput';
 import { useSettings } from '../context/SettingsContext';
 import { appBorderClass, appButtonMutedClass, appButtonPrimaryClass, appInputClass, appPanelClass, appTextMutedClass, appTextSoftClass, appTextStrongClass } from '../styles/dashboardTheme';
 
@@ -403,13 +404,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
               <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                 Deposit
               </label>
-              <input
-                type="number"
-                min="0"
-                step="10"
+              <LocalizedNumberInput
+                min={0}
+                step={10}
                 className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                 value={securityDeposit}
-                onChange={(event) => setSecurityDeposit(parseFloat(event.target.value) || 0)}
+                onValueChange={(value) => setSecurityDeposit(value ?? 0)}
               />
             </div>
           </div>
@@ -438,26 +438,24 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Beds
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
+                <LocalizedNumberInput
+                  min={0}
+                  step={1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={bedrooms}
-                  onChange={(event) => setBedrooms(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setBedrooms(value ?? 0)}
                 />
               </div>
               <div>
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Baths
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
+                <LocalizedNumberInput
+                  min={0}
+                  step={1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={bathrooms}
-                  onChange={(event) => setBathrooms(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setBathrooms(value ?? 0)}
                 />
               </div>
             </div>
@@ -466,25 +464,24 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Built Area
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
+                <LocalizedNumberInput
+                  min={0}
+                  step={0.1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={builtAreaSqm}
-                  onChange={(event) => setBuiltAreaSqm(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setBuiltAreaSqm(value ?? 0)}
+                  maximumFractionDigits={1}
                 />
               </div>
               <div>
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Floor
                 </label>
-                <input
-                  type="number"
-                  step="1"
+                <LocalizedNumberInput
+                  step={1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={floor}
-                  onChange={(event) => setFloor(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setFloor(value ?? 0)}
                 />
               </div>
             </div>
@@ -493,24 +490,22 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Year Built
                 </label>
-                <input
-                  type="number"
-                  step="1"
+                <LocalizedNumberInput
+                  step={1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={yearBuilt}
-                  onChange={(event) => setYearBuilt(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setYearBuilt(value ?? 0)}
                 />
               </div>
               <div>
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Renovated
                 </label>
-                <input
-                  type="number"
-                  step="1"
+                <LocalizedNumberInput
+                  step={1}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={renovatedYear}
-                  onChange={(event) => setRenovatedYear(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setRenovatedYear(value ?? 0)}
                 />
               </div>
             </div>
@@ -557,13 +552,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Purchase Price
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1000"
+                <LocalizedNumberInput
+                  min={0}
+                  step={1000}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={purchasePrice}
-                  onChange={(event) => setPurchasePrice(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setPurchasePrice(value ?? 0)}
                 />
                 <p className={`mt-2 text-xs ${appTextSoftClass}`}>
                   {builtAreaSqm > 0
@@ -575,13 +569,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Estimated Value
                 </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1000"
+                <LocalizedNumberInput
+                  min={0}
+                  step={1000}
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={currentEstimatedValue}
-                  onChange={(event) => setCurrentEstimatedValue(parseFloat(event.target.value) || 0)}
+                  onValueChange={(value) => setCurrentEstimatedValue(value ?? 0)}
                 />
                 <p className={`mt-2 text-xs ${appTextSoftClass}`}>
                   {builtAreaSqm > 0
@@ -725,13 +718,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
               <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                 Primary Reference Index
               </label>
-              <input
-                type="number"
-                min="0"
-                step="1"
+              <LocalizedNumberInput
+                min={0}
+                step={1}
                 className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                 value={documentPrimaryImageIndex}
-                onChange={(event) => setDocumentPrimaryImageIndex(parseFloat(event.target.value) || 0)}
+                onValueChange={(value) => setDocumentPrimaryImageIndex(value ?? 0)}
               />
             </div>
           </div>

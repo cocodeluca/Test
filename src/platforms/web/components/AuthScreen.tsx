@@ -43,6 +43,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     event.preventDefault();
     setError(null);
     setIsSubmitting(true);
+    console.info('[auth-screen] submit clicked.', {
+      mode,
+      enteredEmail: email,
+      passwordProvided: Boolean(password),
+    });
 
     try {
       if (mode === 'register') {
@@ -79,6 +84,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const handleDemoMode = async () => {
     setError(null);
     setIsSubmitting(true);
+    console.info('[auth-screen] explicit demo button clicked.');
 
     try {
       await onLogin({

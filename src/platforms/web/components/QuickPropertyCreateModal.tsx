@@ -3,9 +3,10 @@ import { ChevronLeft, ChevronRight, Home, X } from 'lucide-react';
 import type { Property } from '../../../common/types';
 import { createManualProperty, type ManualPropertyInput } from '../../../common/utils/manualProperty';
 import { currencyOptions } from '../../../common/utils/currency';
-import { getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
+import { formatLocaleNumberInput, getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
 import { defaultPropertyType, propertyTypeValues } from '../../../common/utils/propertyTypes';
 import { useSettings } from '../context/SettingsContext';
+import { LocalizedNumberInput } from './LocalizedNumberInput';
 import {
   appButtonMutedClass,
   appButtonPrimaryClass,
@@ -256,11 +257,11 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
               </div>
               <div>
                 <label className={`mb-2 block text-sm font-medium ${appTextMutedClass}`}>{t('quickProperty.estimatedPropertyValue')}</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={form.estimatedPropertyValue || ''}
-                  onChange={(event) => handleChange('estimatedPropertyValue', Number(event.target.value) || 0)}
+                <LocalizedNumberInput
+                  min={0}
+                  step={1000}
+                  value={form.estimatedPropertyValue}
+                  onValueChange={(value) => handleChange('estimatedPropertyValue', value ?? 0)}
                   placeholder={t('quickProperty.estimatedPropertyValuePlaceholder')}
                   className={inputClass}
                   required
@@ -282,12 +283,12 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
             <div className="mt-6 grid gap-5 md:grid-cols-2">
               <div>
                 <label className={`mb-2 block text-sm font-medium ${appTextMutedClass}`}>{basicMode ? t('quickProperty.monthlyIncome') : t('quickProperty.monthlyRent')}</label>
-                <input
+                <LocalizedNumberInput
                   data-tutorial-id="form-monthly-rent"
-                  type="number"
-                  min="0"
-                  value={form.monthlyRent || ''}
-                  onChange={(event) => handleChange('monthlyRent', Number(event.target.value) || 0)}
+                  min={0}
+                  step={10}
+                  value={form.monthlyRent}
+                  onValueChange={(value) => handleChange('monthlyRent', value ?? 0)}
                   placeholder={t('quickProperty.monthlyRentPlaceholder')}
                   className={inputClass}
                 />
@@ -307,34 +308,34 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
             <div className="mt-6 grid gap-5 md:grid-cols-2">
               <div>
                 <label className={`mb-2 block text-sm font-medium ${appTextMutedClass}`}>{t('quickProperty.monthlyExpenses')}</label>
-                <input
+                <LocalizedNumberInput
                   data-tutorial-id="form-monthly-expenses"
-                  type="number"
-                  min="0"
-                  value={form.monthlyExpenses || ''}
-                  onChange={(event) => handleChange('monthlyExpenses', Number(event.target.value) || 0)}
+                  min={0}
+                  step={10}
+                  value={form.monthlyExpenses}
+                  onValueChange={(value) => handleChange('monthlyExpenses', value ?? 0)}
                   placeholder={t('quickProperty.monthlyExpensesPlaceholder')}
                   className={inputClass}
                 />
               </div>
               <div>
                 <label className={`mb-2 block text-sm font-medium ${appTextMutedClass}`}>{basicMode ? t('quickProperty.insuranceOptional') : t('quickProperty.insurance')}</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={form.monthlyInsurance || ''}
-                  onChange={(event) => handleChange('monthlyInsurance', Number(event.target.value) || 0)}
+                <LocalizedNumberInput
+                  min={0}
+                  step={10}
+                  value={form.monthlyInsurance}
+                  onValueChange={(value) => handleChange('monthlyInsurance', value ?? 0)}
                   placeholder={t('quickProperty.insurancePlaceholder')}
                   className={inputClass}
                 />
               </div>
               <div>
                 <label className={`mb-2 block text-sm font-medium ${appTextMutedClass}`}>{basicMode ? t('quickProperty.taxesOptional') : t('quickProperty.taxes')}</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={form.monthlyTaxes || ''}
-                  onChange={(event) => handleChange('monthlyTaxes', Number(event.target.value) || 0)}
+                <LocalizedNumberInput
+                  min={0}
+                  step={10}
+                  value={form.monthlyTaxes}
+                  onValueChange={(value) => handleChange('monthlyTaxes', value ?? 0)}
                   placeholder={t('quickProperty.taxesPlaceholder')}
                   className={inputClass}
                 />
@@ -381,15 +382,15 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
               </div>
               <div className={`${appPanelClass} rounded-[24px] p-5`}>
                 <p className={`text-xs font-medium ${appTextSoftClass}`}>{t('quickProperty.reviewPropertyValue')}</p>
-                <p className={`mt-2 text-base font-semibold ${appTextStrongClass}`}>{propertyValue || 0}</p>
+                <p className={`mt-2 text-base font-semibold ${appTextStrongClass}`}>{formatLocaleNumberInput(propertyValue)}</p>
               </div>
               <div className={`${appPanelClass} rounded-[24px] p-5`}>
                 <p className={`text-xs font-medium ${appTextSoftClass}`}>{t('quickProperty.reviewMonthlyIncome')}</p>
-                <p className={`mt-2 text-base font-semibold ${appTextStrongClass}`}>{form.monthlyRent || 0}</p>
+                <p className={`mt-2 text-base font-semibold ${appTextStrongClass}`}>{formatLocaleNumberInput(form.monthlyRent)}</p>
               </div>
               <div className={`${appPanelClass} rounded-[24px] p-5`}>
                 <p className={`text-xs font-medium ${appTextSoftClass}`}>{t('quickProperty.reviewNetMonthlyResult')}</p>
-                <p className={`mt-2 text-base font-semibold ${netMonthlyResult >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>{netMonthlyResult}</p>
+                <p className={`mt-2 text-base font-semibold ${netMonthlyResult >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>{formatLocaleNumberInput(netMonthlyResult)}</p>
               </div>
             </div>
           </section>

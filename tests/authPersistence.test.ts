@@ -7,6 +7,8 @@ import {
   logoutLocalAccount,
   loadUserSettings,
   normalizeDemoAccountState,
+  registerLocalAccount,
+  normalizeUserOnboardingState,
   saveUserSettings,
   restoreLocalSession,
   makeUserSettingsStorageKey,
@@ -15,6 +17,7 @@ import {
 } from '../src/platforms/web/services/localAccountStore';
 import { DEFAULT_SETTINGS } from '../src/common/utils/settingsStore';
 import { makeSelectedUseCaseIdStorageKey, makeUseCaseSelectionStorageKey } from '../src/common/utils/settingsStore';
+import { defaultWorkspaceConfig } from '../src/common/utils/workspace';
 
 const SESSION_STORAGE_KEY = 're-portfolio-local-session';
 const USERS_STORAGE_KEY = 're-portfolio-local-users';
@@ -202,4 +205,75 @@ test('demo account normalization rewrites stale full-portfolio state back to pro
   assert.deepEqual(normalizedSettings.workspaceConfig.sidebarOrder, ['dashboard', 'properties', 'settings']);
   assert.equal(normalizedPortfolio.properties.length, 0);
   assert.equal(window.localStorage.getItem(makeSelectedUseCaseIdStorageKey(settingsKey)), null);
+});
+
+test('normalizeUserOnboardingState keeps a fresh account pending when only starter sections exist', () => {
+  const { user } = registerLocalAccount({
+    name: 'Fresh User',
+    email: 'fresh@example.com',
+    password: 'fresh-pass',
+  });
+  const freshPortfolio = loadUserPortfolio(user.id);
+  const freshSettings = loadUserSettings(user);
+
+  const normalized = normalizeUserOnboardingState(user, freshPortfolio, freshSettings);
+
+  assert.equal(normalized.onboardingCompleted, false);
+  assert.equal(normalized.onboarding.completed, false);
+  assert.equal(normalized.onboardingStep, 'welcome');
+});
+
+test('normalizeUserOnboardingState treats genuinely customized workspace sections as initialized', () => {
+  const user = {
+    id: 'custom-user',
+    name: 'Custom User',
+    email: 'custom@example.com',
+  };
+  const freshPortfolio = loadUserPortfolio(user.id);
+  const customizedSettings = saveUserSettings(user, {
+    ...loadUserSettings(user),
+    workspaceConfig: {
+      ...defaultWorkspaceConfig,
+      dashboardSections: [
+        ...defaultWorkspaceConfig.dashboardSections,
+        {
+          id: 'custom-section',
+          title: 'Custom',
+          cards: ['portfolio-overview'],
+        },
+      ],
+    },
+  });
+
+  const normalized = normalizeUserOnboardingState(user, freshPortfolio, customizedSettings);
+
+  assert.equal(normalized.onboardingCompleted, true);
+  assert.equal(normalized.onboarding.completed, true);
+  assert.equal(normalized.onboardingStep, null);
+});
+
+test('normalizeUserOnboardingState preserves an already completed onboarding state', () => {
+  const user = {
+    id: 'completed-user',
+    name: 'Completed User',
+    email: 'completed@example.com',
+  };
+  const freshPortfolio = loadUserPortfolio(user.id);
+  const completedSettings = saveUserSettings(user, {
+    ...loadUserSettings(user),
+    onboardingCompleted: true,
+    onboardingStep: null,
+    onboarding: {
+      ...loadUserSettings(user).onboarding,
+      completed: true,
+      basicModeSetupCompleted: true,
+    },
+  });
+
+  const normalized = normalizeUserOnboardingState(user, freshPortfolio, completedSettings);
+
+  assert.equal(normalized.onboardingCompleted, true);
+  assert.equal(normalized.onboarding.completed, true);
+  assert.equal(normalized.onboardingStep, null);
+  assert.equal(normalized.onboarding.basicModeSetupCompleted, true);
 });

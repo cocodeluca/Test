@@ -32,6 +32,16 @@ import type {
 import { normalizeProperties, normalizePropertyRecord } from '../../common/utils/calculations';
 import { createManualProperty } from '../../common/utils/manualProperty';
 import { getPendingOnboardingStep } from '../../common/utils/onboarding';
+import {
+  completeOnboarding,
+  createPendingOnboardingState,
+  beginOnboarding,
+  markReadyToComplete,
+  markTutorialEntryResolved,
+  markWorkspaceInitialized,
+  isOnboardingComplete,
+  resumeOnboardingState,
+} from '../../common/utils/onboardingStateMachine';
 import { enrichOpportunity } from '../../common/utils/opportunities';
 import { enrichRehabProject } from '../../common/utils/rehabProjects';
 import {
@@ -62,11 +72,15 @@ import { fetchEtoroAccountSnapshot } from './services/brokers';
 import {
   loadUserPortfolio,
   LocalAccountUser,
+  clearDemoSessionState,
+  clearDemoAccountSessionPointers,
+  clearDemoAuthArtifacts,
   makeUserSettingsStorageKey,
   resetDemoAccountData,
   importUserAccountBackup,
   saveUserPortfolio,
   saveUserRecoverySnapshot,
+  saveDemoSessionBackup,
   DEMO_ACCOUNT_EMAIL,
   UserPortfolioData,
   safeJsonParse,
@@ -87,11 +101,6 @@ import { APP_RECOVERY_MODE } from './utils/appRecoveryMode';
 const Layout = lazy(() => import('../web/components/Layout').then((module) => ({ default: module.Layout })));
 const AuthScreen = lazy(() =>
   import('../web/components/AuthScreen').then((module) => ({ default: module.AuthScreen }))
-);
-const PostSignupWorkspaceSetup = lazy(() =>
-  import('../web/components/PostSignupWorkspaceSetup').then((module) => ({
-    default: module.PostSignupWorkspaceSetup,
-  }))
 );
 const BasicModeSetupWizard = lazy(() =>
   import('../web/components/BasicModeSetupWizard').then((module) => ({
@@ -149,6 +158,10 @@ const normalizeStoredInvestmentAccounts = (
 const DEMO_TUTORIAL_DISMISSED_KEY = 're-portfolio-demo-tutorial-dismissed';
 const DEMO_TUTORIAL_RESTART_REQUEST_KEY = 're-portfolio-demo-tutorial-restart-request';
 const DEMO_TUTORIAL_ADVANCED_SESSION_KEY = 're-portfolio-demo-advanced-session';
+const DEMO_ONBOARDING_FLOW_SESSION_KEY = 're-portfolio-demo-onboarding-flow';
+const DEMO_SELECTED_USE_CASE_SESSION_KEY = 're-portfolio-demo-selected-use-case';
+const DEMO_ONBOARDING_STAGE_SESSION_KEY = 're-portfolio-demo-onboarding-stage';
+const DEMO_ONBOARDING_DISMISSED_KEY = 're-portfolio-demo-onboarding-dismissed';
 const EMERGENCY_SAFE_MODE = false;
 const NORMAL_MODE_LOG_PREFIX = '[normal-mode]';
 interface DemoTutorialContext {
@@ -213,7 +226,7 @@ const safeDemoStorageGet = (key: string): string | null => {
   }
 
   try {
-    return window.localStorage.getItem(key);
+    return window.sessionStorage.getItem(key);
   } catch (error) {
     console.warn(`${DEMO_SESSION_LOG_PREFIX} localStorage get failed`, {
       key,
@@ -229,7 +242,7 @@ const safeDemoStorageSet = (key: string, value: string): void => {
   }
 
   try {
-    window.localStorage.setItem(key, value);
+    window.sessionStorage.setItem(key, value);
   } catch (error) {
     console.warn(`${DEMO_SESSION_LOG_PREFIX} localStorage set failed`, {
       key,
@@ -244,10 +257,27 @@ const safeDemoStorageRemove = (key: string): void => {
   }
 
   try {
-    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
   } catch (error) {
     console.warn(`${DEMO_SESSION_LOG_PREFIX} localStorage remove failed`, {
       key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const clearDemoAuthAndTutorialPointers = (userEmail?: string | null) => {
+  clearDemoAccountSessionPointers();
+  clearDemoAuthArtifacts(userEmail);
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(DEMO_ONBOARDING_DISMISSED_KEY);
+  } catch (error) {
+    console.warn('[demo-restore] failed to clear demo auth/tutorial pointers', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -279,6 +309,117 @@ const safeUseCaseStorageRemove = (key: string): void => {
   } catch (error) {
     console.warn(`${USECASE_RESTORE_LOG_PREFIX} localStorage remove failed`, {
       outcome: 'fallback',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const safeSessionStorageGet = (key: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch (error) {
+    console.warn(`${DEMO_SESSION_LOG_PREFIX} sessionStorage get failed`, {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+};
+
+const safeSessionStorageSet = (key: string, value: string): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch (error) {
+    console.warn(`${DEMO_SESSION_LOG_PREFIX} sessionStorage set failed`, {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const safeSessionStorageRemove = (key: string): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`${DEMO_SESSION_LOG_PREFIX} sessionStorage remove failed`, {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+const readDemoOnboardingSnapshot = (): ReturnType<typeof resumeOnboardingState> | null => {
+  const raw = safeSessionStorageGet(DEMO_ONBOARDING_FLOW_SESSION_KEY);
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return resumeOnboardingState(JSON.parse(raw));
+  } catch {
+    safeSessionStorageRemove(DEMO_ONBOARDING_FLOW_SESSION_KEY);
+    return null;
+  }
+};
+
+const writeDemoOnboardingSnapshot = (snapshot: ReturnType<typeof resumeOnboardingState> | null) => {
+  if (!snapshot) {
+    safeSessionStorageRemove(DEMO_ONBOARDING_FLOW_SESSION_KEY);
+    safeSessionStorageRemove(DEMO_SELECTED_USE_CASE_SESSION_KEY);
+    safeSessionStorageRemove(DEMO_ONBOARDING_STAGE_SESSION_KEY);
+    return;
+  }
+
+  safeSessionStorageSet(DEMO_ONBOARDING_FLOW_SESSION_KEY, JSON.stringify(snapshot));
+  safeSessionStorageSet(DEMO_SELECTED_USE_CASE_SESSION_KEY, snapshot.selectedUseCaseId ?? '');
+  safeSessionStorageSet(DEMO_ONBOARDING_STAGE_SESSION_KEY, snapshot.lifecycleState);
+};
+
+const getDemoOnboardingSnapshot = (): ReturnType<typeof resumeOnboardingState> =>
+  readDemoOnboardingSnapshot() ?? createPendingOnboardingState();
+
+const clearDemoOnboardingSessionState = () => {
+  writeDemoOnboardingSnapshot(null);
+};
+
+const isDemoOnboardingDismissed = (): boolean => {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(DEMO_ONBOARDING_DISMISSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+};
+
+const setDemoOnboardingDismissed = (dismissed: boolean) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    if (dismissed) {
+      window.localStorage.setItem(DEMO_ONBOARDING_DISMISSED_KEY, 'true');
+    } else {
+      window.localStorage.removeItem(DEMO_ONBOARDING_DISMISSED_KEY);
+    }
+  } catch (error) {
+    console.warn(`${DEMO_SESSION_LOG_PREFIX} demo onboarding dismissal update failed`, {
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -322,7 +463,7 @@ const isCompatibleUseCaseOption = (
 };
 
 const deriveOnboardingDemoFlowState = (args: {
-  isDemoUser: boolean;
+  demoOnboardingLifecycleState: ReturnType<typeof resumeOnboardingState>['lifecycleState'];
   hasExplicitLanguageSelection: boolean;
   hasStoredUseCaseSelection: boolean;
   personalizationCompletedThisSession: boolean;
@@ -332,27 +473,33 @@ const deriveOnboardingDemoFlowState = (args: {
   demoPreviewState: DemoPreviewState | null;
   activeTutorialStepId: string | null;
 }): OnboardingDemoFlowState => {
+  const isDemoOnboardingCompleted = args.demoOnboardingLifecycleState === 'completed';
   const isPersonalizationVisible =
     args.showLanguageSelectionStep || args.showUseCaseSelectionStep;
   const shouldShowPersonalization =
-    args.isDemoUser &&
+    !isDemoOnboardingCompleted &&
     !args.personalizationCompletedThisSession &&
     !args.demoTutorialDismissed &&
     (!args.hasExplicitLanguageSelection || !args.hasStoredUseCaseSelection || isPersonalizationVisible);
 
   const shouldShowLanguageSelection =
+    !isDemoOnboardingCompleted &&
     shouldShowPersonalization &&
     (!args.hasExplicitLanguageSelection || !args.hasStoredUseCaseSelection || args.showLanguageSelectionStep);
 
   const shouldShowUseCaseSelection =
+    !isDemoOnboardingCompleted &&
     shouldShowPersonalization &&
     (args.hasExplicitLanguageSelection || args.hasStoredUseCaseSelection || args.showUseCaseSelectionStep);
 
   const shouldShowTutorial =
-    Boolean(args.activeTutorialStepId) && !shouldShowPersonalization && !shouldShowLanguageSelection;
+    !isDemoOnboardingCompleted &&
+    Boolean(args.activeTutorialStepId) &&
+    !shouldShowPersonalization &&
+    !shouldShowLanguageSelection;
 
   const shouldStartGuidedDemoPreview =
-    args.isDemoUser &&
+    !isDemoOnboardingCompleted &&
     args.demoPreviewState?.mode === 'guided' &&
     !shouldShowPersonalization &&
     !shouldShowTutorial;
@@ -825,6 +972,18 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   const [showLanguageSelectionStep, setShowLanguageSelectionStep] = useState(false);
   const [showUseCaseSelectionStep, setShowUseCaseSelectionStep] = useState(false);
   const [selectedUseCaseId, setSelectedUseCaseId] = useState<string | null>(null);
+  const [demoOnboardingSnapshot, setDemoOnboardingSnapshot] = useState(() => getDemoOnboardingSnapshot());
+  const [demoTutorialDismissed, setDemoTutorialDismissed] = useState(() => {
+    if (typeof window === 'undefined') {
+      return false;
+    }
+
+    try {
+      return window.localStorage.getItem(DEMO_ONBOARDING_DISMISSED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [personalizationCompletedThisSession, setPersonalizationCompletedThisSession] =
     useState(false);
   const personalizationCompletedThisSessionRef = useRef(false);
@@ -858,9 +1017,6 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     () => getAdvancedDemoUseCaseOption(useCaseOptions),
     [useCaseOptions]
   );
-  const demoTutorialDismissed = useMemo(() => {
-    return safeDemoStorageGet(demoTutorialDismissedStorageKey) !== null;
-  }, [demoTutorialDismissedStorageKey]);
   const markPersonalizationCompletedThisSession = useCallback(() => {
     personalizationCompletedThisSessionRef.current = true;
     setPersonalizationCompletedThisSession(true);
@@ -871,21 +1027,36 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   }, []);
   const onboardingDemoFlow = useMemo(
     () =>
-      deriveOnboardingDemoFlowState({
-        isDemoUser,
-        hasExplicitLanguageSelection,
-        hasStoredUseCaseSelection: hasStoredUseCaseSelection(makeUserSettingsStorageKey(user.id)),
-        personalizationCompletedThisSession,
-        showLanguageSelectionStep,
-        showUseCaseSelectionStep,
-        demoTutorialDismissed,
-        demoPreviewState,
-        activeTutorialStepId,
-      }),
+      isDemoUser
+        ? deriveOnboardingDemoFlowState({
+            demoOnboardingLifecycleState: demoOnboardingSnapshot.lifecycleState,
+            hasExplicitLanguageSelection,
+            hasStoredUseCaseSelection: Boolean(demoOnboardingSnapshot.selectedUseCaseId),
+            personalizationCompletedThisSession,
+            showLanguageSelectionStep,
+            showUseCaseSelectionStep,
+            demoTutorialDismissed,
+            demoPreviewState,
+            activeTutorialStepId:
+              demoOnboardingSnapshot.lifecycleState === 'completed' ? null : activeTutorialStepId,
+          })
+        : deriveOnboardingDemoFlowState({
+            demoOnboardingLifecycleState: 'pending',
+            hasExplicitLanguageSelection,
+            hasStoredUseCaseSelection: hasStoredUseCaseSelection(makeUserSettingsStorageKey(user.id)),
+            personalizationCompletedThisSession,
+            showLanguageSelectionStep,
+            showUseCaseSelectionStep,
+            demoTutorialDismissed,
+            demoPreviewState,
+            activeTutorialStepId,
+          }),
     [
       activeTutorialStepId,
-      demoPreviewState,
-      demoTutorialDismissed,
+      demoOnboardingSnapshot.lifecycleState,
+      demoOnboardingSnapshot.selectedUseCaseId,
+    demoPreviewState,
+    demoTutorialDismissed,
       hasExplicitLanguageSelection,
       isDemoUser,
       personalizationCompletedThisSession,
@@ -938,7 +1109,7 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
         ),
       });
 
-      if (persistUseCaseSelection) {
+      if (persistUseCaseSelection && !isDemoUser) {
         setStoredUseCaseSelection(makeUserSettingsStorageKey(user.id), true);
       }
     },
@@ -1035,6 +1206,15 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     setPendingStarterPath(null);
     setCurrentPage('dashboard');
     endForcedAdvancedDemoSession();
+    if (isDemoUser) {
+      setDemoOnboardingSnapshot((currentSnapshot) => {
+        if (currentSnapshot.lifecycleState === 'completed') {
+          return currentSnapshot;
+        }
+
+        return createPendingOnboardingState();
+      });
+    }
   }, [clearTutorialTargetRetry, endForcedAdvancedDemoSession]);
   const resolveDemoStartStepId = useCallback(
     (preferredStepId: string | null = firstDemoTutorialStepId) => {
@@ -1119,6 +1299,14 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       user.name,
     ]
   );
+
+  useEffect(() => {
+    if (!isDemoUser || typeof window === 'undefined') {
+      return;
+    }
+
+    saveDemoSessionBackup(currentBackup);
+  }, [currentBackup, isDemoUser]);
 
   const handleAddProperty = (property: Property) => {
     if (isDemoPreviewActive) {
@@ -1980,12 +2168,21 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       }),
     [activeTutorialStep, workspaceModeState]
   );
+  const shouldShowDemoTutorial =
+    isDemoUser &&
+    !demoTutorialDismissed &&
+    !isOnboardingComplete(demoOnboardingSnapshot) &&
+    onboardingDemoFlow.shouldShowTutorial &&
+    Boolean(activeTutorialStep);
+
+  useEffect(() => {
+    console.info('[demo-tutorial] shouldShowDemoTutorial', shouldShowDemoTutorial);
+  }, [shouldShowDemoTutorial]);
+
   const tutorialTargetId = activeTutorialStep?.targetId ?? null;
-  const pendingOnboardingStep = getPendingOnboardingStep(settings);
-  const shouldShowPostSignupWorkspaceSetup =
-    pendingOnboardingStep !== null &&
-    pendingOnboardingStep !== 'basic-mode-setup' &&
-    user.email.trim().toLowerCase() !== DEMO_ACCOUNT_EMAIL;
+  const pendingOnboardingStep = settings.onboardingFlow
+    ? (isOnboardingComplete(settings.onboardingFlow) ? null : 'welcome')
+    : getPendingOnboardingStep(settings);
   const shouldShowBasicModeSetupWizard =
     pendingOnboardingStep === 'basic-mode-setup' &&
     settings.userMode === 'basic' &&
@@ -2075,16 +2272,48 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   ]);
 
   useEffect(() => {
+    if (demoTutorialDismissed) {
+      return;
+    }
+
     if (onboardingDemoFlow.shouldStartGuidedDemoPreview && activeTutorialStepId === null) {
+      console.info('[demo-tutorial] auto-start preview effect setting first step');
       stopDemoPreview();
     }
   }, [
     activeTutorialStepId,
     onboardingDemoFlow.shouldStartGuidedDemoPreview,
+    demoTutorialDismissed,
     stopDemoPreview,
   ]);
 
   useEffect(() => {
+    if (demoTutorialDismissed) {
+      return;
+    }
+
+    if (!isDemoUser || !demoOnboardingSnapshot.selectedUseCaseId) {
+      return;
+    }
+
+    if (tutorialTargetResolution.status !== 'ready') {
+      return;
+    }
+
+    const readySnapshot = markReadyToComplete(
+      markTutorialEntryResolved(markWorkspaceInitialized(demoOnboardingSnapshot))
+    );
+    if (readySnapshot.lifecycleState !== demoOnboardingSnapshot.lifecycleState) {
+      setDemoOnboardingSnapshot(readySnapshot);
+      writeDemoOnboardingSnapshot(readySnapshot);
+    }
+  }, [demoOnboardingSnapshot, isDemoUser, tutorialTargetResolution.status, demoTutorialDismissed]);
+
+  useEffect(() => {
+    if (demoTutorialDismissed) {
+      return;
+    }
+
     if (!demoPreviewState || demoPreviewState.mode !== 'guided' || typeof window === 'undefined') {
       return;
     }
@@ -2144,31 +2373,6 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     }
   }, [currentPage, workspaceModeState]);
 
-  const handleCompletePostSignupSetup = (payload: {
-    onboarding: UserOnboardingProfile;
-    workspaceConfig: WorkspaceConfig;
-    dashboardSetupMode: 'simple' | 'connected';
-    userMode: 'basic' | 'advanced';
-  }) => {
-    const requiresBasicModeSetup =
-      payload.userMode === 'basic' &&
-      !payload.onboarding.basicModeSetupCompleted &&
-      properties.length === 0;
-
-    updateSettings({
-      userMode: payload.userMode,
-      onboardingCompleted: true,
-      onboardingStep: requiresBasicModeSetup ? 'basic-mode-setup' : null,
-      dashboardSetupMode: payload.dashboardSetupMode,
-      onboarding: payload.onboarding,
-      workspaceConfig: {
-        ...payload.workspaceConfig,
-        userId: user.id,
-        updatedAt: new Date().toISOString(),
-      },
-    });
-  };
-
   const handleChooseStarterPath = (path: StarterPath) => {
     setPendingStarterPath(path);
 
@@ -2203,18 +2407,84 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
 
   const dismissTutorial = () => {
     clearTutorialTargetRetry();
+    console.info('[demo-tutorial] dismissTutorial');
+    setDemoTutorialDismissed(true);
+    setDemoOnboardingDismissed(true);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(demoTutorialDismissedStorageKey, new Date().toISOString());
       window.localStorage.removeItem(demoTutorialRestartRequestStorageKey);
     }
 
     setActiveTutorialStepId(null);
+    if (isDemoUser) {
+      const completedSnapshot = completeOnboarding(demoOnboardingSnapshot);
+      setDemoOnboardingSnapshot(completedSnapshot);
+      writeDemoOnboardingSnapshot(completedSnapshot);
+    } else {
+      updateSettings({
+        onboardingCompleted: true,
+        onboardingStep: null,
+        onboardingFlow: completeOnboarding(settings.onboardingFlow ?? createPendingOnboardingState()),
+        onboarding: {
+          ...settings.onboarding,
+          completed: true,
+        },
+      });
+    }
     stopDemoPreview();
   };
 
+  const exitDemoMode = () => {
+    clearTutorialTargetRetry();
+    console.info('[demo-tutorial] exitDemoMode');
+    setDemoTutorialDismissed(true);
+    setDemoOnboardingDismissed(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(demoTutorialDismissedStorageKey, new Date().toISOString());
+      window.localStorage.removeItem(demoTutorialRestartRequestStorageKey);
+    }
+
+    clearDemoAuthAndTutorialPointers(user.email);
+    stopDemoPreview();
+    setActiveTutorialStepId(null);
+    setShowLanguageSelectionStep(false);
+    setShowUseCaseSelectionStep(false);
+    setSelectedUseCaseId(null);
+
+    if (isDemoUser) {
+      updateSettings({
+        onboardingCompleted: false,
+        onboardingStep: null,
+        onboardingFlow: null,
+        onboarding: {
+          ...settings.onboarding,
+          completed: false,
+        },
+        workspaceConfig: createMinimalWorkspaceConfig(user.id),
+      });
+    }
+
+    onLogout(currentBackup);
+  };
+
+  const finalizeRealAccountOnboarding = useCallback(() => {
+    updateSettings({
+      onboardingCompleted: true,
+      onboardingStep: null,
+      onboardingFlow: completeOnboarding(settings.onboardingFlow ?? createPendingOnboardingState()),
+      onboarding: {
+        ...settings.onboarding,
+        completed: true,
+      },
+    });
+  }, [settings.onboarding, settings.onboardingFlow, updateSettings]);
+
   const replayTutorial = () => {
     resetPersonalizationSessionGate();
+    console.info('[demo-tutorial] replayTutorial');
+    setDemoTutorialDismissed(false);
     if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(DEMO_ONBOARDING_DISMISSED_KEY);
       window.localStorage.removeItem(demoTutorialDismissedStorageKey);
       window.localStorage.removeItem(demoTutorialRestartRequestStorageKey);
     }
@@ -2225,6 +2495,11 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     setShowLanguageSelectionStep(true);
     setShowUseCaseSelectionStep(false);
     setActiveTutorialStepId(null);
+    if (isDemoUser) {
+      const pendingSnapshot = createPendingOnboardingState();
+      setDemoOnboardingSnapshot(pendingSnapshot);
+      writeDemoOnboardingSnapshot(pendingSnapshot);
+    }
   };
 
   const goBackTutorial = useCallback(() => {
@@ -2247,9 +2522,27 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   const advanceTutorial = useCallback(() => {
     clearTutorialTargetRetry();
     setActiveTutorialStepId((currentStepId) => {
-      return resolveNextVisibleTutorialStepId(currentStepId);
+      const nextStepId = resolveNextVisibleTutorialStepId(currentStepId);
+
+      if (!isDemoUser && nextStepId === null) {
+        finalizeRealAccountOnboarding();
+      }
+
+      if (isDemoUser && nextStepId === null) {
+        const completedSnapshot = completeOnboarding(demoOnboardingSnapshot);
+        setDemoOnboardingSnapshot(completedSnapshot);
+        writeDemoOnboardingSnapshot(completedSnapshot);
+      }
+
+      return nextStepId;
     });
-  }, [clearTutorialTargetRetry, resolveNextVisibleTutorialStepId]);
+  }, [
+    clearTutorialTargetRetry,
+    demoOnboardingSnapshot,
+    finalizeRealAccountOnboarding,
+    isDemoUser,
+    resolveNextVisibleTutorialStepId,
+  ]);
 
   const handleTutorialNavigate = (page: PageType) => {
     if (!activeTutorialStep?.requiresAction) {
@@ -2440,6 +2733,9 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     if (isDemoUser) {
       setShowLanguageSelectionStep(false);
       setShowUseCaseSelectionStep(true);
+      const startedSnapshot = beginOnboarding('');
+      setDemoOnboardingSnapshot(startedSnapshot);
+      writeDemoOnboardingSnapshot(startedSnapshot);
       setActiveTutorialStepId(null);
       return;
     }
@@ -2451,10 +2747,16 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   };
 
   const handleSelectUseCaseId = (optionId: string) => {
+    if (isDemoOnboardingDismissed()) {
+      return;
+    }
     setSelectedUseCaseId(optionId);
   };
 
   const handleContinueUseCaseSelection = (selectedOption: UseCaseOption) => {
+    if (isDemoOnboardingDismissed()) {
+      return;
+    }
     const resolvedSelectedOption =
       selectedUseCaseOption ?? resolveUseCaseOptionById(useCaseOptions, selectedOption.id);
 
@@ -2464,6 +2766,11 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
 
     markPersonalizationCompletedThisSession();
     setSelectedUseCaseId(resolvedSelectedOption.id);
+    if (isDemoUser) {
+      const inProgressSnapshot = beginOnboarding(resolvedSelectedOption.id);
+      setDemoOnboardingSnapshot(inProgressSnapshot);
+      writeDemoOnboardingSnapshot(inProgressSnapshot);
+    }
 
     const nextWorkspaceConfig = createOnboardingWorkspaceConfig(
       user.id,
@@ -2489,26 +2796,43 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     startDemoPreview(resolvedSelectedOption, 'guided');
 
     const settingsStorageKey = makeUserSettingsStorageKey(user.id);
-    setStoredUseCaseSelection(settingsStorageKey, true);
-    setStoredSelectedUseCaseId(settingsStorageKey, resolvedSelectedOption.id);
+    if (!isDemoUser) {
+      setStoredUseCaseSelection(settingsStorageKey, true);
+      setStoredSelectedUseCaseId(settingsStorageKey, resolvedSelectedOption.id);
+    }
   };
 
   const handleSkipUseCaseSelection = () => {
     markPersonalizationCompletedThisSession();
     const settingsStorageKey = makeUserSettingsStorageKey(user.id);
-    setStoredUseCaseSelection(settingsStorageKey, true);
-    setStoredSelectedUseCaseId(settingsStorageKey, null);
+    if (!isDemoUser) {
+      setStoredUseCaseSelection(settingsStorageKey, true);
+      setStoredSelectedUseCaseId(settingsStorageKey, null);
+    }
     setSelectedUseCaseId(null);
     setShowUseCaseSelectionStep(false);
 
     const fallbackOption = isDemoUser ? advancedDemoOption : useCaseOptions[0];
     if (fallbackOption) {
+      if (isDemoUser) {
+        const inProgressSnapshot = beginOnboarding(fallbackOption.id);
+        setDemoOnboardingSnapshot(inProgressSnapshot);
+        writeDemoOnboardingSnapshot(inProgressSnapshot);
+      }
       startDemoPreview(fallbackOption, 'guided');
     }
     setActiveTutorialStepId(resolveDemoStartStepId(firstDemoTutorialStepId));
   };
 
   useEffect(() => {
+    const demoOnboardingCompleted = isDemoUser && isOnboardingComplete(demoOnboardingSnapshot);
+    const realAccountOnboardingCompleted =
+      !isDemoUser && Boolean(settings.onboardingFlow) && isOnboardingComplete(settings.onboardingFlow!);
+
+    if (demoTutorialDismissed || demoOnboardingCompleted || realAccountOnboardingCompleted) {
+      return;
+    }
+
     if (onboardingDemoFlow.shouldShowPersonalization) {
       return;
     }
@@ -2526,8 +2850,12 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     activeTutorialStepId,
     demoPreviewState,
     firstDemoTutorialStepId,
+    demoOnboardingSnapshot,
     resolveDemoStartStepId,
+    settings.onboardingFlow,
+    isDemoUser,
     onboardingDemoFlow.shouldShowPersonalization,
+    demoTutorialDismissed,
   ]);
 
   useEffect(() => {
@@ -2570,41 +2898,35 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     updateSettings,
     user.id,
     useCaseOptions,
+    demoTutorialDismissed,
   ]);
 
   useEffect(() => {
-    if (!onboardingDemoFlow.shouldShowUseCaseSelection || typeof window === 'undefined') {
+    if (!isDemoUser || typeof window === 'undefined') {
       return;
     }
 
-    if (selectedUseCaseId !== null) {
+    if (demoTutorialDismissed) {
+      clearDemoOnboardingSessionState();
+      setActiveTutorialStepId(null);
       return;
     }
 
-    const storedSelectedUseCase = readPersistedUseCaseId(makeUserSettingsStorageKey(user.id));
-    if (!storedSelectedUseCase || selectedUseCaseId !== null) {
-      if (!storedSelectedUseCase) {
-        console.warn(`${USECASE_RESTORE_LOG_PREFIX} skipped`, { outcome: 'missing' });
-      }
+    const snapshot = readDemoOnboardingSnapshot();
+    if (!snapshot) {
       return;
     }
 
-    if (!isCompatibleUseCaseOption(storedSelectedUseCase, useCaseOptions, isDemoUser)) {
-      console.warn(`${USECASE_RESTORE_LOG_PREFIX} skipped`, { outcome: 'invalid' });
-      safeUseCaseStorageRemove(makeUserSettingsStorageKey(user.id));
-      return;
+    setDemoOnboardingSnapshot(snapshot);
+    if (snapshot.selectedUseCaseId) {
+      setSelectedUseCaseId(snapshot.selectedUseCaseId);
     }
-
-    const storedOption = resolveUseCaseOptionById(useCaseOptions, storedSelectedUseCase);
-    if (storedOption) {
-      setSelectedUseCaseId(storedOption.id);
-      console.warn(`${USECASE_RESTORE_LOG_PREFIX} restored`, { outcome: 'restored' });
-      return;
+    if (snapshot.lifecycleState === 'completed') {
+      setShowLanguageSelectionStep(false);
+      setShowUseCaseSelectionStep(false);
+      setActiveTutorialStepId(null);
     }
-
-    console.warn(`${USECASE_RESTORE_LOG_PREFIX} skipped`, { outcome: 'missing' });
-    safeUseCaseStorageRemove(makeUserSettingsStorageKey(user.id));
-  }, [onboardingDemoFlow.shouldShowUseCaseSelection, selectedUseCaseId, user.id, useCaseOptions]);
+  }, [isDemoUser, user.id, demoTutorialDismissed]);
 
   if (isPreparingDemoSession && !isAdvancedDemoLayoutReady) {
     return null;
@@ -2631,16 +2953,30 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
                   currentUserName={user.name}
                   currentUserEmail={user.email}
                   onLogout={handleLogoutWithDebug}
+                  onExitDemo={isDemoUser ? exitDemoMode : undefined}
                   tutorialTargetId={tutorialTargetId}
                   workspaceModeState={workspaceModeState}
                   demoPreview={
                     isDemoPreviewActive
                       ? {
                           active: true,
-                          onExit: stopDemoPreview,
-                          onStartWithRealData: stopDemoPreview,
+                          onExit: () => {
+                            stopDemoPreview();
+                            if (isDemoUser) {
+                              clearDemoAuthAndTutorialPointers(user.email);
+                            }
+                          },
+                          onStartWithRealData: () => {
+                            stopDemoPreview();
+                            if (isDemoUser) {
+                              clearDemoAuthAndTutorialPointers(user.email);
+                            }
+                          },
                           onAddFirstProperty: () => {
                             stopDemoPreview();
+                            if (isDemoUser) {
+                              clearDemoAuthAndTutorialPointers(user.email);
+                            }
                             handleChooseStarterPath('manual-property');
                           },
                           onReplay:
@@ -2738,35 +3074,19 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
                   />
                 </SectionCrashBoundary>
               ) : null}
-              {onboardingDemoFlow.shouldShowTutorial && activeTutorialStep ? (
+              {shouldShowDemoTutorial ? (
                 <SectionCrashBoundary sectionName="demo/onboarding route">
                   <DemoMountLogger />
                   <DemoGuidedTutorial
-                    step={activeTutorialStep}
+                    step={activeTutorialStep!}
                     stepIndex={Math.max(activeTutorialVisibleIndex, 0)}
                     totalSteps={activeDemoTutorialSteps.length}
                     targetStatus={tutorialTargetResolution.status}
                     onBack={goBackTutorial}
                     onNext={advanceTutorial}
+                    onClose={dismissTutorial}
                     onSkip={dismissTutorial}
-                  />
-                </SectionCrashBoundary>
-              ) : null}
-              {shouldShowPostSignupWorkspaceSetup ? (
-                <SectionCrashBoundary sectionName="demo/onboarding route">
-                  <DemoMountLogger />
-                  <PostSignupWorkspaceSetup
-                    userId={user.id}
-                    userName={user.name}
-                    initialStage={pendingOnboardingStep}
-                    initialUserMode={settings.userMode}
-                    initialTrackingPreference={settings.onboarding.trackingPreference ?? 'properties-and-rent'}
-                    initialOnboarding={settings.onboarding}
-                    onChooseStarterPath={handleChooseStarterPath}
-                    onUpdateStep={(step: import('../../common/types/settings').OnboardingStep | null) =>
-                      updateSettings({ onboardingStep: step })
-                    }
-                    onComplete={handleCompletePostSignupSetup}
+                    onExitDemo={isDemoUser ? exitDemoMode : undefined}
                   />
                 </SectionCrashBoundary>
               ) : null}
@@ -2796,8 +3116,10 @@ function WebAppContent() {
     handleRegister,
     handleLogout,
   } = useAuthBootstrapController();
+  const previousUserRef = useRef<LocalAccountUser | null>(null);
 
   const handleSocialAuth = async (provider: 'google' | 'apple' | 'microsoft') => {
+    clearDemoSessionState();
     throw new Error(
       `${provider[0].toUpperCase()}${provider.slice(1)} sign-in UI is ready, but the secure OAuth backend is not configured yet. Next step: add provider credentials, callback routes, and session exchange.`
     );
@@ -2810,6 +3132,28 @@ function WebAppContent() {
   useEffect(() => {
     console.info(`${BOOT_LOG_PREFIX} initial screen rendered`);
   }, []);
+
+  useEffect(() => {
+    console.info('[auth] currentUser changed.', {
+      currentUser: currentUser
+        ? {
+            id: currentUser.id,
+            email: currentUser.email,
+            isDemoUser: currentUser.email.trim().toLowerCase() === DEMO_ACCOUNT_EMAIL,
+          }
+        : null,
+    });
+  }, [currentUser]);
+
+  useEffect(() => {
+    const previousUser = previousUserRef.current;
+
+    if (!currentUser && previousUser?.email.trim().toLowerCase() === DEMO_ACCOUNT_EMAIL) {
+      clearDemoAuthAndTutorialPointers(previousUser.email);
+    }
+
+    previousUserRef.current = currentUser;
+  }, [currentUser]);
 
   if (!currentUser) {
     if (isAuthBootstrapLoading) {

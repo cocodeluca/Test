@@ -6,6 +6,7 @@ import {
   hasStoredLanguageSelection,
   safeLocalStorageGet,
   safeLocalStorageSet,
+  resolveLegacyCurrencyDefaults,
   setCurrentSettings,
   setStoredLanguageSelection,
 } from '../../../common/utils/settingsStore';
@@ -21,6 +22,7 @@ import {
 import { translate } from '../i18n/translations';
 import { fetchLatestFxRates } from '../services/fx';
 import { useAppSafety } from './AppSafetyContext';
+import { isOnboardingComplete, resumeOnboardingState } from '../../../common/utils/onboardingStateMachine';
 
 interface FxSyncStatus {
   isRefreshing: boolean;
@@ -106,17 +108,24 @@ const getInitialSettings = (storageKey: string): AppSettings => {
               : DEFAULT_SETTINGS.workspaceConfig.kpiOrder,
           })
         : DEFAULT_SETTINGS.workspaceConfig;
+    const onboardingFlow = parsedValue.onboardingFlow
+      ? resumeOnboardingState(parsedValue.onboardingFlow)
+      : null;
+    const onboardingCompleted = onboardingFlow
+      ? isOnboardingComplete(onboardingFlow)
+      : parsedValue.onboardingCompleted ?? parsedValue.onboarding?.completed ?? false;
+    const onboardingStep =
+      onboardingFlow && !isOnboardingComplete(onboardingFlow)
+        ? 'welcome'
+        : parsedValue.onboardingStep ??
+          (onboardingCompleted ? null : DEFAULT_SETTINGS.onboardingStep);
     const mergedSettings: AppSettings = {
       ...DEFAULT_SETTINGS,
-      ...parsedValue,
+      ...resolveLegacyCurrencyDefaults(parsedValue),
       theme: parsedValue.theme ?? DEFAULT_SETTINGS.theme,
-      onboardingCompleted:
-        parsedValue.onboardingCompleted ?? parsedValue.onboarding?.completed ?? false,
-      onboardingStep:
-        parsedValue.onboardingStep ??
-        ((parsedValue.onboardingCompleted ?? parsedValue.onboarding?.completed ?? false)
-          ? null
-          : DEFAULT_SETTINGS.onboardingStep),
+      onboardingFlow,
+      onboardingCompleted,
+      onboardingStep,
       profile: {
         ...DEFAULT_SETTINGS.profile,
         ...parsedValue.profile,
@@ -318,17 +327,22 @@ export const SettingsProvider: React.FC<{
     setSettings((currentSettings) => ({
       ...currentSettings,
       ...updates,
-      onboardingCompleted:
-        updates.onboardingCompleted ??
-        updates.onboarding?.completed ??
-        currentSettings.onboardingCompleted ??
-        currentSettings.onboarding.completed,
-      onboardingStep:
-        updates.onboardingStep !== undefined
-          ? updates.onboardingStep
-          : updates.onboardingCompleted === true || updates.onboarding?.completed === true
-          ? null
-          : currentSettings.onboardingStep,
+      onboardingFlow: updates.onboardingFlow
+        ? resumeOnboardingState(updates.onboardingFlow)
+        : currentSettings.onboardingFlow ?? null,
+      onboardingCompleted: currentSettings.onboardingFlow
+        ? isOnboardingComplete(currentSettings.onboardingFlow)
+        : updates.onboardingCompleted ??
+          updates.onboarding?.completed ??
+          currentSettings.onboardingCompleted ??
+          currentSettings.onboarding.completed,
+      onboardingStep: currentSettings.onboardingFlow
+        ? (isOnboardingComplete(currentSettings.onboardingFlow) ? null : currentSettings.onboardingStep ?? 'welcome')
+        : updates.onboardingStep !== undefined
+        ? updates.onboardingStep
+        : updates.onboardingCompleted === true || updates.onboarding?.completed === true
+        ? null
+        : currentSettings.onboardingStep,
       profile: {
         ...currentSettings.profile,
         ...updates.profile,
@@ -376,7 +390,7 @@ export const SettingsProvider: React.FC<{
       updateSettings,
       updateProfile,
       t: (key, replacements) => translate(settings.language, key, replacements),
-      formatPreviewCurrency: (amount) => formatCurrency(amount, 'EUR'),
+      formatPreviewCurrency: (amount) => formatCurrency(amount, settings.reportingCurrency ?? settings.currency),
       formatPreviewNumber: (amount, decimals = 0) => formatNumber(amount, decimals),
       formatPreviewDate: (dateString) => formatDate(dateString),
     }),

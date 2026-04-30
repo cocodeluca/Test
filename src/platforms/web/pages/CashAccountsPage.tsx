@@ -36,6 +36,7 @@ import {
   appTextStrongClass,
 } from '../styles/dashboardTheme';
 import { CompactEditModal } from '../components/CompactEditModal';
+import { LocalizedNumberInput } from '../components/LocalizedNumberInput';
 import { useSettings } from '../context/SettingsContext';
 import { openBankingAdapters } from '../services/openBanking';
 
@@ -502,8 +503,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             ) : null}
             {manualEditorMode === 'full' || manualEditorSection === 'balances' ? (
               <div className="grid gap-4 sm:grid-cols-2">
-                <div><label className={labelClass}>{t('cashAccounts.currentBalance')}</label><input type="number" value={editingAccount.currentBalance} onChange={(event) => setEditingAccount({ ...editingAccount, currentBalance: Number(event.target.value) || 0, balance: Number(event.target.value) || 0 })} className={inputClass} /></div>
-                <div><label className={labelClass}>{t('cashAccounts.availableBalance')}</label><input type="number" value={editingAccount.availableBalance ?? ''} onChange={(event) => setEditingAccount({ ...editingAccount, availableBalance: event.target.value === '' ? null : Number(event.target.value) || 0 })} className={inputClass} /></div>
+                <div><label className={labelClass}>{t('cashAccounts.currentBalance')}</label><LocalizedNumberInput value={editingAccount.currentBalance} onValueChange={(value) => setEditingAccount({ ...editingAccount, currentBalance: value ?? 0, balance: value ?? 0 })} className={inputClass} /></div>
+                <div><label className={labelClass}>{t('cashAccounts.availableBalance')}</label><LocalizedNumberInput value={editingAccount.availableBalance} onValueChange={(value) => setEditingAccount({ ...editingAccount, availableBalance: value })} className={inputClass} /></div>
               </div>
             ) : null}
             {manualEditorMode === 'full' || manualEditorSection === 'notes' ? (

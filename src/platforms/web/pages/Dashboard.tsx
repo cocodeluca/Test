@@ -28,6 +28,7 @@ import { calculatePortfolioMetrics } from '../../../common/utils/calculations';
 import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { formatCurrencyValue, formatPercentage } from '../../../common/utils/formatting';
 import { convertCurrency } from '../../../common/utils/currency';
+import { resolveDisplayCurrency } from '../../../common/utils/metricCurrency';
 import {
   CashAccount,
   InvestmentAccount,
@@ -236,6 +237,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const activeFxSnapshot = getActiveFxSnapshot(settings);
   const fxRates = getSettingsCurrencyRates(settings);
   const [showWealthEditor, setShowWealthEditor] = useState(false);
+  const displayMode = settings.displayMode ?? 'single-reporting-currency';
+  const reportingCurrency = resolveDisplayCurrency({ domain: 'reporting', settings });
+  const valueCurrency = resolveDisplayCurrency({ domain: 'value', settings });
+  const operatingCurrency = resolveDisplayCurrency({ domain: 'operating', settings });
 
   const metrics = useMemo(
     () =>
@@ -244,10 +249,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
         mortgages,
         cashAccounts,
         investmentAccounts,
-        settings.currency,
+        reportingCurrency,
         fxRates
       ),
-    [properties, mortgages, cashAccounts, investmentAccounts, settings.currency, fxRates]
+    [
+      properties,
+      mortgages,
+      cashAccounts,
+      investmentAccounts,
+      displayMode,
+      reportingCurrency,
+      valueCurrency,
+      operatingCurrency,
+      fxRates,
+    ]
   );
 
   useEffect(() => {
@@ -257,15 +272,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
       status: activeFxSnapshot?.status ?? 'error',
       fetchedAt: activeFxSnapshot?.fetchedAt ?? null,
       lastSuccessfulUpdateAt: activeFxSnapshot?.lastSuccessfulUpdateAt ?? null,
-      reportingCurrency: settings.currency,
+      displayMode,
+      reportingCurrency,
+      valueCurrency,
+      operatingCurrency,
       rates: fxRates,
     });
-  }, [activeFxSnapshot, fxRates, settings.currency]);
+  }, [activeFxSnapshot, displayMode, fxRates, operatingCurrency, reportingCurrency, valueCurrency]);
 
-  const dashboardValuationDisplayCurrency: DisplayCurrency =
-    settings.currency === 'ARS' ? 'USD' : metrics.valuationDisplayCurrency;
-  const dashboardOperatingDisplayCurrency: DisplayCurrency =
-    settings.currency === 'ARS' ? 'ARS' : metrics.operatingDisplayCurrency;
+  const dashboardValuationDisplayCurrency: DisplayCurrency = resolveDisplayCurrency({
+    domain: 'value',
+    settings,
+  });
+  const dashboardOperatingDisplayCurrency: DisplayCurrency = resolveDisplayCurrency({
+    domain: 'operating',
+    settings,
+  });
 
   const formatDashboardCurrency = (
     value: number,

@@ -75,6 +75,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onboardingStep: 'welcome',
   showAdvancedBasicModeFeatures: false,
   currency: 'EUR',
+  displayMode: 'single-reporting-currency',
+  valueCurrency: undefined,
+  operatingCurrency: undefined,
+  reportingCurrency: undefined,
   usdToEurRate: 0.92,
   arsToEurRate: 0.00092,
   usdToEurRateSource: 'manual',
@@ -109,6 +113,18 @@ export const setCurrentSettings = (settings: AppSettings) => {
 };
 
 export const getCurrentSettings = (): AppSettings => currentSettings;
+
+export const resolveLegacyCurrencyDefaults = (settings: Partial<AppSettings>): Partial<AppSettings> => {
+  const legacyCurrency = settings.currency;
+
+  return {
+    ...settings,
+    reportingCurrency: settings.reportingCurrency ?? legacyCurrency,
+    valueCurrency: settings.valueCurrency ?? legacyCurrency,
+    operatingCurrency: settings.operatingCurrency ?? legacyCurrency,
+    displayMode: settings.displayMode ?? DEFAULT_SETTINGS.displayMode,
+  };
+};
 
 export const hasStoredLanguageSelection = (
   storageKey: string = DEFAULT_SETTINGS_STORAGE_KEY
