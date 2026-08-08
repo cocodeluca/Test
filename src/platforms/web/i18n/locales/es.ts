@@ -648,6 +648,18 @@ export const es = {
     appearanceDescription: 'Ajusta el tema visual y la densidad de la interfaz.',
     localizationDescription: 'Controla el idioma y el formato regional en toda la app.',
     taxProfileDescription: 'Supuestos fiscales ligeros a nivel usuario que se usan como valores por defecto en las estimaciones.',
+    fxSection: {
+      title: 'Tipos de cambio',
+      description: 'Los tipos se actualizan automaticamente una vez por dia local y siguen disponibles sin conexion.',
+      base: 'Moneda base',
+      provider: 'Fuente',
+      lastUpdated: 'Ultima actualizacion correcta',
+      status: 'Estado',
+      current: 'Actualizado',
+      stale: 'Tipos en cache desactualizados',
+      refresh: 'Actualizar tipos de cambio',
+      refreshing: 'Actualizando tipos de cambio',
+    },
     fields: {
       name: 'Nombre',
       email: 'Email',

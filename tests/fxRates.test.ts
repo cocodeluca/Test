@@ -150,13 +150,13 @@ const createProperty = (overrides: Partial<Property>): Property => ({
   primaryImageIndex: overrides.primaryImageIndex ?? 0,
 });
 
-test('detects stale FX cache from fetched timestamp', () => {
+test('requires a complete snapshot even when a legacy fetched timestamp is from today', () => {
   const now = new Date('2026-04-14T12:00:00.000Z');
 
   assert.equal(areFxRatesStale({ fxRatesFetchedAt: null }, now), true);
   assert.equal(
     areFxRatesStale({ fxRatesFetchedAt: '2026-04-14T08:00:00.000Z' }, now),
-    false
+    true
   );
   assert.equal(
     areFxRatesStale({ fxRatesFetchedAt: '2026-04-12T08:00:00.000Z' }, now),
@@ -168,7 +168,7 @@ test('applies fetched FX snapshot as centralized rates', () => {
   const settings = buildSettings();
   const snapshot: FxSnapshot = createFxSnapshot({
     provider: 'Frankfurter',
-    rates: { EUR: 1, USD: 0.8, ARS: 0.0012 },
+    rates: { EUR: 1, USD: 0.8, ARS: 0.0012, GBP: 0.7 },
     fetchedAt: '2026-04-14T12:00:00.000Z',
     lastSuccessfulUpdateAt: '2026-04-14T12:00:00.000Z',
     status: 'fresh',
@@ -187,7 +187,7 @@ test('falls back to cached FX rates with a warning when refresh fails', () => {
   const settings = buildSettings({
     fxSnapshot: createFxSnapshot({
       provider: 'Frankfurter',
-      rates: { EUR: 1, USD: 0.81, ARS: 0.0011 },
+      rates: { EUR: 1, USD: 0.81, ARS: 0.0011, GBP: 0.7 },
       fetchedAt: '2026-04-13T11:00:00.000Z',
       lastSuccessfulUpdateAt: '2026-04-13T11:00:00.000Z',
       status: 'fresh',
@@ -210,7 +210,7 @@ test('keeps fresh cached FX rates without marking them stale', () => {
   const settings = buildSettings({
     fxSnapshot: createFxSnapshot({
       provider: 'Frankfurter',
-      rates: { EUR: 1, USD: 0.82, ARS: 0.00115 },
+      rates: { EUR: 1, USD: 0.82, ARS: 0.00115, GBP: 0.7 },
       fetchedAt: '2026-04-14T11:30:00.000Z',
       lastSuccessfulUpdateAt: '2026-04-14T11:30:00.000Z',
       status: 'fresh',
@@ -258,14 +258,14 @@ test('legacy cache with timestamps is migrated into a validated FX snapshot on r
 
   assert.equal(restored.fxSnapshot?.provider, 'manual (legacy cache)');
   assert.equal(restored.fxSnapshot?.lastSuccessfulUpdateAt, '2026-04-13T18:10:00.000Z');
-  assert.equal(restored.fxSnapshot?.status, 'cached');
+  assert.equal(restored.fxSnapshot?.status, 'stale');
 });
 
 test('snapshot rates are inverted into to-EUR settings values', () => {
   const settings = buildSettings();
   const snapshot = createFxSnapshot({
     provider: 'Frankfurter',
-    rates: { EUR: 1, USD: 1.1782, ARS: 1602.368416 },
+    rates: { EUR: 1, USD: 1.1782, ARS: 1602.368416, GBP: 0.86 },
     fetchedAt: '2026-04-14T12:00:00.000Z',
     lastSuccessfulUpdateAt: '2026-04-14T12:00:00.000Z',
     status: 'fresh',
@@ -296,7 +296,7 @@ test('legacy cache without timestamps is rejected as invalid fallback', () => {
 test('warning formatter shows the real UTC timestamp', () => {
   const snapshot = createFxSnapshot({
     provider: 'Frankfurter',
-    rates: { EUR: 1, USD: 0.82, ARS: 0.00115 },
+    rates: { EUR: 1, USD: 0.82, ARS: 0.00115, GBP: 0.7 },
     fetchedAt: '2026-04-14T09:32:00.000Z',
     lastSuccessfulUpdateAt: '2026-04-14T09:32:00.000Z',
     status: 'cached',
@@ -312,7 +312,7 @@ test('warning formatter shows the real UTC timestamp', () => {
 test('invalid provider response does not corrupt an existing FX cache', () => {
   const cachedSnapshot = createFxSnapshot({
     provider: 'Frankfurter',
-    rates: { EUR: 1, USD: 0.82, ARS: 0.00115 },
+    rates: { EUR: 1, USD: 0.82, ARS: 0.00115, GBP: 0.7 },
     fetchedAt: '2026-04-14T09:32:00.000Z',
     lastSuccessfulUpdateAt: '2026-04-14T09:32:00.000Z',
     status: 'fresh',
@@ -349,7 +349,7 @@ test('cashflow calculations use centralized FX rates from settings', () => {
     buildSettings({
       fxSnapshot: createFxSnapshot({
         provider: 'Frankfurter',
-        rates: { EUR: 1, USD: 2, ARS: 500 },
+        rates: { EUR: 1, USD: 2, ARS: 500, GBP: 0.8 },
         fetchedAt: '2026-04-14T12:00:00.000Z',
         lastSuccessfulUpdateAt: '2026-04-14T12:00:00.000Z',
         status: 'fresh',

@@ -649,6 +649,18 @@ export const en = {
     appearanceDescription: 'Adjust the visual theme and density of the interface.',
     localizationDescription: 'Control language and regional formatting behavior across the app.',
     taxProfileDescription: 'Lightweight user-level tax assumptions used as defaults for property tax estimates.',
+    fxSection: {
+      title: 'Exchange rates',
+      description: 'Rates refresh automatically once per local calendar day and remain available offline.',
+      base: 'Base currency',
+      provider: 'Source',
+      lastUpdated: 'Last successful update',
+      status: 'Status',
+      current: 'Current',
+      stale: 'Stale cached rates',
+      refresh: 'Refresh exchange rates',
+      refreshing: 'Refreshing exchange rates',
+    },
     fields: {
       name: 'Name',
       email: 'Email',

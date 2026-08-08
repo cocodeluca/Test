@@ -3,7 +3,7 @@ import { createFxSnapshot, type FxSnapshot } from '../src/common/utils/fxRates';
 interface JsonProviderDefinition {
   name: string;
   url: string;
-  parseRates: (payload: unknown) => { USD: number; ARS: number };
+  parseRates: (payload: unknown) => { USD: number; ARS: number; GBP: number };
 }
 
 const FX_FETCH_TIMEOUT_MS = 10000;
@@ -22,7 +22,7 @@ const readPositiveRate = (value: unknown, label: string): number => {
 const FX_PROVIDERS: JsonProviderDefinition[] = [
   {
     name: 'Frankfurter',
-    url: 'https://api.frankfurter.app/latest?from=EUR&to=USD,ARS',
+    url: 'https://api.frankfurter.app/latest?from=EUR&to=USD,ARS,GBP',
     parseRates: (payload) => {
       if (!isObject(payload) || !isObject(payload.rates)) {
         throw new Error('Frankfurter payload did not include a rates object');
@@ -31,6 +31,7 @@ const FX_PROVIDERS: JsonProviderDefinition[] = [
       return {
         USD: readPositiveRate(payload.rates.USD, 'Frankfurter USD rate'),
         ARS: readPositiveRate(payload.rates.ARS, 'Frankfurter ARS rate'),
+        GBP: readPositiveRate(payload.rates.GBP, 'Frankfurter GBP rate'),
       };
     },
   },
@@ -45,17 +46,22 @@ const FX_PROVIDERS: JsonProviderDefinition[] = [
       return {
         USD: readPositiveRate(payload.rates.USD, 'ExchangeRate-API USD rate'),
         ARS: readPositiveRate(payload.rates.ARS, 'ExchangeRate-API ARS rate'),
+        GBP: readPositiveRate(payload.rates.GBP, 'ExchangeRate-API GBP rate'),
       };
     },
   },
 ];
 
-const fetchProviderSnapshot = async (provider: JsonProviderDefinition): Promise<FxSnapshot> => {
+const fetchProviderSnapshot = async (
+  provider: JsonProviderDefinition,
+  fetchImpl: typeof fetch,
+  now: () => Date
+): Promise<FxSnapshot> => {
   const abortController = new AbortController();
   const timeout = setTimeout(() => abortController.abort(), FX_FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(provider.url, {
+    const response = await fetchImpl(provider.url, {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -72,14 +78,16 @@ const fetchProviderSnapshot = async (provider: JsonProviderDefinition): Promise<
 
     const payload = (await response.json()) as unknown;
     const rates = provider.parseRates(payload);
-    const fetchedAt = new Date().toISOString();
+    const fetchedAt = now().toISOString();
 
     return createFxSnapshot({
       provider: provider.name,
+      baseCurrency: 'EUR',
       rates: {
         EUR: 1,
         USD: rates.USD,
         ARS: rates.ARS,
+        GBP: rates.GBP,
       },
       fetchedAt,
       lastSuccessfulUpdateAt: fetchedAt,
@@ -90,12 +98,15 @@ const fetchProviderSnapshot = async (provider: JsonProviderDefinition): Promise<
   }
 };
 
-export const fetchLatestFxRates = async (): Promise<FxSnapshot> => {
+export const fetchLatestFxRatesWith = async (
+  fetchImpl: typeof fetch,
+  now: () => Date = () => new Date()
+): Promise<FxSnapshot> => {
   const errors: string[] = [];
 
   for (const provider of FX_PROVIDERS) {
     try {
-      return await fetchProviderSnapshot(provider);
+      return await fetchProviderSnapshot(provider, fetchImpl, now);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unexpected provider error';
       errors.push(`${provider.name}: ${message}`);
@@ -104,3 +115,6 @@ export const fetchLatestFxRates = async (): Promise<FxSnapshot> => {
 
   throw new Error(`All FX providers failed. ${errors.join(' | ')}`);
 };
+
+export const fetchLatestFxRates = async (): Promise<FxSnapshot> =>
+  fetchLatestFxRatesWith(fetch);

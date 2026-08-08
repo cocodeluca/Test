@@ -28,10 +28,10 @@ type PartialFxSettings = Pick<
   | 'fxSnapshot'
 >;
 
-export const FX_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24;
 const DEFAULT_ARS_TO_EUR_RATE = 0.00092;
 const DEFAULT_USD_TO_EUR_RATE = 0.92;
-const FX_REQUIRED_QUOTES: DisplayCurrency[] = ['EUR', 'USD', 'ARS'];
+const DEFAULT_GBP_TO_EUR_RATE = 1.17;
+export const FX_SUPPORTED_CURRENCIES: DisplayCurrency[] = ['EUR', 'USD', 'ARS', 'GBP'];
 
 const isPositiveNumber = (value: number | null | undefined): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0;
@@ -49,29 +49,42 @@ const getSnapshotRateRecord = (
   quoteCurrency: DisplayCurrency
 ): FxRateRecord | undefined =>
   snapshot.rates.find(
-    (record) => record.baseCurrency === 'EUR' && record.quoteCurrency === quoteCurrency
+    (record) =>
+      record.baseCurrency === snapshot.baseCurrency && record.quoteCurrency === quoteCurrency
   );
 
 const buildRateRecord = (
+  baseCurrency: DisplayCurrency,
   quoteCurrency: DisplayCurrency,
   rate: number
 ): FxRateRecord => ({
-  baseCurrency: 'EUR',
+  baseCurrency,
   quoteCurrency,
   rate,
 });
 
-const buildSnapshotRateMap = (snapshot: FxSnapshot): Record<DisplayCurrency, number> => ({
-  EUR: 1,
-  USD: (() => {
-    const rate = getSnapshotRateRecord(snapshot, 'USD')?.rate;
-    return rate && rate > 0 ? 1 / rate : DEFAULT_USD_TO_EUR_RATE;
-  })(),
-  ARS: (() => {
-    const rate = getSnapshotRateRecord(snapshot, 'ARS')?.rate;
-    return rate && rate > 0 ? 1 / rate : DEFAULT_ARS_TO_EUR_RATE;
-  })(),
-});
+const getDefaultEurRate = (currency: DisplayCurrency): number => {
+  if (currency === 'USD') return DEFAULT_USD_TO_EUR_RATE;
+  if (currency === 'ARS') return DEFAULT_ARS_TO_EUR_RATE;
+  if (currency === 'GBP') return DEFAULT_GBP_TO_EUR_RATE;
+  return 1;
+};
+
+const buildSnapshotRateMap = (snapshot: FxSnapshot): Record<DisplayCurrency, number> => {
+  const eurQuoteRate = getSnapshotRateRecord(snapshot, 'EUR')?.rate;
+
+  return FX_SUPPORTED_CURRENCIES.reduce<Record<DisplayCurrency, number>>(
+    (rates, currency) => {
+      const quoteRate = getSnapshotRateRecord(snapshot, currency)?.rate;
+      rates[currency] =
+        isPositiveNumber(eurQuoteRate) && isPositiveNumber(quoteRate)
+          ? eurQuoteRate / quoteRate
+          : getDefaultEurRate(currency);
+      return rates;
+    },
+    { EUR: 1, USD: DEFAULT_USD_TO_EUR_RATE, ARS: DEFAULT_ARS_TO_EUR_RATE, GBP: DEFAULT_GBP_TO_EUR_RATE }
+  );
+};
 
 export const formatFxTimestampUtc = (value: string): string => {
   const parsedDate = new Date(value);
@@ -91,27 +104,45 @@ export const formatFxTimestampUtc = (value: string): string => {
 
 export const createFxSnapshot = ({
   provider,
+  baseCurrency = 'EUR',
   rates,
   fetchedAt,
   lastSuccessfulUpdateAt,
   status,
 }: {
   provider: string;
+  baseCurrency?: DisplayCurrency;
   rates: Record<DisplayCurrency, number>;
   fetchedAt: string;
   lastSuccessfulUpdateAt: string;
   status: FxSnapshotStatus;
 }): FxSnapshot => ({
+  baseCurrency,
   provider,
   fetchedAt,
   lastSuccessfulUpdateAt,
   status,
-  rates: FX_REQUIRED_QUOTES.map((quoteCurrency) =>
-    buildRateRecord(quoteCurrency, quoteCurrency === 'EUR' ? 1 : rates[quoteCurrency])
+  rates: FX_SUPPORTED_CURRENCIES.map((quoteCurrency) =>
+    buildRateRecord(baseCurrency, quoteCurrency, quoteCurrency === baseCurrency ? 1 : rates[quoteCurrency])
   ),
 });
 
-export const isValidFxSnapshot = (snapshot: FxSnapshot | null | undefined): snapshot is FxSnapshot => {
+const normalizeSnapshotShape = (snapshot: FxSnapshot): FxSnapshot => {
+  const legacyBaseCurrency = snapshot.rates[0]?.baseCurrency ?? 'EUR';
+  const baseCurrency = FX_SUPPORTED_CURRENCIES.includes(snapshot.baseCurrency)
+    ? snapshot.baseCurrency
+    : FX_SUPPORTED_CURRENCIES.includes(legacyBaseCurrency)
+    ? legacyBaseCurrency
+    : 'EUR';
+
+  return {
+    ...snapshot,
+    baseCurrency,
+    rates: snapshot.rates.map((record) => ({ ...record, baseCurrency })),
+  };
+};
+
+const isUsableFxSnapshot = (snapshot: FxSnapshot | null | undefined): snapshot is FxSnapshot => {
   if (!snapshot || typeof snapshot.provider !== 'string' || snapshot.provider.trim().length === 0) {
     return false;
   }
@@ -120,10 +151,66 @@ export const isValidFxSnapshot = (snapshot: FxSnapshot | null | undefined): snap
     return false;
   }
 
-  return FX_REQUIRED_QUOTES.every((quoteCurrency) => {
-    const rate = getSnapshotRateRecord(snapshot, quoteCurrency)?.rate;
-    return quoteCurrency === 'EUR' ? rate === 1 : isPositiveNumber(rate);
+  const normalizedSnapshot = normalizeSnapshotShape(snapshot);
+  return ['EUR', 'USD', 'ARS'].every((quoteCurrency) => {
+    const rate = getSnapshotRateRecord(
+      normalizedSnapshot,
+      quoteCurrency as DisplayCurrency
+    )?.rate;
+    return quoteCurrency === normalizedSnapshot.baseCurrency ? rate === 1 : isPositiveNumber(rate);
   });
+};
+
+export const isValidFxSnapshot = (snapshot: FxSnapshot | null | undefined): snapshot is FxSnapshot => {
+  if (!isUsableFxSnapshot(snapshot)) {
+    return false;
+  }
+
+  const normalizedSnapshot = normalizeSnapshotShape(snapshot);
+  return FX_SUPPORTED_CURRENCIES.every((quoteCurrency) => {
+    const rate = getSnapshotRateRecord(normalizedSnapshot, quoteCurrency)?.rate;
+    return quoteCurrency === normalizedSnapshot.baseCurrency ? rate === 1 : isPositiveNumber(rate);
+  });
+};
+
+export const getLocalDateKey = (value: Date = new Date()): string =>
+  `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(
+    value.getDate()
+  ).padStart(2, '0')}`;
+
+export const isSameLocalCalendarDay = (left: Date, right: Date): boolean =>
+  getLocalDateKey(left) === getLocalDateKey(right);
+
+export const rebaseFxSnapshot = (
+  snapshot: FxSnapshot,
+  baseCurrency: DisplayCurrency
+): FxSnapshot => {
+  const normalizedSnapshot = normalizeSnapshotShape(snapshot);
+  if (!isValidFxSnapshot(normalizedSnapshot)) {
+    return normalizedSnapshot;
+  }
+
+  if (normalizedSnapshot.baseCurrency === baseCurrency) {
+    return normalizedSnapshot;
+  }
+
+  const newBaseRate = getSnapshotRateRecord(normalizedSnapshot, baseCurrency)?.rate;
+  if (!isPositiveNumber(newBaseRate)) {
+    return normalizedSnapshot;
+  }
+
+  return {
+    ...normalizedSnapshot,
+    baseCurrency,
+    rates: FX_SUPPORTED_CURRENCIES.map((quoteCurrency) => {
+      const existingRate = getSnapshotRateRecord(normalizedSnapshot, quoteCurrency)?.rate;
+      return buildRateRecord(
+        baseCurrency,
+        quoteCurrency,
+        quoteCurrency === baseCurrency ? 1 : (existingRate as number) / newBaseRate
+      );
+    }),
+  };
 };
 
 export const getSnapshotStaleness = (
@@ -134,7 +221,7 @@ export const getSnapshotStaleness = (
     return true;
   }
 
-  return now.getTime() - new Date(snapshot.lastSuccessfulUpdateAt).getTime() > FX_CACHE_MAX_AGE_MS;
+  return !isSameLocalCalendarDay(new Date(snapshot.lastSuccessfulUpdateAt), now);
 };
 
 const normalizeSnapshotStatus = (
@@ -180,17 +267,18 @@ const buildLegacySnapshot = (
       : 'manual (legacy cache)';
 
   return normalizeSnapshotStatus(
-    createFxSnapshot({
+    {
+      baseCurrency: 'EUR',
       provider,
-      rates: {
-        EUR: 1,
-        USD: settings.usdToEurRate,
-        ARS: settings.arsToEurRate,
-      },
+      rates: [
+        buildRateRecord('EUR', 'EUR', 1),
+        buildRateRecord('EUR', 'USD', 1 / settings.usdToEurRate),
+        buildRateRecord('EUR', 'ARS', 1 / settings.arsToEurRate),
+      ],
       fetchedAt: isValidIsoTimestamp(settings.fxRatesFetchedAt) ? settings.fxRatesFetchedAt : timestamp,
       lastSuccessfulUpdateAt: timestamp,
       status: 'cached',
-    }),
+    },
     'cached',
     now
   );
@@ -200,8 +288,9 @@ export const getActiveFxSnapshot = (
   settings: PartialFxSettings,
   now: Date = new Date()
 ): FxSnapshot | null => {
-  if (isValidFxSnapshot(settings.fxSnapshot)) {
-    return normalizeSnapshotStatus(settings.fxSnapshot, settings.fxSnapshot.status, now);
+  if (isUsableFxSnapshot(settings.fxSnapshot)) {
+    const normalizedSnapshot = normalizeSnapshotShape(settings.fxSnapshot);
+    return normalizeSnapshotStatus(normalizedSnapshot, normalizedSnapshot.status, now);
   }
 
   return buildLegacySnapshot(settings, now);
@@ -217,10 +306,16 @@ export const getSettingsCurrencyRates = (settings: PartialFxSettings): Record<Di
     EUR: 1,
     USD: isPositiveNumber(settings.usdToEurRate) ? settings.usdToEurRate : DEFAULT_USD_TO_EUR_RATE,
     ARS: isPositiveNumber(settings.arsToEurRate) ? settings.arsToEurRate : DEFAULT_ARS_TO_EUR_RATE,
+    GBP: DEFAULT_GBP_TO_EUR_RATE,
   };
 };
 
 export const hasValidFxRates = (settings: PartialFxSettings): boolean => getActiveFxSnapshot(settings) !== null;
+
+export const shouldRequestFxRefresh = (
+  settings: PartialFxSettings,
+  { force = false, now = new Date() }: { force?: boolean; now?: Date } = {}
+): boolean => force || !hasValidFxRates(settings) || areFxRatesStale(settings, now);
 
 export const areFxRatesStale = (
   settings: Pick<AppSettings, 'fxRatesFetchedAt' | 'fxSnapshot'>,
@@ -241,14 +336,14 @@ export const areFxRatesStale = (
   );
 
   if (snapshot) {
-    return getSnapshotStaleness(snapshot, now);
+    return !isValidFxSnapshot(snapshot) || getSnapshotStaleness(snapshot, now);
   }
 
   if (!isValidIsoTimestamp(settings.fxRatesFetchedAt)) {
     return true;
   }
 
-  return now.getTime() - new Date(settings.fxRatesFetchedAt).getTime() > FX_CACHE_MAX_AGE_MS;
+  return true;
 };
 
 export const buildFxSnapshotFromSettings = (
@@ -320,7 +415,11 @@ export const buildFxSyncResult = (
   now: Date = new Date()
 ): FxSyncResult => {
   if (fetchedSnapshot && isValidFxSnapshot(fetchedSnapshot)) {
-    const normalizedSnapshot = normalizeSnapshotStatus(fetchedSnapshot, 'fresh', now);
+    const normalizedSnapshot = normalizeSnapshotStatus(
+      rebaseFxSnapshot(fetchedSnapshot, currentSettings.currency),
+      'fresh',
+      now
+    );
     return {
       nextSettings: applyFxSnapshotToSettings(currentSettings, normalizedSnapshot),
       warning: null,
@@ -340,7 +439,8 @@ export const buildFxSyncResult = (
       nextSettings: applyFxSnapshotToSettings(currentSettings, normalizedCachedSnapshot),
       warning: getFxWarningMessage(normalizedCachedSnapshot, error, now),
       usedCachedRates: true,
-      shouldRefresh: normalizedCachedSnapshot.status === 'stale',
+      shouldRefresh:
+        !isValidFxSnapshot(normalizedCachedSnapshot) || normalizedCachedSnapshot.status === 'stale',
       activeSnapshot: normalizedCachedSnapshot,
     };
   }

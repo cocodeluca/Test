@@ -31,6 +31,7 @@ export const esExtra = {
       EUR: 'Euro (EUR)',
       USD: 'Dolar estadounidense (USD)',
       ARS: 'Peso argentino (ARS)',
+      GBP: 'Libra esterlina (GBP)',
     },
   },
   auth: {

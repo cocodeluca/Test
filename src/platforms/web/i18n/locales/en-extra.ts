@@ -31,6 +31,7 @@ export const enExtra = {
       EUR: 'Euro (EUR)',
       USD: 'US Dollar (USD)',
       ARS: 'Argentine Peso (ARS)',
+      GBP: 'British Pound (GBP)',
     },
   },
   auth: {

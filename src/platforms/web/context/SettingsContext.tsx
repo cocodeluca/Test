@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCurrency, formatDate, formatNumber } from '../../../common/utils/formatting';
 import {
   DEFAULT_SETTINGS,
@@ -13,13 +13,17 @@ import { AppSettings } from '../../../common/types/settings';
 import { normalizeWorkspaceConfig } from '../../../common/utils/workspace';
 import {
   areFxRatesStale,
+  applyFxSnapshotToSettings,
   buildFxSnapshotFromSettings,
   buildFxSyncResult,
   hasValidFxRates,
   hydrateSettingsFxSnapshot,
+  rebaseFxSnapshot,
+  shouldRequestFxRefresh,
 } from '../../../common/utils/fxRates';
 import { translate } from '../i18n/translations';
 import { fetchLatestFxRates } from '../services/fx';
+import { createFxDayRolloverController } from '../services/fxDayRollover';
 import { useAppSafety } from './AppSafetyContext';
 
 interface FxSyncStatus {
@@ -35,6 +39,7 @@ interface SettingsContextValue {
   i18nReady: boolean;
   resolvedTheme: 'light' | 'dark';
   fxSyncStatus: FxSyncStatus;
+  refreshFxRates: (options?: { force?: boolean }) => Promise<void>;
   updateSettings: (updates: Partial<AppSettings>) => void;
   updateProfile: (updates: Partial<AppSettings['profile']>) => void;
   t: (key: string, replacements?: Record<string, string | number>) => string;
@@ -161,9 +166,15 @@ const getInitialSettings = (storageKey: string): AppSettings => {
 export const SettingsProvider: React.FC<{
   children: React.ReactNode;
   storageKey?: string;
-}> = ({ children, storageKey = 're-portfolio-settings' }) => {
-  const { canAutoWrite } = useAppSafety();
+  enableFxRefresh?: boolean;
+}> = ({
+  children,
+  storageKey = DEFAULT_SETTINGS_STORAGE_KEY,
+  enableFxRefresh = storageKey !== DEFAULT_SETTINGS_STORAGE_KEY,
+}) => {
+  const { isBootSettled } = useAppSafety();
   const [settings, setSettings] = useState<AppSettings>(() => getInitialSettings(storageKey));
+  const settingsRef = useRef(settings);
   const [hasExplicitLanguageSelectionState, setHasExplicitLanguageSelectionState] = useState<boolean>(() => {
     if (typeof window === 'undefined') {
       return false;
@@ -222,92 +233,114 @@ export const SettingsProvider: React.FC<{
   }, [resolvedTheme, settings.language]);
 
   useEffect(() => {
+    settingsRef.current = settings;
     setCurrentSettings(settings);
   }, [settings]);
 
-  useEffect(() => {
-    if (!canAutoWrite) {
+  const refreshFxRates = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
+    const currentSettings = settingsRef.current;
+    const stale = areFxRatesStale(currentSettings);
+    const cachedSnapshot = buildFxSnapshotFromSettings(currentSettings);
+    const hasCachedRates = hasValidFxRates(currentSettings);
+
+    if (!shouldRequestFxRefresh(currentSettings, { force })) {
+      setFxSyncStatus({
+        isRefreshing: false,
+        warning: null,
+        usingCachedRates: true,
+        lastResolvedAt:
+          cachedSnapshot?.lastSuccessfulUpdateAt ?? currentSettings.fxRatesFetchedAt ?? null,
+      });
       return;
     }
 
-    let isCancelled = false;
-    const initialSettings = settings;
+    logFxEvent('refresh-start', { force, stale, cachedSnapshot });
+    setFxSyncStatus((currentStatus) => ({
+      ...currentStatus,
+      isRefreshing: true,
+      warning: null,
+      usingCachedRates: hasCachedRates,
+    }));
 
-    const syncDailyFxRate = async () => {
-      const stale = areFxRatesStale(initialSettings);
-      const cachedSnapshot = buildFxSnapshotFromSettings(initialSettings);
-      const hasCachedRates = hasValidFxRates(initialSettings);
+    try {
+      const snapshot = await fetchLatestFxRates({ force });
+      const latestSettings = settingsRef.current;
+      const result = buildFxSyncResult(latestSettings, snapshot);
 
-      logFxEvent('refresh-start', {
-        stale,
-        cachedSnapshot,
+      logFxEvent('refresh-success', {
+        provider: result.activeSnapshot?.provider ?? snapshot.provider,
+        baseCurrency: result.activeSnapshot?.baseCurrency ?? snapshot.baseCurrency,
+        fetchedAt: snapshot.fetchedAt,
+        lastSuccessfulUpdateAt: snapshot.lastSuccessfulUpdateAt,
+      });
+      settingsRef.current = result.nextSettings;
+      setSettings(result.nextSettings);
+      setFxSyncStatus({
+        isRefreshing: false,
+        warning: null,
+        usingCachedRates: false,
+        lastResolvedAt: snapshot.lastSuccessfulUpdateAt,
+      });
+    } catch (error) {
+      const latestSettings = settingsRef.current;
+      const errorObject = error instanceof Error ? error : new Error('Unexpected FX sync error');
+      const result = buildFxSyncResult(latestSettings, null, errorObject);
+
+      console.warn('[fx]', {
+        event: 'refresh-failure',
+        reason: errorObject.message,
+        fallbackTimestamp:
+          result.activeSnapshot?.lastSuccessfulUpdateAt ?? latestSettings.fxRatesFetchedAt ?? null,
+        warning: result.warning,
       });
 
-      setFxSyncStatus((currentStatus) => ({
-        ...currentStatus,
-        isRefreshing: stale,
-        warning: null,
-        usingCachedRates: hasCachedRates,
-      }));
+      setFxSyncStatus({
+        isRefreshing: false,
+        warning: result.warning,
+        usingCachedRates: result.usedCachedRates,
+        lastResolvedAt: result.activeSnapshot?.lastSuccessfulUpdateAt ?? null,
+      });
+    }
+  }, []);
 
-      if (!stale && hasCachedRates) {
-        return;
-      }
+  useEffect(() => {
+    if (isBootSettled && enableFxRefresh) {
+      void refreshFxRates();
+    }
+  }, [enableFxRefresh, isBootSettled, refreshFxRates]);
 
-      try {
-        const snapshot = await fetchLatestFxRates();
+  useEffect(() => {
+    if (
+      !enableFxRefresh ||
+      !isBootSettled ||
+      typeof window === 'undefined' ||
+      typeof document === 'undefined'
+    ) {
+      return;
+    }
 
-        if (isCancelled) {
-          return;
-        }
-
-        const result = buildFxSyncResult(initialSettings, snapshot);
-        logFxEvent('refresh-success', {
-          provider: snapshot.provider,
-          fetchedAt: snapshot.fetchedAt,
-          lastSuccessfulUpdateAt: snapshot.lastSuccessfulUpdateAt,
-          status: snapshot.status,
-        });
-        setSettings(result.nextSettings);
-        setFxSyncStatus({
-          isRefreshing: false,
-          warning: null,
-          usingCachedRates: false,
-          lastResolvedAt: snapshot.lastSuccessfulUpdateAt,
-        });
-      } catch (error) {
-        if (isCancelled) {
-          return;
-        }
-
-        const errorObject = error instanceof Error ? error : new Error('Unexpected FX sync error');
-        const result = buildFxSyncResult(initialSettings, null, errorObject);
-
-        console.warn('[fx]', {
-          event: 'refresh-failure',
-          reason: errorObject.message,
-          cachedSnapshot,
-          fallbackTimestamp:
-            result.activeSnapshot?.lastSuccessfulUpdateAt ?? initialSettings.fxRatesFetchedAt ?? null,
-          warning: result.warning,
-        });
-
-        setSettings(result.nextSettings);
-        setFxSyncStatus({
-          isRefreshing: false,
-          warning: result.warning,
-          usingCachedRates: result.usedCachedRates,
-          lastResolvedAt: result.activeSnapshot?.lastSuccessfulUpdateAt ?? null,
-        });
+    const controller = createFxDayRolloverController({
+      refresh: () => refreshFxRates(),
+    });
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        controller.handleActivation();
       }
     };
+    const handleActivation = () => controller.handleActivation();
 
-    void syncDailyFxRate();
+    controller.start();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleActivation);
+    window.addEventListener('pageshow', handleActivation);
 
     return () => {
-      isCancelled = true;
+      controller.stop();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleActivation);
+      window.removeEventListener('pageshow', handleActivation);
     };
-  }, []);
+  }, [enableFxRefresh, isBootSettled, refreshFxRates]);
 
   const updateSettings = (updates: Partial<AppSettings>) => {
     if (updates.language) {
@@ -315,9 +348,15 @@ export const SettingsProvider: React.FC<{
       setHasExplicitLanguageSelectionState(true);
     }
 
-    setSettings((currentSettings) => ({
-      ...currentSettings,
-      ...updates,
+    setSettings((currentSettings) => {
+      const nextFxSnapshot =
+        updates.currency && currentSettings.fxSnapshot
+          ? rebaseFxSnapshot(currentSettings.fxSnapshot, updates.currency)
+          : currentSettings.fxSnapshot;
+      const nextSettings: AppSettings = {
+        ...currentSettings,
+        ...updates,
+        fxSnapshot: nextFxSnapshot,
       onboardingCompleted:
         updates.onboardingCompleted ??
         updates.onboarding?.completed ??
@@ -341,7 +380,7 @@ export const SettingsProvider: React.FC<{
         ...currentSettings.onboarding,
         ...updates.onboarding,
       },
-      workspaceConfig: {
+        workspaceConfig: {
         ...normalizeWorkspaceConfig({
           ...currentSettings.workspaceConfig,
           ...updates.workspaceConfig,
@@ -352,18 +391,28 @@ export const SettingsProvider: React.FC<{
             updates.workspaceConfig?.suggestedCustomFields ??
             currentSettings.workspaceConfig.suggestedCustomFields,
         }),
-      },
-    }));
+        },
+      };
+      const synchronizedSettings = nextFxSnapshot
+        ? applyFxSnapshotToSettings(nextSettings, nextFxSnapshot)
+        : nextSettings;
+      settingsRef.current = synchronizedSettings;
+      return synchronizedSettings;
+    });
   };
 
   const updateProfile = (updates: Partial<AppSettings['profile']>) => {
-    setSettings((currentSettings) => ({
-      ...currentSettings,
-      profile: {
-        ...currentSettings.profile,
-        ...updates,
-      },
-    }));
+    setSettings((currentSettings) => {
+      const nextSettings = {
+        ...currentSettings,
+        profile: {
+          ...currentSettings.profile,
+          ...updates,
+        },
+      };
+      settingsRef.current = nextSettings;
+      return nextSettings;
+    });
   };
 
   const value = useMemo<SettingsContextValue>(
@@ -373,6 +422,7 @@ export const SettingsProvider: React.FC<{
       i18nReady: true,
       resolvedTheme,
       fxSyncStatus,
+      refreshFxRates,
       updateSettings,
       updateProfile,
       t: (key, replacements) => translate(settings.language, key, replacements),
@@ -380,7 +430,7 @@ export const SettingsProvider: React.FC<{
       formatPreviewNumber: (amount, decimals = 0) => formatNumber(amount, decimals),
       formatPreviewDate: (dateString) => formatDate(dateString),
     }),
-    [fxSyncStatus, hasExplicitLanguageSelectionState, resolvedTheme, settings]
+    [fxSyncStatus, hasExplicitLanguageSelectionState, refreshFxRates, resolvedTheme, settings]
   );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;

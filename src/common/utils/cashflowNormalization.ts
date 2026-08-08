@@ -1,6 +1,7 @@
 import type { RecurringExpenseBillingFrequency } from '../types';
 import type { DisplayCurrency } from '../types/settings';
-import { getArsToEurRate, getUsdToEurRate } from './currency';
+import { getSettingsCurrencyRates } from './fxRates';
+import { getCurrentSettings } from './settingsStore';
 
 export type MonetaryFrequency = RecurringExpenseBillingFrequency | 'monthly' | 'yearly';
 
@@ -31,9 +32,9 @@ const DEFAULT_TARGET_CURRENCY: DisplayCurrency = 'EUR';
 const buildRates = (
   rateOverrides?: Partial<Record<DisplayCurrency, number>>
 ): Record<DisplayCurrency, number> => ({
+  ...getSettingsCurrencyRates(getCurrentSettings()),
+  ...rateOverrides,
   EUR: 1,
-  USD: rateOverrides?.USD ?? getUsdToEurRate(),
-  ARS: rateOverrides?.ARS ?? getArsToEurRate(),
 });
 
 export const parseMoneyAmount = (value: number | string | null | undefined): number => {

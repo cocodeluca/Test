@@ -1,4 +1,4 @@
-export type DisplayCurrency = 'EUR' | 'USD' | 'ARS';
+export type DisplayCurrency = 'EUR' | 'USD' | 'ARS' | 'GBP';
 export type AppLanguage = 'en' | 'es' | 'pt';
 export type AppTheme = 'light' | 'dark' | 'system';
 export type DateFormat = 'en-US' | 'en-GB' | 'es-ES';
@@ -413,6 +413,7 @@ export interface FxRateRecord {
 }
 
 export interface FxSnapshot {
+  baseCurrency: DisplayCurrency;
   rates: FxRateRecord[];
   provider: string;
   fetchedAt: string;

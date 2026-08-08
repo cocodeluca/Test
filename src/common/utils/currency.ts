@@ -14,6 +14,7 @@ export const currencyOptions: CurrencyOption[] = [
   { code: 'EUR', symbol: 'EUR', locale: 'de-DE' },
   { code: 'USD', symbol: '$', locale: 'en-US' },
   { code: 'ARS', symbol: '$', locale: 'es-AR' },
+  { code: 'GBP', symbol: '£', locale: 'en-GB' },
 ];
 
 export const supportedCurrencies = currencyOptions.map((option) => option.code);

@@ -2642,9 +2642,7 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       <>
         <SectionCrashBoundary sectionName="provider tree">
           <ProvidersBootLogger />
-          <AppSafetyProvider>
-            <SettingsProvider storageKey={makeUserSettingsStorageKey(user.id)}>
-              <SectionCrashBoundary sectionName="router/app shell">
+          <SectionCrashBoundary sectionName="router/app shell">
                 <RouterMountLogger />
                 <Layout
                   currentPage={currentPage}
@@ -2800,8 +2798,6 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
                   />
                 </SectionCrashBoundary>
               ) : null}
-            </SettingsProvider>
-          </AppSafetyProvider>
         </SectionCrashBoundary>
       </>
     </Suspense>
