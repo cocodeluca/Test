@@ -94,14 +94,26 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
     setDocumentPrimaryImageIndex(property.primaryImageIndex ?? 0);
   }, [property]);
 
-  const readFileAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
+  const readFileAsDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result as string);
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(file);
     });
+  };
 
+  const resizeIfNeeded = async (file: File): Promise<File> => {
+    try {
+      const threshold = 1.5 * 1024 * 1024;
+      if (file.size <= threshold) return file;
+      const mod = await import('../utils/imageResize');
+      const blob = await mod.resizeImageFile(file, 1600, 0.8);
+      return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+    } catch (e) {
+      return file;
+    }
+  };
   const syncPrimaryImage = (nextImageUrls: string[], nextPrimaryImageIndex: number) => {
     const safePrimaryImageIndex = Math.min(Math.max(nextPrimaryImageIndex, 0), Math.max(nextImageUrls.length - 1, 0));
 
@@ -117,7 +129,8 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
       return;
     }
 
-    const uploadedImages = await Promise.all(files.map(readFileAsDataUrl));
+    const processedFiles = await Promise.all(files.map((f) => resizeIfNeeded(f)));
+    const uploadedImages = await Promise.all(processedFiles.map(readFileAsDataUrl));
     const nextImageUrls = [...imageUrls, ...uploadedImages];
     const nextPrimaryImageIndex = imageUrls.length === 0 ? 0 : primaryImageIndex;
 

@@ -368,6 +368,20 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       reader.readAsDataURL(file);
     });
 
+  // Import dynamically to avoid SSR issues and keep bundle small
+  const resizeIfNeeded = async (file: File): Promise<File> => {
+    try {
+      // threshold: 1.5 MB
+      const threshold = 1.5 * 1024 * 1024;
+      if (file.size <= threshold) return file;
+      const mod = await import('../utils/imageResize');
+      const blob = await mod.resizeImageFile(file, 1600, 0.8);
+      return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+    } catch (e) {
+      return file;
+    }
+  };
+
   const calculateDerivedTotalInvestment = (data: {
     operatingCurrency: DisplayCurrency;
     purchasePrice: number;
@@ -825,7 +839,8 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       return;
     }
 
-    const uploadedImages = await Promise.all(files.map(readFileAsDataUrl));
+    const processedFiles = await Promise.all(files.map((f) => resizeIfNeeded(f)));
+    const uploadedImages = await Promise.all(processedFiles.map(readFileAsDataUrl));
 
     setFormData((currentFormData) => {
       const nextImageUrls = [...currentFormData.imageUrls, ...uploadedImages];
