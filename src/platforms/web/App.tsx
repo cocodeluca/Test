@@ -31,6 +31,10 @@ import type {
 } from '../../common/types/settings';
 import { normalizeProperties, normalizePropertyRecord } from '../../common/utils/calculations';
 import { createManualProperty } from '../../common/utils/manualProperty';
+import {
+  mergeChangedPropertyFields,
+  replacePropertyRecord,
+} from '../../common/utils/propertyEdits';
 import { getPendingOnboardingStep } from '../../common/utils/onboarding';
 import { enrichOpportunity } from '../../common/utils/opportunities';
 import { enrichRehabProject } from '../../common/utils/rehabProjects';
@@ -1146,6 +1150,9 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   };
 
   const handleEditProperty = (property: Property) => {
+    const editingBaseline = syncedProperties.find(
+      (candidate) => candidate.id === property.id
+    );
     if (isDemoPreviewActive) {
       setDemoPreviewState((currentPreview) =>
         currentPreview
@@ -1153,10 +1160,17 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
               ...currentPreview,
               portfolio: {
                 ...currentPreview.portfolio,
-                properties: currentPreview.portfolio.properties.map((currentProperty) =>
-                  currentProperty.id === property.id
-                    ? normalizePropertyRecord(property)
-                    : currentProperty
+                properties: replacePropertyRecord(
+                  currentPreview.portfolio.properties,
+                  editingBaseline
+                    ? mergeChangedPropertyFields(
+                        currentPreview.portfolio.properties.find(
+                          (candidate) => candidate.id === property.id
+                        ) ?? property,
+                        editingBaseline,
+                        property
+                      )
+                    : property
                 ),
               },
             }
@@ -1165,13 +1179,20 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       return;
     }
 
-    setProperties((currentProperties) =>
-      currentProperties.map((currentProperty) =>
-        currentProperty.id === property.id
-          ? normalizePropertyRecord(property)
-          : currentProperty
-      )
-    );
+    setProperties((currentProperties) => {
+      const currentProperty = currentProperties.find(
+        (candidate) => candidate.id === property.id
+      );
+      const persistedProperty =
+        currentProperty && editingBaseline
+          ? mergeChangedPropertyFields(
+              currentProperty,
+              editingBaseline,
+              property
+            )
+          : property;
+      return replacePropertyRecord(currentProperties, persistedProperty);
+    });
   };
 
   const handleDeleteProperty = (propertyId: string) => {

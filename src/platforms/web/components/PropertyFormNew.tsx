@@ -33,6 +33,7 @@ import {
   rentUpdateRuleTypes,
 } from '../../../common/utils/leaseUpdates';
 import { createRecurringExpense, ensureRecurringExpenses } from '../../../common/utils/recurringExpenses';
+import { mergeChangedPropertyFields } from '../../../common/utils/propertyEdits';
 import {
   formatCurrency,
   formatCurrencyValue,
@@ -1411,7 +1412,15 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
   };
 
   const handleSectionSave = () => {
-    const propertyPayload = buildPropertyPayload(formData);
+    const editedDraft = buildPropertyPayload(formData);
+    const propertyPayload =
+      isEditing && editingProperty
+        ? mergeChangedPropertyFields(
+            editingProperty,
+            buildPropertyPayload(lastSavedFormData),
+            editedDraft
+          )
+        : editedDraft;
     commitSectionChanges();
 
     if (isEditing && editingProperty && onEditProperty) {
