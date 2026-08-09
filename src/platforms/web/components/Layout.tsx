@@ -218,11 +218,11 @@ export const Layout: React.FC<LayoutProps> = ({
             </div>
           ) : null}
           {fxSyncStatus.warning ? (
-            <div className="mb-5 rounded-[24px] border border-amber-300/70 bg-amber-50/80 px-4 py-4 text-amber-800 shadow-[0_18px_32px_-28px_rgba(146,64,14,0.35)] dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.16em]">
+            <div className={`${isDashboardPage ? 'mb-[14px] rounded-[20px] px-4 py-3' : 'mb-5 rounded-[24px] px-4 py-4'} border border-amber-300/70 bg-amber-50/80 text-amber-800 shadow-[0_18px_32px_-28px_rgba(146,64,14,0.35)] dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200`}>
+              <p className={`${isDashboardPage ? 'text-[11px]' : 'text-[12px]'} font-semibold uppercase tracking-[0.16em]`}>
                 FX Warning
               </p>
-              <p className="mt-2 text-sm leading-6">
+              <p className={isDashboardPage ? 'mt-1 text-[13px] leading-5' : 'mt-2 text-sm leading-6'}>
                 {fxSyncStatus.warning}
               </p>
             </div>
