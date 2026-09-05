@@ -395,6 +395,10 @@ export const enExtra = {
     recurringExpenseEngine: 'Advanced recurring expense engine',
     recurringExpenseEngineHelp:
       'Use this only when you need inflation-aware projections, payment history, or manual override schedules.',
+    leaseAndTenancy: 'Lease & Tenancy',
+    purchaseAndValuation: 'Purchase & Valuation',
+    viewAll: 'View all',
+    noDocumentsUploaded: 'No documents uploaded yet.',
   },
   mortgagesUi: {
     importWithAi: 'Import with AI',

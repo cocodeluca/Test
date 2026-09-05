@@ -332,24 +332,35 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             </label>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2 md:justify-end">
-          {!isBasicMode || settings.showAdvancedBasicModeFeatures ? (
-            <button
-              onClick={openAdvancedForm}
+        <div className="relative flex shrink-0 md:justify-end">
+          <details className="group relative">
+            <summary
               data-tutorial-id="properties-add"
-              className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-2xl border border-[var(--app-border)] bg-white px-3.5 py-2 transition hover:border-slate-300/70 hover:text-slate-700 dark:border-slate-700 dark:bg-slate-950/30 dark:hover:border-sky-500/25 dark:hover:text-sky-300 ${appTextMutedClass} ${tutorialTargetId === 'properties-add' ? 'app-tutorial-target' : ''}`}
+              className={`inline-flex min-h-[42px] cursor-pointer list-none items-center justify-center gap-2 rounded-xl px-4 py-2 text-[13px] font-medium ${appButtonPrimaryClass} ${tutorialTargetId === 'properties-add' ? 'app-tutorial-target' : ''}`}
             >
-              {t('common.advancedForm')}
-            </button>
-          ) : null}
-          <button
-            onClick={openQuickForm}
-            data-tutorial-id="properties-add"
-            className={`inline-flex min-h-[42px] items-center justify-center gap-2 rounded-2xl px-4.5 ${appButtonPrimaryClass}`}
-          >
-            <Plus className="w-5 h-5" />
-            {t('common.addPropertyManually')}
-          </button>
+              <Plus className="h-4.5 w-4.5" />
+              <span>{t('common.addProperty')}</span>
+              <ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" />
+            </summary>
+            <div className={`absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-xl border p-1.5 shadow-[0_18px_38px_-24px_rgba(15,23,42,0.32)] ${appPanelClass}`}>
+              <button
+                type="button"
+                onClick={openQuickForm}
+                className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-[13px] font-medium transition hover:bg-[var(--app-panel-inset)] ${appTextStrongClass}`}
+              >
+                {t('common.addPropertyManually')}
+              </button>
+              {!isBasicMode || settings.showAdvancedBasicModeFeatures ? (
+                <button
+                  type="button"
+                  onClick={openAdvancedForm}
+                  className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-[13px] transition hover:bg-[var(--app-panel-inset)] ${appTextMutedClass}`}
+                >
+                  {t('common.advancedForm')}
+                </button>
+              ) : null}
+            </div>
+          </details>
         </div>
       </div>
 

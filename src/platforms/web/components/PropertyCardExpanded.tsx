@@ -18,6 +18,7 @@ import {
   FolderOpen,
   Home,
   Landmark,
+  Plus,
   Percent,
   Receipt,
   Ruler,
@@ -1597,7 +1598,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
     activeLease?.endDate || property.leaseEndDate
       ? { label: 'Lease end', value: formatLanguageDate(activeLease?.endDate ?? property.leaseEndDate ?? '') }
       : null,
-    property.leaseType ? { label: t('properties.labels.leaseType'), value: property.leaseType } : null,
+    property.leaseType ? { label: t('properties.form.leaseType'), value: property.leaseType } : null,
     rentRuleSummary ? { label: 'Rent update rule', value: rentRuleSummary } : null,
     nextLeaseUpdateDate ? { label: 'Next update', value: formatLanguageDate(nextLeaseUpdateDate) } : null,
     activeLease?.securityDeposit != null
@@ -1606,19 +1607,19 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   ].filter((item): item is { label: string; value: string } => Boolean(item && item.value));
 
   const propertyDetailItems = [
-    localizedPropertyType ? { label: t('properties.labels.propertyType'), value: localizedPropertyType } : null,
+    localizedPropertyType ? { label: t('properties.form.propertyType'), value: localizedPropertyType } : null,
     property.bedrooms || property.bathrooms
       ? {
           label: `${t('properties.labels.bedroomsShort')} / ${t('properties.labels.bathroomsShort')}`,
           value: `${property.bedrooms ?? 0} / ${property.bathrooms ?? 0}`,
         }
       : null,
-    property.builtAreaSqm ? { label: t('properties.labels.builtAreaSqm'), value: `${property.builtAreaSqm} m2` } : null,
-    property.floor != null ? { label: t('properties.labels.floor'), value: String(property.floor) } : null,
-    property.yearBuilt ? { label: t('properties.labels.yearBuilt'), value: String(property.yearBuilt) } : null,
-    property.renovatedYear ? { label: t('properties.labels.renovatedYear'), value: String(property.renovatedYear) } : null,
-    property.furnishedStatus ? { label: t('properties.labels.furnishedStatus'), value: property.furnishedStatus } : null,
-    property.condition ? { label: t('properties.labels.condition'), value: property.condition } : null,
+    property.builtAreaSqm ? { label: t('properties.form.builtAreaSqm'), value: `${property.builtAreaSqm} m2` } : null,
+    property.floor != null ? { label: t('properties.form.floor'), value: String(property.floor) } : null,
+    property.yearBuilt ? { label: t('properties.form.yearBuilt'), value: String(property.yearBuilt) } : null,
+    property.renovatedYear ? { label: t('properties.form.renovatedYear'), value: String(property.renovatedYear) } : null,
+    property.furnishedStatus ? { label: t('properties.form.furnishedStatus'), value: property.furnishedStatus } : null,
+    property.condition ? { label: t('properties.form.condition'), value: property.condition } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item && item.value));
 
   const purchasePerSqm =
@@ -1627,16 +1628,26 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
     property.builtAreaSqm && property.builtAreaSqm > 0 ? property.currentEstimatedValue / property.builtAreaSqm : null;
 
   const purchaseDetailItems = [
-    property.purchaseDate ? { label: t('properties.labels.purchaseDate'), value: formatLanguageDate(property.purchaseDate) } : null,
     purchasePerSqm ? { label: t('properties.labels.purchasePerSqm'), value: `${formatValuationAmount(purchasePerSqm)}/m2` } : null,
     estPerSqm ? { label: t('properties.labels.estimatedPerSqm'), value: `${formatValuationAmount(estPerSqm)}/m2` } : null,
-    { label: t('properties.labels.purchasePrice'), value: formatValuationAmount(property.purchasePrice, purchasePriceCurrency) },
+    totalCost > 0 ? { label: t('properties.form.totalInitialInvestment'), value: formatOperatingAmount(totalCost) } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item && item.value));
 
-  const galleryCountLabel =
-    galleryImages.length === 1
-      ? t('propertiesUi.galleryCount_one', { count: galleryImages.length })
-      : t('propertiesUi.galleryCount_other', { count: galleryImages.length });
+  const valuationIncrease =
+    Number.isFinite(property.purchasePrice) &&
+    property.purchasePrice > 0 &&
+    Number.isFinite(property.currentEstimatedValue) &&
+    property.currentEstimatedValue > 0
+      ? property.currentEstimatedValue - property.purchasePrice
+      : null;
+  const valuationIncreasePercent =
+    valuationIncrease !== null && property.purchasePrice > 0
+      ? (valuationIncrease / property.purchasePrice) * 100
+      : null;
+  const mortgageLtv =
+    details.currentMortgageBalance > 0 && property.currentEstimatedValue > 0
+      ? (details.currentMortgageBalance / property.currentEstimatedValue) * 100
+      : null;
 
   const tabItems: Array<{ key: PropertyTab; label: string }> = [
     { key: 'overview', label: t('properties.tabs.summary') },
@@ -1644,7 +1655,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
     { key: 'mortgage', label: t('properties.tabs.mortgage') },
     { key: 'documents', label: t('nav.documents') },
     { key: 'taxes', label: t('properties.tabs.tax') },
-    { key: 'notes', label: t('notes') },
+    { key: 'notes', label: t('common.notes') },
     { key: 'gallery', label: t('properties.tabs.gallery') },
   ];
 
@@ -1905,84 +1916,33 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   const renderSummaryPreview = () => {
     if (!currentGalleryImage) {
       return (
-        <div className={`${nestedPanelClass} flex h-full min-h-[240px] flex-col justify-between p-3.5`}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h4 className={sectionTitleClass}>{t('properties.tabs.gallery')}</h4>
-              <p className={`mt-1.5 max-w-sm text-sm leading-6 ${appTextMutedClass}`}>
-                {galleryEmptyBody}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onEdit(property, 'gallery')}
-              className={`rounded-full px-3.5 py-1.5 text-[12px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}
-            >
-              {t('common.edit')}
-            </button>
-          </div>
-          <div className="mt-4 rounded-[20px] border border-dashed border-[var(--app-border)] bg-[var(--app-panel-inset)] px-4 py-7 text-center">
-            <p className={`text-base font-semibold tracking-[-0.02em] ${appTextStrongClass}`}>{galleryEmptyTitle}</p>
-            <p className={`mx-auto mt-2 max-w-sm text-sm leading-6 ${appTextMutedClass}`}>{galleryEmptyBody}</p>
-          </div>
+        <div className="flex min-h-[210px] flex-col items-center justify-center rounded-[18px] border border-dashed border-[var(--app-border)] bg-[var(--app-panel-inset)] px-5 py-7 text-center">
+          <p className={`text-sm font-semibold ${appTextStrongClass}`}>{galleryEmptyTitle}</p>
+          <p className={`mt-1.5 max-w-xs text-[13px] leading-5 ${appTextMutedClass}`}>{galleryEmptyBody}</p>
+          <button type="button" onClick={() => onEdit(property, 'gallery')} className={`mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}>
+            <Plus className="h-3.5 w-3.5" />
+            {t('properties.form.clickToUpload')}
+          </button>
         </div>
       );
     }
 
     return (
-      <div className="space-y-3">
-        <button
-          type="button"
-          onClick={() => setIsLightboxOpen(true)}
-          onTouchStart={handleGalleryTouchStart}
-          onTouchEnd={handleGalleryTouchEnd}
-          className="group block w-full overflow-hidden rounded-[18px] border border-[var(--app-border)] bg-[var(--app-panel-inset)]"
-          aria-label={t('properties.labels.viewAllPhotos')}
-        >
-          <img
-            src={currentGalleryImage}
-            alt={`${property.name} ${selectedImageIndex + 1}`}
-            className="h-[260px] w-full object-cover object-center transition duration-300 group-hover:scale-[1.01] sm:h-[300px]"
-          />
-          <div className="flex items-center justify-between px-3 py-2">
-            <span className={`text-[12px] font-medium ${appTextMutedClass}`}>{t('properties.labels.viewAllPhotos')}</span>
-            <span className={`text-[12px] font-semibold ${appTextStrongClass}`}>
-              {selectedImageIndex + 1} / {galleryImages.length}
-            </span>
-          </div>
-        </button>
-
-        {galleryImages.length > 1 ? (
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {galleryImages.slice(0, 6).map((imageUrl, index) => (
-              <button
-                key={`${imageUrl}-${index}`}
-                type="button"
-                onClick={() => setSelectedImageIndex(index)}
-                className={`shrink-0 overflow-hidden rounded-[14px] border p-1 transition ${
-                  index === selectedImageIndex
-                    ? 'border-[rgba(31,79,136,0.20)] bg-[rgba(31,79,136,0.08)]'
-                    : `${appBorderClass} bg-white hover:border-slate-300/70 dark:bg-slate-950/30 dark:hover:border-white/14`
-                }`}
-              >
-                <img
-                  src={imageUrl}
-                  alt={`${property.name} thumbnail ${index + 1}`}
-                  className="h-14 w-20 rounded-[10px] object-cover object-center"
-                />
-              </button>
-            ))}
-            {galleryImages.length > 6 ? (
-              <button
-                type="button"
-                onClick={() => setActiveTab('gallery')}
-                className={`flex h-16 min-w-[72px] items-center justify-center rounded-[14px] border border-dashed px-3 text-center text-[12px] font-medium transition ${appBorderClass} ${appTextMutedClass} bg-white hover:border-slate-300/70 dark:bg-slate-950/30 dark:hover:border-white/14`}
-              >
-                +{galleryImages.length - 6}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+      <div className="grid min-h-[250px] gap-2 sm:grid-cols-[minmax(0,1fr)_76px]">
+        <div className="relative min-h-[250px] overflow-hidden rounded-[18px] bg-[var(--app-panel-inset)]">
+          <button type="button" onClick={() => setIsLightboxOpen(true)} onTouchStart={handleGalleryTouchStart} onTouchEnd={handleGalleryTouchEnd} className="group block h-full w-full" aria-label={t('properties.labels.viewAllPhotos')}>
+            <img src={currentGalleryImage} alt={`${property.name} ${selectedImageIndex + 1}`} className="h-full min-h-[250px] w-full object-cover object-center transition duration-300 group-hover:scale-[1.01]" />
+          </button>
+          <span className="absolute bottom-3 left-3 rounded-full bg-slate-950/72 px-2.5 py-1 text-[11px] font-semibold text-white">{selectedImageIndex + 1} / {galleryImages.length}</span>
+          {hasMultipleImages ? <>
+            <button type="button" onClick={goToPreviousImage} className="absolute bottom-3 right-12 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/70 text-white transition hover:bg-slate-950" aria-label={t('properties.labels.viewAllPhotos')}><ChevronLeft className="h-4 w-4" /></button>
+            <button type="button" onClick={goToNextImage} className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-950/70 text-white transition hover:bg-slate-950" aria-label={t('properties.labels.viewAllPhotos')}><ChevronRight className="h-4 w-4" /></button>
+          </> : null}
+        </div>
+        {galleryImages.length > 1 ? <div className="flex max-h-[310px] gap-1.5 overflow-x-auto pb-1 sm:flex-col sm:overflow-y-auto sm:overflow-x-hidden">
+          {galleryImages.slice(0, 4).map((imageUrl, index) => <button key={`${imageUrl}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`shrink-0 overflow-hidden rounded-[10px] border p-0.5 transition ${index === selectedImageIndex ? 'border-[var(--app-nav-active-fg)]' : `${appBorderClass} opacity-75 hover:opacity-100`}`}><img src={imageUrl} alt={`${property.name} thumbnail ${index + 1}`} className="h-12 w-16 rounded-[7px] object-cover sm:h-[58px] sm:w-full" /></button>)}
+          {galleryImages.length > 4 ? <button type="button" onClick={() => setActiveTab('gallery')} className={`flex min-h-12 items-center justify-center rounded-[10px] border border-dashed px-2 text-[11px] font-semibold ${appBorderClass} ${appTextMutedClass}`}>+{galleryImages.length - 4}</button> : null}
+        </div> : null}
       </div>
     );
   };
@@ -2117,49 +2077,6 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
     </div>
   );
 
-  const renderRightRail = () => (
-    <div className="space-y-4">
-      <div className={`${nestedPanelClass} p-3.5`}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className={`text-[13px] font-semibold ${appTextStrongClass}`}>{t('properties.tabs.gallery')}</p>
-            <p className={`mt-1 text-[13px] ${appTextMutedClass}`}>{galleryCountLabel}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onEdit(property, 'gallery')}
-            className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}
-          >
-            {t('common.edit')}
-          </button>
-        </div>
-        <div className="mt-2.5">{renderSummaryPreview()}</div>
-      </div>
-
-      <div className={`${nestedPanelClass} p-3.5`}>
-        <button
-          type="button"
-          onClick={() => setActiveTab('documents')}
-          className="flex w-full items-center justify-between gap-3 text-left"
-          aria-label={t('nav.documents')}
-        >
-      <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
-              <StickyNote className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className={`text-[12px] font-semibold ${appTextStrongClass}`}>{t('nav.documents')}</p>
-              <p className={`mt-0.5 text-[12px] ${appTextMutedClass}`}>
-                {isSpanish ? 'Contratos, recibos y archivos operativos' : 'Contracts, receipts, and operating files'}
-              </p>
-            </div>
-          </div>
-          <ChevronRight className={`h-4 w-4 ${appTextMutedClass}`} />
-        </button>
-      </div>
-    </div>
-  );
-
   const renderPropertyHeaderDetails = () => (
     <div className="flex flex-wrap items-start gap-3.5">
       <div className="flex h-10 w-10 items-center justify-center rounded-[16px] border border-[var(--app-border)] bg-[var(--app-panel-inset)] text-[var(--app-nav-active-fg)]">
@@ -2253,7 +2170,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
         </div>
       ) : null}
 
-      <div className={`border-b px-3.5 py-2 sm:px-4.5 sm:py-2.5 ${appBorderClass}`}>
+      <div className={`border-b px-3.5 sm:px-4.5 ${appBorderClass}`}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <label className="block sm:hidden">
@@ -2274,7 +2191,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
                 ))}
               </select>
             </label>
-            <div className="-mx-1 hidden gap-1 overflow-x-auto px-1 sm:flex sm:flex-wrap sm:overflow-visible">
+            <div className="-mx-1 hidden h-11 gap-1 overflow-x-auto px-1 sm:flex sm:flex-wrap sm:overflow-visible">
               {tabItems.map((tab) => {
                 const isActive = tab.key === activeTab;
                 return (
@@ -2292,7 +2209,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
                       onRequestTabChange?.(tab.key);
                       setActiveTab(tab.key);
                     }}
-                    className={`rounded-full px-3 py-1 text-[11px] font-medium transition ${isActive ? 'border border-[rgba(31,79,136,0.12)] bg-[rgba(31,79,136,0.08)] text-[var(--app-nav-active-fg)]' : `border border-transparent bg-transparent ${appTextMutedClass} hover:bg-[rgba(17,24,39,0.04)] hover:text-slate-700 dark:hover:border-cyan-400/16 dark:hover:bg-slate-950/26 dark:hover:text-slate-200`} ${tutorialTargetId === (tab.key === 'finances' ? 'property-tab-finances' : tab.key === 'mortgage' ? 'property-tab-mortgage' : null) ? 'app-tutorial-target' : ''}`}
+                    className={`relative h-11 whitespace-nowrap px-3 text-[13px] font-medium transition after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full ${isActive ? 'text-[var(--app-nav-active-fg)] after:bg-[var(--app-nav-active-fg)]' : `${appTextMutedClass} after:bg-transparent hover:text-slate-700 dark:hover:text-slate-200`} ${tutorialTargetId === (tab.key === 'finances' ? 'property-tab-finances' : tab.key === 'mortgage' ? 'property-tab-mortgage' : null) ? 'app-tutorial-target' : ''}`}
                   >
                     {tab.label}
                   </button>
@@ -2322,54 +2239,44 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
         </div>
       </div>
       {activeTab === 'overview' ? (
-        <div className="px-4 py-3.5 sm:px-5 sm:py-4">
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(330px,0.92fr)]">
-            <div className="min-w-0 space-y-3.5">
-              <div className={`${nestedPanelClass} p-3.5`}>
-                <div className="min-w-0">
-                  <h2 className={`text-[1.65rem] font-semibold tracking-[-0.04em] ${appTextStrongClass} sm:text-[2.15rem]`}>{property.name}</h2>
-                  <p className={`mt-1.5 text-[13px] ${appTextMutedClass}`}>{property.city}, {localizedCountry}</p>
-                  <p className={`mt-0.5 text-[13px] ${appTextMutedClass}`}>{property.address}</p>
-                  <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${getOccupancyBadgeClasses(property.occupancyStatus)}`}>{occupancyLabel}</span>
-                    <span className={`rounded-full border border-[var(--app-border)] bg-[var(--app-panel-inset)] px-2.5 py-1 text-[11px] font-medium ${appTextMutedClass}`}>{currencyContextLabel}</span>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
-                    {heroMetrics.slice(0, 4).map((metric) =>
-                      renderCompactStatCard(metric.label, metric.value, undefined, metric.tone)
-                    )}
-                  </div>
-                </div>
+        <div data-tutorial-id="property-summary-overview" className="space-y-3 px-4 py-3.5 sm:px-5 sm:py-4">
+          <section className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,0.94fr)_minmax(480px,1.06fr)] xl:items-center">
+            <div className="min-w-0 py-1 sm:py-3">
+              <h2 className={`text-[1.9rem] font-semibold tracking-[-0.05em] ${appTextStrongClass} sm:text-[2.2rem]`}>{property.name}</h2>
+              <p className={`mt-2 text-[13px] font-medium ${appTextStrongClass}`}>{[property.city, localizedCountry].filter(Boolean).join(', ')}</p>
+              {property.address ? <p className={`mt-0.5 text-[13px] ${appTextMutedClass}`}>{property.address}</p> : null}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${getOccupancyBadgeClasses(property.occupancyStatus)}`}>{occupancyLabel}</span>
+                {localizedPropertyType ? <span className={`rounded-full border border-[var(--app-border)] bg-[var(--app-panel-inset)] px-2.5 py-1 text-[11px] font-medium ${appTextMutedClass}`}>{localizedPropertyType}</span> : null}
+                {property.renovatedYear ? <span className={`rounded-full border border-[var(--app-border)] bg-[var(--app-panel-inset)] px-2.5 py-1 text-[11px] font-medium ${appTextMutedClass}`}>{t('properties.labels.renovatedYear')} {property.renovatedYear}</span> : null}
               </div>
+            </div>
+            <div className="min-w-0">{renderSummaryPreview()}</div>
+          </section>
 
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                <div className={`${nestedPanelClass} p-3.5`}>
-                  <div className="flex items-center justify-between gap-2.5">
-                    <h4 className={sectionTitleClass}>Lease & Tenancy</h4>
-                    <button type="button" onClick={() => onEdit(property, 'lease-tenancy')} className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}>{t('common.edit')}</button>
-                  </div>
-                  <div className="mt-2.5">{renderInfoGrid(leaseSummaryItems)}</div>
-                </div>
-                <div className={`${nestedPanelClass} p-3.5`}>
-                  <div className="flex items-center justify-between gap-2.5">
-                    <h4 className={sectionTitleClass}>{t('properties.labels.propertyDetails')}</h4>
-                    <button type="button" onClick={() => onEdit(property, 'property-details')} className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}>{t('common.edit')}</button>
-                  </div>
-                  <div className="mt-2.5">{renderInfoGrid(propertyDetailItems)}</div>
-                </div>
-                <div className={`${nestedPanelClass} p-3.5 xl:col-span-2`}>
-                  <div className="flex items-center justify-between gap-2.5">
-                    <h4 className={sectionTitleClass}>Purchase Details</h4>
-                    <button type="button" onClick={() => onEdit(property, 'purchase-details')} className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${appButtonMutedClass} ${appTextMutedClass}`}>{t('common.edit')}</button>
-                  </div>
-                  <div className="mt-2.5">{renderInfoGrid(purchaseDetailItems)}</div>
-                </div>
-              </div>
+          <section className={`${nestedPanelClass} overflow-hidden`}>
+            <div className="grid grid-cols-1 divide-y divide-[var(--app-border)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
+              {heroMetrics.slice(0, 4).map((metric, index) => {
+                const Icon = index === 0 ? Home : index === 1 ? TrendingUp : index === 2 ? Wallet2 : Landmark;
+                const subtext = index === 3 && mortgageLtv !== null ? `${formatPercentage(mortgageLtv, 1)} LTV` : undefined;
+                return <div key={metric.label} className="flex min-w-0 items-center gap-3 px-4 py-3.5 sm:px-5">
+                  <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${index === 1 || (index === 2 && details.netMonthlyCashflow >= 0) ? 'bg-emerald-500/10 text-emerald-600' : index === 3 ? 'bg-amber-500/10 text-amber-600' : 'bg-blue-500/10 text-blue-700'}`}><Icon className="h-4.5 w-4.5" /></div>
+                  <div className="min-w-0"><p className={`text-[1.25rem] font-semibold tracking-[-0.04em] ${metric.tone}`}>{metric.value}</p><p className={`mt-0.5 text-[12px] ${appTextMutedClass}`}>{metric.label}</p>{subtext ? <p className={`text-[11px] ${appTextMutedClass}`}>{subtext}</p> : null}</div>
+                </div>;
+              })}
             </div>
-            <div className="min-w-0">
-              {renderRightRail()}
-            </div>
-          </div>
+          </section>
+
+          <section className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('propertiesUi.leaseAndTenancy')}</h3><button type="button" onClick={() => onEdit(property, 'lease-tenancy')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-2">{renderInfoGrid(leaseSummaryItems)}</div></div>
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('properties.labels.propertyDetails')}</h3><button type="button" onClick={() => onEdit(property, 'property-details')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-3 flex flex-wrap gap-1.5">{propertyMetadataItems.concat(property.floor != null ? [{ key: 'floor', icon: Expand, value: `${property.floor} ${t('properties.form.floor')}` }] : [], property.hasElevator ? [{ key: 'elevator', icon: Expand, value: t('properties.form.hasElevator') }] : []).slice(0, 5).map((item) => <span key={item.key} className={`inline-flex items-center gap-1 rounded-lg bg-[var(--app-panel-inset)] px-2 py-1 text-[11px] ${appTextMutedClass}`}><item.icon className="h-3.5 w-3.5" />{item.value}</span>)}</div><div className="mt-2">{renderInfoGrid(propertyDetailItems.filter((item) => !item.label.includes('/')))}</div></div>
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('propertiesUi.purchaseAndValuation')}</h3><button type="button" onClick={() => onEdit(property, 'purchase-details')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2"><div><p className={labelClass}>{t('properties.form.purchasePrice')}</p><p className={valueClass}>{formatValuationAmount(property.purchasePrice, purchasePriceCurrency)}</p>{property.purchaseDate ? <p className={`mt-0.5 text-[11px] ${appTextMutedClass}`}>{formatLanguageDate(property.purchaseDate)}</p> : null}</div><TrendingUp className={`h-4 w-4 ${appTextMutedClass}`} /><div><p className={labelClass}>{t('properties.labels.estimatedValue')}</p><p className={valueClass}>{formatValuationAmount(property.currentEstimatedValue, currentEstimatedValueCurrency)}</p></div></div>{valuationIncrease !== null && valuationIncreasePercent !== null ? <div className="mt-3 flex items-center justify-between rounded-xl bg-emerald-500/8 px-3 py-2"><div><p className={`text-[12px] font-semibold ${successValueClass}`}>{valuationIncrease >= 0 ? '+' : ''}{formatValuationAmount(valuationIncrease, currentEstimatedValueCurrency)}</p><p className={`text-[11px] ${appTextMutedClass}`}>{t('properties.labels.estimatedValue')}</p></div><p className={`text-sm font-semibold ${valuationIncrease >= 0 ? successValueClass : dangerValueClass}`}>{valuationIncrease >= 0 ? '+' : ''}{formatPercentage(valuationIncreasePercent, 1)}</p></div> : null}<div className="mt-2">{renderInfoGrid(purchaseDetailItems)}</div></div>
+          </section>
+
+          <section className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('properties.tabs.mortgage')}</h3>{mortgage || property.hasMortgage ? <button type="button" onClick={() => setActiveTab('mortgage')} className={`text-[11px] font-medium text-[var(--app-nav-active-fg)]`}>{t('propertiesUi.viewAll')} <ChevronRight className="inline h-3.5 w-3.5" /></button> : null}</div>{mortgage || property.hasMortgage ? <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]"><div><p className={`text-[13px] font-semibold ${appTextStrongClass}`}>{mortgageLenderLabel}</p><p className={`mt-2 text-[11px] ${appTextMutedClass}`}>{t('mortgages.card.currentBalance')}</p><p className={`text-[1.3rem] font-semibold tracking-[-0.04em] ${appTextStrongClass}`}>{formatMortgageBalanceAmount(details.currentMortgageBalance)}</p>{mortgageLtv !== null ? <><p className={`mt-1 text-[11px] ${appTextMutedClass}`}>{formatPercentage(mortgageLtv, 1)} LTV</p><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-200/70"><div className="h-full rounded-full bg-blue-600" style={{ width: `${Math.min(mortgageLtv, 100)}%` }} /></div></> : null}</div><div className="divide-y divide-[var(--app-border)]">{[{ label: t('mortgages.card.monthlyPayment'), value: formatMortgageOperatingAmount(details.monthlyMortgagePayment) }, { label: t('properties.mortgageImpact.interestRate'), value: mortgageRateValue !== null ? `${formatPercentage(mortgageRateValue, 2)} ${mortgageRateTypeLabel}` : t('common.notSpecified') }, { label: t('properties.mortgageImpact.remainingTerm'), value: mortgageRemainingTermLabel }].map((row) => <div key={row.label} className="flex items-center justify-between gap-3 py-1.5 text-[12px]"><span className={appTextMutedClass}>{row.label}</span><span className={`text-right font-semibold ${appTextStrongClass}`}>{row.value}</span></div>)}</div></div> : <p className={`mt-3 text-[13px] ${appTextMutedClass}`}>{mortgageEmptyTitle}</p>}</div>
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('nav.documents')}</h3><button type="button" onClick={() => setActiveTab('documents')} className={`text-[11px] font-medium text-[var(--app-nav-active-fg)]`}>{t('propertiesUi.viewAll')} <ChevronRight className="inline h-3.5 w-3.5" /></button></div>{uploadedDocuments.length > 0 ? <div className="mt-2 divide-y divide-[var(--app-border)]">{uploadedDocuments.slice(0, 3).map((document) => <button key={document.id} type="button" onClick={() => setActiveTab('documents')} className="flex w-full items-center gap-3 py-2 text-left"><FileText className="h-4 w-4 shrink-0 text-blue-600" /><span className="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--app-text-strong)]">{document.name}</span><span className={`shrink-0 text-[11px] ${appTextMutedClass}`}>{document.uploadedAt ? formatLanguageDate(document.uploadedAt) : document.typeLabel}</span></button>)}</div> : <p className={`mt-3 text-[13px] ${appTextMutedClass}`}>{t('propertiesUi.noDocumentsUploaded')}</p>}</div>
+          </section>
         </div>
       ) : null}
       {false && activeTab === 'overview' ? (

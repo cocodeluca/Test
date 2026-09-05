@@ -395,6 +395,10 @@ export const esExtra = {
     recurringExpenseEngine: 'Motor avanzado de gastos recurrentes',
     recurringExpenseEngineHelp:
       'Usalo solo cuando necesites proyecciones con inflacion, historial de pagos o calendarios manuales.',
+    leaseAndTenancy: 'Contrato y ocupacion',
+    purchaseAndValuation: 'Compra y valoracion',
+    viewAll: 'Ver todo',
+    noDocumentsUploaded: 'Todavia no hay documentos cargados.',
   },
   mortgagesUi: {
     importWithAi: 'Importar con IA',
