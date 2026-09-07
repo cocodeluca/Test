@@ -291,8 +291,8 @@ export interface Property {
   annualMaintenance: number;
   annualUtilitiesPaidByOwner: number;
   annualOtherExpenses: number;
-  annualMortgageInterest?: number;
-  annualPrincipalAmortized?: number;
+  annualMortgageInterest?: number | null;
+  annualPrincipalAmortized?: number | null;
   annualTotalMortgagePaid?: number;
   oneTimeTenantPlacementFee?: number;
   rentalDeposit?: number;
@@ -364,6 +364,7 @@ export interface Property {
   // === MEDIA ===
   imageUrl: string; // Property image (data URL or path)
   imageUrls?: string[];
+  imageThumbnailUrls?: string[];
   primaryImageIndex?: number;
 }
 
@@ -407,6 +408,8 @@ export interface Mortgage {
   optionalProducts?: string[];
   importProfile?: string | null;
   notes: string;
+  /** Optional imported lifecycle state; absent records keep date/balance classification. */
+  status?: 'active' | 'paid';
 }
 
 export interface CashAccount {

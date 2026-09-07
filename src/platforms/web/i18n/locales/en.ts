@@ -604,6 +604,8 @@ export const en = {
       fixed: 'Fixed',
       variable: 'Variable',
       amortized: 'Amortized',
+      savedBalance: 'Saved Balance',
+      savedBalanceDifference: 'Saved balance differs from modeled balance by {{amount}}.',
       rateAndBonifications: 'Rate & Bonifications',
       currentRate: 'Current rate',
       baseRate: 'Base rate',

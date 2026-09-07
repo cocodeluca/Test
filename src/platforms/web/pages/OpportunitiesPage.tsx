@@ -3,6 +3,7 @@ import { Building2, ChevronRight, FileText, MapPin, Plus, ShieldCheck, Sparkles,
 import type { Opportunity, OpportunityAttachment, OpportunityDocumentAnalysis, OpportunityExtractedField, OpportunityFieldExtractionConfidence } from '../../../common/types';
 import type { DisplayCurrency } from '../../../common/types/settings';
 import { formatCurrency, formatDate, formatPercentage } from '../../../common/utils/formatting';
+import { assertValidOpportunityFinancialValues } from '../../../common/utils/financialValidation';
 import { analyzeOpportunityDocument, applyOpportunityDocumentAnalysis, calculateOpportunityAnalysis, createAttachmentFromFile, createEmptyOpportunity, detectOpportunityAttachmentType, enrichOpportunity, normalizeOpportunityExtractedValue } from '../../../common/utils/opportunities';
 import { useSettings } from '../context/SettingsContext';
 import { appBorderClass, appButtonMutedClass, appButtonPrimaryClass, appInputClass, appPanelClass, appPanelInsetClass, appTextMutedClass, appTextSoftClass, appTextStrongClass } from '../styles/dashboardTheme';
@@ -239,6 +240,7 @@ export const OpportunitiesPage: React.FC<OpportunitiesPageProps> = ({
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(opportunities[0]?.id ?? null);
   const [isImporting, setIsImporting] = useState(false);
   const [importState, setImportState] = useState<{ file: File; attachment: OpportunityAttachment; analysis: OpportunityDocumentAnalysis } | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (opportunities.length === 0) { setSelectedOpportunityId(null); return; }
@@ -274,6 +276,13 @@ export const OpportunitiesPage: React.FC<OpportunitiesPageProps> = ({
     if (!importState) return;
     const titleField = analysis.extractedFields.find((field) => field.field === 'title');
     const opportunity = applyOpportunityDocumentAnalysis(analysis, importState.attachment, createEmptyOpportunity({ title: titleField?.value || importState.file.name.replace(/\.[^.]+$/, '') || 'New Opportunity', status: 'under-review', estimatedClosingCosts: 8000, monthlyHoldingCosts: 120 }));
+    try {
+      assertValidOpportunityFinancialValues(opportunity);
+      setValidationError(null);
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : 'Invalid opportunity financial values');
+      return;
+    }
     onAddOpportunity(opportunity);
     setSelectedOpportunityId(opportunity.id);
     setImportState(null);
@@ -287,7 +296,15 @@ export const OpportunitiesPage: React.FC<OpportunitiesPageProps> = ({
 
   const updateSelectedOpportunity = (patch: Partial<Opportunity>) => {
     if (!selectedOpportunity) return;
-    onUpdateOpportunity(enrichOpportunity({ ...selectedOpportunity, ...patch }));
+    const opportunity = enrichOpportunity({ ...selectedOpportunity, ...patch });
+    try {
+      assertValidOpportunityFinancialValues(opportunity);
+      setValidationError(null);
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : 'Invalid opportunity financial values');
+      return;
+    }
+    onUpdateOpportunity(opportunity);
   };
 
   return (
@@ -300,6 +317,7 @@ export const OpportunitiesPage: React.FC<OpportunitiesPageProps> = ({
             <button type="button" onClick={handleAddManually} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Plus className="h-4 w-4" />Add Opportunity Manually</button>
             <input ref={fileInputRef} type="file" accept=".pdf,.csv,.xls,.xlsx,image/*" className="hidden" onChange={(event) => void handleImportFile(event)} />
           </div>
+          {validationError ? <p className="mt-4 rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">{validationError}</p> : null}
           {listItems.length === 0 ? (
             <div className={`mt-6 rounded-[28px] border border-dashed p-8 text-center ${appBorderClass}`}>
               <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[22px] bg-cyan-500/10 text-cyan-600 dark:text-cyan-300"><Sparkles className="h-7 w-7" /></div>

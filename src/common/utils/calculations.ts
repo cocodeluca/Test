@@ -8,9 +8,14 @@ import {
 } from '../types';
 import { DisplayCurrency } from '../types/settings';
 import { calculatePropertyTaxRuntime, getPropertyTaxProfile } from '../tax';
-import { convertCurrency, sumInCurrency } from './currency';
+import { convertCurrency, convertCurrencyWithCoverage, sumInCurrency } from './currency';
 import { getActiveLease, syncPropertyLeaseData } from './leaseUpdates';
 import { calculateRecurringExpensePortfolioSummary, ensureRecurringExpenses } from './recurringExpenses';
+import { compareCivilDates, parseCivilDate, toCivilDate } from './civilDate';
+import {
+  getMortgageFinancialValidationIssues,
+  getPropertyFinancialValidationIssues,
+} from './financialValidation';
 
 export interface MortgageProjection {
   currentBalance: number;
@@ -29,6 +34,44 @@ export interface PortfolioDebtProjection {
   mortgageProjections: Record<string, MortgageProjection>;
 }
 
+export interface MortgageDebtPaydownItem {
+  mortgageId: string;
+  propertyId: string;
+  currency: DisplayCurrency;
+  currentDebt: number;
+  projectedDebtAfter12Months: number;
+  currentMonthPrincipal: number;
+  next12MonthsPrincipal: number;
+  next12MonthsInterest: number;
+}
+
+export interface MortgageDebtPaydownSummary {
+  currentDebt: number;
+  projectedDebtAfter12Months: number;
+  currentMonthPrincipal: number;
+  next12MonthsPrincipal: number;
+  next12MonthsInterest: number;
+  reportingCurrency: DisplayCurrency;
+  status: 'available' | 'no-active-mortgages' | 'unavailable';
+  debtCoverageStatus: 'available' | 'partial' | 'unavailable';
+  candidateMortgageCount: number;
+  eligibleMortgageCount: number;
+  debtCoveredMortgageCount: number;
+  unverifiedMortgageCount?: number;
+  unverifiedOutstandingBalance?: number | null;
+  paidMortgageConflictCount?: number;
+  paidMortgageConflictBalance?: number | null;
+  mortgages: MortgageDebtPaydownItem[];
+}
+
+export interface CalculateMortgageDebtPaydownArgs {
+  mortgages: Mortgage[];
+  properties: Property[];
+  reportingCurrency: DisplayCurrency;
+  today?: Date;
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>;
+}
+
 export interface MortgageBonificationSummary {
   activeBonifications: Mortgage['activeBonifications'];
   availableBonifications: Mortgage['availableBonifications'];
@@ -37,17 +80,40 @@ export interface MortgageBonificationSummary {
 }
 
 export interface MortgageSnapshot {
+  isValid: boolean;
+  validationIssues: string[];
+  /** The balance used everywhere in the application. */
+  balanceSource: 'contractual-model' | 'saved-fallback';
+  paymentFrequencySource: 'explicit-monthly' | 'inferred-monthly' | null;
+  savedBalance: number;
+  savedBalanceDifference: number | null;
+  materialBalanceDifference: number | null;
+  hasMaterialBalanceDifference: boolean;
   currentCalculatedBalance: number;
   displayedBalance: number;
+  /** Contractual amortization-model output. Equals displayedBalance when the model is verifiable. */
+  modeledBalance: number;
   totalPrincipalPaid: number;
   totalInterestPaid: number;
   amortizedPercentage: number;
   principalAmortized: number;
+  modeledPrincipalAmortized: number;
+  modeledAmortizedPercentage: number;
   elapsedMonths: number;
   remainingMonths: number;
   currentRate: number | null;
+  contractualMonthlyPayment: number | null;
   currentMonthlyPayment: number | null;
   usedStoredBalanceFallback: boolean;
+}
+
+export type MortgageClassification = 'active' | 'future' | 'matured' | 'paid' | 'unverified';
+
+export interface MortgageClassificationResult {
+  status: MortgageClassification;
+  outstandingBalance: number;
+  hasAuthoritativeBalance: boolean;
+  dataConflict?: 'paid-with-positive-balance';
 }
 
 export interface PropertyExpenseBreakdown {
@@ -72,11 +138,11 @@ export interface PropertyExpenseBreakdown {
 }
 
 export interface PropertyMortgageBreakdown {
-  annualMortgageInterest: number;
-  annualPrincipalAmortized: number;
+  annualMortgageInterest: number | null;
+  annualPrincipalAmortized: number | null;
   annualTotalMortgagePaid: number;
-  monthlyMortgageInterest: number;
-  monthlyPrincipalAmortized: number;
+  monthlyMortgageInterest: number | null;
+  monthlyPrincipalAmortized: number | null;
   monthlyTotalMortgagePaid: number;
 }
 
@@ -94,6 +160,7 @@ export interface PortfolioTaxPreview {
 }
 
 export interface PropertyFinancials {
+  calculationIssues: string[];
   taxModuleId: string;
   taxModuleLabel: string;
   taxModuleStatus: string;
@@ -106,11 +173,14 @@ export interface PropertyFinancials {
   monthlyAfterTaxCashflow: number;
   monthlyRent: number;
   currentMortgageBalance: number;
+  unverifiedMortgageBalance: number;
+  mortgageClassification: MortgageClassification | null;
+  mortgageDataConflict: MortgageClassificationResult['dataConflict'] | null;
   monthlyMortgagePayment: number;
   monthlyOperatingExpenses: number;
   monthlyInsuranceExpenses: number;
-  monthlyMortgageInterest: number;
-  monthlyPrincipalAmortized: number;
+  monthlyMortgageInterest: number | null;
+  monthlyPrincipalAmortized: number | null;
   monthlyTotalMortgagePaid: number;
   totalMonthlyExpenses: number;
   netMonthlyCashflow: number;
@@ -120,8 +190,8 @@ export interface PropertyFinancials {
   annualRecurringExpenses: number;
   actualTrailing12MonthsExpenses: number;
   projectedNext12MonthsExpenses: number;
-  annualMortgageInterest: number;
-  annualPrincipalAmortized: number;
+  annualMortgageInterest: number | null;
+  annualPrincipalAmortized: number | null;
   annualTotalMortgagePaid: number;
   annualIbi: number;
   annualCommunityFees: number;
@@ -148,6 +218,11 @@ export interface PropertyFinancials {
 
 const getNumericValue = (value: number | undefined | null): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+const calculatePercentage = (numerator: number, denominator: number): number =>
+  denominator > 0 && Number.isFinite(numerator) && Number.isFinite(denominator)
+    ? (numerator / denominator) * 100
+    : Number.NaN;
 
 const normalizePropertyImageUrl = (value: unknown): string | null => {
   if (typeof value === 'string' && value.trim().length > 0) {
@@ -229,33 +304,41 @@ const getDepositCurrency = (property: Partial<Property>): DisplayCurrency => {
   return activeLease?.securityDepositCurrency ?? property.rentalDepositCurrency ?? getRentCurrency(property);
 };
 
-const getProjectedMonthlyRent = (property: Partial<Property>): number => {
+const getProjectedMonthlyRent = (
+  property: Partial<Property>,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+): number => {
   const activeLease = getActiveLease(property);
 
   if (activeLease) {
     return convertCurrency(
       activeLease.monthlyRent,
       activeLease.monthlyRentCurrency ?? property.monthlyRentCurrency ?? getPropertyCurrency(property),
-      getPropertyCurrency(property)
+      getPropertyCurrency(property),
+      rateOverrides
     );
   }
 
   return convertCurrency(
     getNumericValue(property.monthlyRent),
     property.monthlyRentCurrency ?? getPropertyCurrency(property),
-    getPropertyCurrency(property)
+    getPropertyCurrency(property),
+    rateOverrides
   );
 };
 
 const isPropertyActuallyRentGenerating = (property: Partial<Property>): boolean =>
   property.occupancyStatus === 'occupied';
 
-const getEffectiveMonthlyRent = (property: Partial<Property>): number => {
+const getEffectiveMonthlyRent = (
+  property: Partial<Property>,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+): number => {
   if (!isPropertyActuallyRentGenerating(property)) {
     return 0;
   }
 
-  return getProjectedMonthlyRent(property);
+  return getProjectedMonthlyRent(property, rateOverrides);
 };
 
 const getMortgageCurrency = (
@@ -323,20 +406,17 @@ export const calculateMortgageBonificationSummary = (
 const getToday = (): Date => new Date();
 
 const getMonthsElapsedSinceStart = (mortgageStartDate: string, today: Date = getToday()): number => {
-  if (!mortgageStartDate) {
-    return 0;
-  }
-
-  const startDate = new Date(mortgageStartDate);
-  if (Number.isNaN(startDate.getTime()) || startDate > today) {
+  const startDate = parseCivilDate(mortgageStartDate);
+  const currentDate = toCivilDate(today);
+  if (!startDate || compareCivilDates(startDate, currentDate) > 0) {
     return 0;
   }
 
   let monthsElapsed =
-    (today.getFullYear() - startDate.getFullYear()) * 12 +
-    (today.getMonth() - startDate.getMonth());
+    (currentDate.year - startDate.year) * 12 +
+    (currentDate.month - startDate.month);
 
-  if (today.getDate() < startDate.getDate()) {
+  if (currentDate.day < startDate.day) {
     monthsElapsed -= 1;
   }
 
@@ -359,36 +439,6 @@ const getMortgageTotalMonths = (mortgage: Mortgage): number => {
   return Math.max(Math.trunc(getNumericValue(mortgage.mortgageTermYears) * 12), 0);
 };
 
-const getMortgageAnnualRate = (mortgage: Mortgage): number => {
-  const candidateRates = [
-    mortgage.interestRate,
-    mortgage.currentInterestRate,
-    mortgage.baseInterestRate,
-    mortgage.initialInterestRate,
-  ];
-
-  const positiveRate = candidateRates.find(
-    (value): value is number =>
-      typeof value === 'number' && Number.isFinite(value) && value > 0
-  );
-
-  if (positiveRate !== undefined) {
-    return positiveRate;
-  }
-
-  return Math.max(
-    candidateRates.find(
-      (value): value is number => typeof value === 'number' && Number.isFinite(value)
-    ) ?? 0,
-    0
-  );
-};
-
-const hasRequiredMortgageAmortizationInputs = (mortgage: Mortgage): boolean =>
-  getNumericValue(mortgage.originalLoanAmount) > 0 &&
-  getMortgageTotalMonths(mortgage) > 0 &&
-  Boolean(mortgage.mortgageStartDate);
-
 const getKnownActiveBonificationPoints = (mortgage: Mortgage): number => {
   const { knownActiveBonificationPoints } = calculateMortgageBonificationSummary(mortgage);
 
@@ -408,18 +458,38 @@ const getPostInitialRate = (mortgage: Mortgage): number | null => {
     return mortgage.currentInterestRate;
   }
 
-  if (mortgage.interestRate > 0) {
+  if (Number.isFinite(mortgage.interestRate) && mortgage.interestRate >= 0) {
     return mortgage.interestRate;
   }
 
   return null;
 };
 
+const getInitialRateMonths = (mortgage: Mortgage): number => {
+  if (mortgage.initialInterestRate === null) {
+    return 0;
+  }
+
+  const configuredMonths = Math.trunc(getNumericValue(mortgage.initialRateMonths));
+  return configuredMonths > 0 ? configuredMonths : 12;
+};
+
+const getMonthlyRepaymentFrequencySource = (
+  frequency: string | null | undefined
+): MortgageSnapshot['paymentFrequencySource'] => {
+  const normalized = frequency?.trim().toLowerCase();
+
+  if (!normalized) {
+    return 'inferred-monthly';
+  }
+
+  return normalized === 'monthly' || normalized === 'month' || normalized === 'mensual'
+    ? 'explicit-monthly'
+    : null;
+};
+
 const getRateForElapsedMonth = (mortgage: Mortgage, elapsedMonths: number): number | null => {
-  const initialPeriodMonths = Math.max(
-    Math.trunc(getNumericValue(mortgage.initialRateMonths)),
-    mortgage.initialInterestRate !== null ? 12 : 0
-  );
+  const initialPeriodMonths = getInitialRateMonths(mortgage);
 
   if (mortgage.initialInterestRate !== null && elapsedMonths < initialPeriodMonths) {
     return mortgage.initialInterestRate;
@@ -462,68 +532,6 @@ const calculateAmortizedPayment = (
   return principal * ((monthlyRate * factor) / denominator);
 };
 
-const calculateScheduledMonthlyPayment = (
-  principal: number,
-  annualRate: number,
-  totalMonths: number
-): number => {
-  if (principal <= 0 || totalMonths <= 0) {
-    return 0;
-  }
-
-  const monthlyRate = annualRate / 100 / 12;
-
-  if (monthlyRate === 0) {
-    return principal / totalMonths;
-  }
-
-  const growthFactor = Math.pow(1 + monthlyRate, totalMonths);
-  const denominator = growthFactor - 1;
-
-  if (denominator === 0) {
-    return 0;
-  }
-
-  return principal * ((monthlyRate * growthFactor) / denominator);
-};
-
-const calculateBalanceAfterPayments = (
-  principal: number,
-  annualRate: number,
-  totalMonths: number,
-  paymentsElapsed: number
-): number => {
-  if (principal <= 0 || totalMonths <= 0) {
-    return 0;
-  }
-
-  const boundedElapsedPayments = Math.min(Math.max(Math.trunc(paymentsElapsed), 0), totalMonths);
-
-  if (boundedElapsedPayments === 0) {
-    return principal;
-  }
-
-  if (boundedElapsedPayments >= totalMonths) {
-    return 0;
-  }
-
-  const monthlyRate = annualRate / 100 / 12;
-
-  if (monthlyRate === 0) {
-    return principal * (1 - boundedElapsedPayments / totalMonths);
-  }
-
-  const totalFactor = Math.pow(1 + monthlyRate, totalMonths);
-  const elapsedFactor = Math.pow(1 + monthlyRate, boundedElapsedPayments);
-  const denominator = totalFactor - 1;
-
-  if (denominator === 0) {
-    return 0;
-  }
-
-  return principal * ((totalFactor - elapsedFactor) / denominator);
-};
-
 export const calculateRemainingMortgageMonths = (
   mortgage: Mortgage,
   today: Date = getToday()
@@ -541,10 +549,7 @@ export const isMortgageInInitialPeriod = (
     return false;
   }
 
-  const initialPeriodMonths = Math.max(
-    Math.trunc(getNumericValue(mortgage.initialRateMonths)),
-    12
-  );
+  const initialPeriodMonths = getInitialRateMonths(mortgage);
 
   return getMonthsElapsedSinceStart(mortgage.mortgageStartDate, today) < initialPeriodMonths;
 };
@@ -564,56 +569,62 @@ export const calculateMortgageSnapshot = (
   const originalLoanAmount = Math.max(getNumericValue(mortgage.originalLoanAmount), 0);
   const storedCurrentBalance = Math.max(getNumericValue(mortgage.currentBalance), 0);
   const totalMonths = getMortgageTotalMonths(mortgage);
-  const fallbackBalance = storedCurrentBalance > 0 ? storedCurrentBalance : originalLoanAmount;
-  const annualRate = getMortgageAnnualRate(mortgage);
-
-  if (!hasRequiredMortgageAmortizationInputs(mortgage)) {
-    const remainingMonths = calculateRemainingMortgageMonths(mortgage, today);
-    const currentRate = annualRate > 0 ? annualRate : calculateCurrentRate(mortgage, today);
-    const explicitMonthlyPayment = isMortgageInInitialPeriod(mortgage, today)
-      ? getNumericValue(mortgage.initialMonthlyPayment) ||
-        getNumericValue(mortgage.monthlyMortgagePayment) ||
-        getNumericValue(mortgage.regularMonthlyPayment)
-      : getNumericValue(mortgage.regularMonthlyPayment) ||
-        getNumericValue(mortgage.monthlyMortgagePayment) ||
-        getNumericValue(mortgage.initialMonthlyPayment);
-    const currentMonthlyPayment = calculateAmortizedPayment(
-      fallbackBalance,
-      currentRate,
-      remainingMonths,
-      explicitMonthlyPayment
-    );
-    const principalAmortized = Math.max(originalLoanAmount - fallbackBalance, 0);
-    const amortizedPercentage =
-      originalLoanAmount === 0 ? 0 : (principalAmortized / originalLoanAmount) * 100;
-
-    return {
-      currentCalculatedBalance: fallbackBalance,
-      displayedBalance: fallbackBalance,
-      totalPrincipalPaid: principalAmortized,
-      totalInterestPaid: 0,
-      amortizedPercentage,
-      principalAmortized,
-      elapsedMonths: 0,
-      remainingMonths,
-      currentRate,
-      currentMonthlyPayment,
-      usedStoredBalanceFallback: true,
-    };
-  }
-
-  const elapsedMonths = Math.min(getMonthsElapsedSinceStart(mortgage.mortgageStartDate, today), totalMonths);
-  const balance = Math.max(
-    calculateBalanceAfterPayments(originalLoanAmount, annualRate, totalMonths, elapsedMonths),
-    0
-  );
-  const remainingMonths = Math.max(totalMonths - elapsedMonths, 0);
-  const currentRate = annualRate;
-  const scheduledMonthlyPayment = calculateScheduledMonthlyPayment(
-    originalLoanAmount,
-    annualRate,
+  const startDate = parseCivilDate(mortgage.mortgageStartDate);
+  const elapsedMonths = Math.min(
+    getMonthsElapsedSinceStart(mortgage.mortgageStartDate, today),
     totalMonths
   );
+  const paymentFrequencySource = getMonthlyRepaymentFrequencySource(mortgage.repaymentFrequency);
+  const currentRate = getRateForElapsedMonth(mortgage, elapsedMonths);
+  const validationIssues = getMortgageFinancialValidationIssues(mortgage);
+
+  if (originalLoanAmount <= 0) validationIssues.push('original loan amount is required for contractual modelling');
+  if (totalMonths <= 0) validationIssues.push('mortgage term is required for contractual modelling');
+  if (!startDate) validationIssues.push('mortgage start date is required for contractual modelling');
+  if (!paymentFrequencySource) validationIssues.push('repayment frequency is not compatible with monthly modelling');
+  if (currentRate === null || !Number.isFinite(currentRate) || currentRate < 0) {
+    validationIssues.push('effective interest rate is required for contractual modelling');
+  }
+
+  const remainingMonths = Math.max(totalMonths - elapsedMonths, 0);
+  let modeledBalance = originalLoanAmount;
+  let modeledInterestPaid = 0;
+  let isContractuallyModeled = validationIssues.length === 0;
+
+  if (isContractuallyModeled) {
+    for (let month = 0; month < elapsedMonths && modeledBalance > 0; month += 1) {
+      const monthlyRate = getRateForElapsedMonth(mortgage, month);
+      if (monthlyRate === null || !Number.isFinite(monthlyRate) || monthlyRate < 0) {
+        validationIssues.push('interest-rate structure cannot model the full elapsed term');
+        isContractuallyModeled = false;
+        break;
+      }
+
+      const payment = calculateAmortizedPayment(
+        modeledBalance,
+        monthlyRate,
+        totalMonths - month,
+        0
+      );
+      if (payment === null || payment <= 0) {
+        validationIssues.push('contractual payment cannot be calculated');
+        isContractuallyModeled = false;
+        break;
+      }
+
+      const interest = modeledBalance * (monthlyRate / 100 / 12);
+      const principal = Math.min(Math.max(payment - interest, 0), modeledBalance);
+      modeledBalance = Math.max(modeledBalance - principal, 0);
+      modeledInterestPaid += interest;
+    }
+  }
+
+  const balanceSource = isContractuallyModeled ? 'contractual-model' : 'saved-fallback';
+  const displayedBalance = isContractuallyModeled ? modeledBalance : storedCurrentBalance;
+  const contractualMonthlyPayment =
+    isContractuallyModeled && remainingMonths > 0
+      ? calculateAmortizedPayment(displayedBalance, currentRate, remainingMonths, 0)
+      : null;
   const explicitCurrentMonthlyPayment = isMortgageInInitialPeriod(mortgage, today)
     ? getNumericValue(mortgage.initialMonthlyPayment) ||
       getNumericValue(mortgage.monthlyMortgagePayment)
@@ -623,29 +634,47 @@ export const calculateMortgageSnapshot = (
     remainingMonths > 0
       ? explicitCurrentMonthlyPayment > 0
         ? explicitCurrentMonthlyPayment
-        : scheduledMonthlyPayment
-      : 0;
-  const totalPrincipalPaid = Math.max(originalLoanAmount - balance, 0);
-  const totalInterestPaid = Math.max(
-    scheduledMonthlyPayment * elapsedMonths - totalPrincipalPaid,
-    0
-  );
-  const principalAmortized = Math.max(originalLoanAmount - balance, 0);
+        : contractualMonthlyPayment
+      : isContractuallyModeled
+      ? 0
+      : null;
+  const modeledPrincipalAmortized = Math.max(originalLoanAmount - modeledBalance, 0);
+  const principalAmortized = Math.max(originalLoanAmount - displayedBalance, 0);
   const amortizedPercentage =
     originalLoanAmount === 0 ? 0 : (principalAmortized / originalLoanAmount) * 100;
+  const modeledAmortizedPercentage =
+    originalLoanAmount === 0 ? 0 : (modeledPrincipalAmortized / originalLoanAmount) * 100;
+  const savedBalanceDifference = isContractuallyModeled
+    ? Math.abs(storedCurrentBalance - modeledBalance)
+    : null;
+  const materialBalanceDifference = Math.max(100, originalLoanAmount * 0.01);
+  const hasMaterialBalanceDifference =
+    savedBalanceDifference !== null && savedBalanceDifference > materialBalanceDifference;
 
   return {
-    currentCalculatedBalance: balance,
-    displayedBalance: balance,
-    totalPrincipalPaid,
-    totalInterestPaid,
+    isValid: isContractuallyModeled,
+    validationIssues: [...new Set(validationIssues)],
+    balanceSource,
+    paymentFrequencySource,
+    savedBalance: storedCurrentBalance,
+    savedBalanceDifference,
+    materialBalanceDifference: isContractuallyModeled ? materialBalanceDifference : null,
+    hasMaterialBalanceDifference,
+    currentCalculatedBalance: isContractuallyModeled ? modeledBalance : storedCurrentBalance,
+    displayedBalance,
+    modeledBalance: isContractuallyModeled ? modeledBalance : storedCurrentBalance,
+    totalPrincipalPaid: principalAmortized,
+    totalInterestPaid: isContractuallyModeled ? modeledInterestPaid : 0,
     amortizedPercentage,
     principalAmortized,
+    modeledPrincipalAmortized,
+    modeledAmortizedPercentage,
     elapsedMonths,
     remainingMonths,
     currentRate,
+    contractualMonthlyPayment,
     currentMonthlyPayment,
-    usedStoredBalanceFallback: false,
+    usedStoredBalanceFallback: !isContractuallyModeled,
   };
 };
 
@@ -666,19 +695,24 @@ export const calculateAmortization = (
   return {
     principalAmortized: snapshot.principalAmortized,
     amortizedPercentage: snapshot.amortizedPercentage,
+    modeledPrincipalAmortized: snapshot.modeledPrincipalAmortized,
+    modeledAmortizedPercentage: snapshot.modeledAmortizedPercentage,
   };
 };
 
 const getAnnualExpenseBreakdown = (
-  property: Partial<Property>
+  property: Partial<Property>,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PropertyExpenseBreakdown => {
   const recurringSummary = calculateRecurringExpensePortfolioSummary(property);
   const recurringByType = recurringSummary.byType;
   const annualIbi = preferFilledNumber(property.ibiAndLocalTaxesAnnual, property.annualIBI);
   const propertyManagementRate = getNumericValue(property.propertyManagementRate);
-  const annualManagementFees =
+  const resolvedAnnualManagementFees =
     getNumericValue(property.annualManagementFees) ||
-    (propertyManagementRate > 0 ? getEffectiveMonthlyRent(property) * propertyManagementRate * 12 : 0);
+    (propertyManagementRate > 0
+      ? getEffectiveMonthlyRent(property, rateOverrides) * propertyManagementRate * 12
+      : 0);
   const annualCommunityFees = preferFilledNumber(
     property.communityAnnual,
     property.annualCommunityFees
@@ -710,7 +744,7 @@ const getAnnualExpenseBreakdown = (
   const projectedCommunityFees =
     recurringByType['community-fees']?.projectedNext12Months ?? annualCommunityFees;
   const projectedManagementFees =
-    recurringByType['management-fees']?.projectedNext12Months ?? annualManagementFees;
+    recurringByType['management-fees']?.projectedNext12Months ?? resolvedAnnualManagementFees;
   const projectedMaintenance =
     recurringByType['maintenance']?.projectedNext12Months ?? annualMaintenance;
   const projectedUtilities =
@@ -733,10 +767,10 @@ const getAnnualExpenseBreakdown = (
     projectedOther;
   const annualInsuranceExpenses =
     projectedHomeInsurance + projectedLifeInsurance + projectedRentDefaultInsurance;
+  const projectedCustomRecurringExpenses =
+    recurringByType.custom?.projectedNext12Months ?? 0;
   const annualRecurringExpenses =
-    recurringSummary.projectedNext12Months > 0
-      ? recurringSummary.projectedNext12Months
-      : annualOperatingExpenses + annualInsuranceExpenses;
+    annualOperatingExpenses + annualInsuranceExpenses + projectedCustomRecurringExpenses;
 
   return {
     annualIbi: projectedPropertyTax,
@@ -762,17 +796,18 @@ const getAnnualExpenseBreakdown = (
 
 const getMortgageBreakdown = (
   property: Partial<Property>,
-  mortgage?: Mortgage
+  mortgage?: Mortgage,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PropertyMortgageBreakdown => {
   const propertyCurrency = getPropertyCurrency(property);
   const mortgageCurrency = getMortgageCurrency(mortgage, property);
   const convertMortgageAmount = (value: number) =>
-    convertCurrency(value, mortgageCurrency, propertyCurrency);
+    convertCurrency(value, mortgageCurrency, propertyCurrency, rateOverrides);
   const storedAnnualMortgageInterest = getNumericValue(property.annualMortgageInterest);
   const storedAnnualPrincipalAmortized = getNumericValue(property.annualPrincipalAmortized);
   const storedAnnualTotalMortgagePaid = getNumericValue(property.annualTotalMortgagePaid);
 
-  if (mortgage && hasRequiredMortgageAmortizationInputs(mortgage)) {
+  if (mortgage && calculateMortgageSnapshot(mortgage).balanceSource === 'contractual-model') {
     const projection = calculateMortgageProjection(mortgage, 12);
     const annualMortgageInterest = convertMortgageAmount(projection.interestPaid);
     const annualPrincipalAmortized = convertMortgageAmount(projection.principalPaid);
@@ -790,8 +825,7 @@ const getMortgageBreakdown = (
 
   if (
     storedAnnualMortgageInterest > 0 ||
-    storedAnnualPrincipalAmortized > 0 ||
-    storedAnnualTotalMortgagePaid > 0
+    storedAnnualPrincipalAmortized > 0
   ) {
     const annualTotalMortgagePaid =
       storedAnnualTotalMortgagePaid || storedAnnualMortgageInterest + storedAnnualPrincipalAmortized;
@@ -807,17 +841,36 @@ const getMortgageBreakdown = (
   }
 
   if (mortgage) {
-    const projection = calculateMortgageProjection(mortgage, 12);
-    const annualMortgageInterest = convertMortgageAmount(projection.interestPaid);
-    const annualPrincipalAmortized = convertMortgageAmount(projection.principalPaid);
-    const annualTotalMortgagePaid = annualMortgageInterest + annualPrincipalAmortized;
+    const knownAnnualPayment = convertMortgageAmount(
+      getNumericValue(mortgage.monthlyMortgagePayment) * 12
+    );
+    const annualTotalMortgagePaid = storedAnnualTotalMortgagePaid || knownAnnualPayment;
 
     return {
-      annualMortgageInterest,
-      annualPrincipalAmortized,
+      annualMortgageInterest: null,
+      annualPrincipalAmortized: null,
       annualTotalMortgagePaid,
-      monthlyMortgageInterest: annualMortgageInterest / 12,
-      monthlyPrincipalAmortized: annualPrincipalAmortized / 12,
+      monthlyMortgageInterest: null,
+      monthlyPrincipalAmortized: null,
+      monthlyTotalMortgagePaid: annualTotalMortgagePaid / 12,
+    };
+  }
+
+  if (
+    property.hasMortgage ||
+    getNumericValue(property.currentMortgageBalance) > 0 ||
+    getNumericValue(property.monthlyMortgagePayment) > 0 ||
+    storedAnnualTotalMortgagePaid > 0
+  ) {
+    const annualTotalMortgagePaid =
+      storedAnnualTotalMortgagePaid || getNumericValue(property.monthlyMortgagePayment) * 12;
+
+    return {
+      annualMortgageInterest: null,
+      annualPrincipalAmortized: null,
+      annualTotalMortgagePaid,
+      monthlyMortgageInterest: null,
+      monthlyPrincipalAmortized: null,
       monthlyTotalMortgagePaid: annualTotalMortgagePaid / 12,
     };
   }
@@ -832,14 +885,18 @@ const getMortgageBreakdown = (
   };
 };
 
-const getOneTimeCosts = (property: Partial<Property>): PropertyOneTimeCosts => {
+const getOneTimeCosts = (
+  property: Partial<Property>,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+): PropertyOneTimeCosts => {
   return {
     oneTimeTenantPlacementFee: getNumericValue(property.oneTimeTenantPlacementFee),
     mortgageAppraisal: preferFilledNumber(property.mortgageAppraisalCost, 0),
     deposit: convertCurrency(
       getNumericValue(property.rentalDeposit),
       getDepositCurrency(property),
-      getPropertyCurrency(property)
+      getPropertyCurrency(property),
+      rateOverrides
     ),
     furniture: preferFilledNumber(property.furnitureCost, property.furnishingAndOther),
   };
@@ -879,7 +936,8 @@ export const calculatePortfolioTaxPreview = (
     (sum, property) => {
       const financials = calculatePropertyFinancials(
         property,
-        findMortgageByProperty(property.id, mortgages)
+        findMortgageByProperty(property.id, mortgages),
+        rateOverrides
       );
       const estimatedAnnualTaxBase = financials.estimatedAnnualTax;
 
@@ -977,20 +1035,13 @@ export const calculateMortgageProjection = (
 ): MortgageProjection => {
   const snapshot = calculateMortgageSnapshot(mortgage, today);
   const currentBalance = snapshot.displayedBalance;
-  const monthlyPayment = Math.max(snapshot.currentMonthlyPayment ?? 0, 0);
-  const annualRate = Math.max(snapshot.currentRate ?? 0, 0);
 
-  if (currentBalance === 0 || monthsAhead <= 0) {
-    return {
-      currentBalance,
-      projectedBalance: currentBalance,
-      principalPaid: 0,
-      interestPaid: 0,
-      monthsProjected: 0,
-    };
-  }
-
-  if (monthlyPayment === 0) {
+  if (
+    snapshot.balanceSource !== 'contractual-model' ||
+    classifyMortgage(mortgage, today).status !== 'active' ||
+    currentBalance === 0 ||
+    monthsAhead <= 0
+  ) {
     return {
       currentBalance,
       projectedBalance: currentBalance,
@@ -1004,7 +1055,6 @@ export const calculateMortgageProjection = (
   let principalPaid = 0;
   let interestPaid = 0;
   let monthsProjected = 0;
-  const monthlyRate = annualRate / 100 / 12;
   const maximumProjectionMonths = Math.min(monthsAhead, snapshot.remainingMonths);
 
   for (let month = 0; month < maximumProjectionMonths; month += 1) {
@@ -1012,7 +1062,16 @@ export const calculateMortgageProjection = (
       break;
     }
 
-    const interest = monthlyRate > 0 ? balance * monthlyRate : 0;
+    const elapsedMonth = snapshot.elapsedMonths + month;
+    const annualRate = getRateForElapsedMonth(mortgage, elapsedMonth);
+    const remainingMonths = snapshot.remainingMonths - month;
+    const monthlyPayment = calculateAmortizedPayment(balance, annualRate, remainingMonths, 0);
+
+    if (monthlyPayment === null || monthlyPayment <= 0 || annualRate === null) {
+      break;
+    }
+
+    const interest = balance * (Math.max(annualRate, 0) / 100 / 12);
     let principal = monthlyPayment - interest;
 
     if (principal <= 0) {
@@ -1038,14 +1097,226 @@ export const calculateMortgageProjection = (
   };
 };
 
+export const classifyMortgage = (
+  mortgage: Mortgage,
+  today: Date = getToday()
+): MortgageClassificationResult => {
+  const snapshot = calculateMortgageSnapshot(mortgage, today);
+  const outstandingBalance = snapshot.displayedBalance;
+  const startDate = parseCivilDate(mortgage.mortgageStartDate);
+  const currentDate = toCivilDate(today);
+  const totalMonths = getMortgageTotalMonths(mortgage);
+  const explicitlyPaid = mortgage.status === 'paid';
+
+  if (explicitlyPaid) {
+    return {
+      status: 'paid',
+      outstandingBalance,
+      hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback,
+      ...(snapshot.savedBalance > 0 ? { dataConflict: 'paid-with-positive-balance' as const } : {}),
+    };
+  }
+  if (snapshot.balanceSource === 'saved-fallback') {
+    return { status: 'unverified', outstandingBalance, hasAuthoritativeBalance: true };
+  }
+  if (!startDate || totalMonths <= 0) {
+    return { status: 'unverified', outstandingBalance, hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback };
+  }
+  if (compareCivilDates(startDate, currentDate) > 0) {
+    return { status: 'future', outstandingBalance, hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback };
+  }
+  if (getMonthsElapsedSinceStart(mortgage.mortgageStartDate, today) >= totalMonths) {
+    return { status: 'matured', outstandingBalance, hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback };
+  }
+  if (outstandingBalance <= 0) {
+    return { status: 'paid', outstandingBalance, hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback };
+  }
+  return { status: 'active', outstandingBalance, hasAuthoritativeBalance: snapshot.usedStoredBalanceFallback };
+};
+
+export const calculateMortgageDebtPaydown = ({
+  mortgages,
+  properties,
+  reportingCurrency,
+  today = getToday(),
+  rateOverrides,
+}: CalculateMortgageDebtPaydownArgs): MortgageDebtPaydownSummary => {
+  const propertyIds = new Set(properties.map((property) => property.id));
+  const candidates = mortgages.filter((mortgage) => classifyMortgage(mortgage, today).status === 'active');
+  const unverifiedMortgages = mortgages.filter(
+    (mortgage) => classifyMortgage(mortgage, today).status === 'unverified'
+  );
+  const paidMortgageConflicts = mortgages.filter(
+    (mortgage) => classifyMortgage(mortgage, today).dataConflict === 'paid-with-positive-balance'
+  );
+  const unverifiedConversions = unverifiedMortgages.map((mortgage) =>
+    convertCurrencyWithCoverage(
+      calculateMortgageSnapshot(mortgage, today).displayedBalance,
+      getMortgageCurrency(mortgage),
+      reportingCurrency,
+      rateOverrides
+    )
+  );
+  const unverifiedOutstandingBalance = unverifiedConversions.every((conversion) => conversion.available)
+    ? unverifiedConversions.reduce((sum, conversion) => sum + (conversion.value ?? 0), 0)
+    : null;
+  const paidMortgageConflictConversions = paidMortgageConflicts.map((mortgage) =>
+    convertCurrencyWithCoverage(
+      calculateMortgageSnapshot(mortgage, today).savedBalance,
+      getMortgageCurrency(mortgage),
+      reportingCurrency,
+      rateOverrides
+    )
+  );
+  const paidMortgageConflictBalance = paidMortgageConflictConversions.every((conversion) => conversion.available)
+    ? paidMortgageConflictConversions.reduce((sum, conversion) => sum + (conversion.value ?? 0), 0)
+    : null;
+  const convertedCandidateDebts = candidates.map((mortgage) =>
+    convertCurrencyWithCoverage(
+      calculateMortgageSnapshot(mortgage, today).displayedBalance,
+      getMortgageCurrency(mortgage),
+      reportingCurrency,
+      rateOverrides
+    )
+  );
+  const coveredCandidateDebts = convertedCandidateDebts.filter(
+    (conversion): conversion is { value: number; available: true } =>
+      conversion.available && conversion.value !== null
+  );
+  const mortgagePaydowns = candidates.flatMap<MortgageDebtPaydownItem>((mortgage) => {
+    const snapshot = calculateMortgageSnapshot(mortgage, today);
+    const startDate = parseCivilDate(mortgage.mortgageStartDate);
+
+    if (
+      !propertyIds.has(mortgage.propertyId) ||
+      !snapshot.isValid ||
+      !startDate ||
+      compareCivilDates(startDate, toCivilDate(today)) > 0 ||
+      snapshot.remainingMonths <= 0 ||
+      snapshot.currentRate === null ||
+      !Number.isFinite(snapshot.currentRate) ||
+      snapshot.currentRate < 0 ||
+      snapshot.balanceSource !== 'contractual-model'
+    ) {
+      return [];
+    }
+
+    const nextPayment = calculateMortgageProjection(mortgage, 1, today);
+    const next12Months = calculateMortgageProjection(mortgage, 12, today);
+    const mortgageCurrency = getMortgageCurrency(mortgage);
+    const convertedProjectionValues = [
+      nextPayment.principalPaid,
+      next12Months.principalPaid,
+      next12Months.interestPaid,
+      next12Months.projectedBalance,
+    ].map((value) =>
+      convertCurrencyWithCoverage(
+        value,
+        mortgageCurrency,
+        reportingCurrency,
+        rateOverrides
+      )
+    );
+
+    if (
+      nextPayment.monthsProjected !== 1 ||
+      nextPayment.principalPaid <= 0 ||
+      !Number.isFinite(nextPayment.principalPaid) ||
+      !Number.isFinite(next12Months.principalPaid) ||
+      next12Months.principalPaid < 0 ||
+      convertedProjectionValues.some((conversion) => !conversion.available)
+    ) {
+      return [];
+    }
+
+    return [{
+      mortgageId: mortgage.id,
+      propertyId: mortgage.propertyId,
+      currency: mortgageCurrency,
+      currentDebt: next12Months.currentBalance,
+      projectedDebtAfter12Months: next12Months.projectedBalance,
+      currentMonthPrincipal: nextPayment.principalPaid,
+      next12MonthsPrincipal: next12Months.principalPaid,
+      next12MonthsInterest: next12Months.interestPaid,
+    }];
+  });
+  const currentMonthPrincipal = mortgagePaydowns.reduce(
+    (total, mortgage) => total + (convertCurrencyWithCoverage(
+      mortgage.currentMonthPrincipal,
+      mortgage.currency,
+      reportingCurrency,
+      rateOverrides
+    ).value ?? 0),
+    0
+  );
+  const next12MonthsPrincipal = mortgagePaydowns.reduce(
+    (total, mortgage) => total + (convertCurrencyWithCoverage(
+      mortgage.next12MonthsPrincipal,
+      mortgage.currency,
+      reportingCurrency,
+      rateOverrides
+    ).value ?? 0),
+    0
+  );
+  const next12MonthsInterest = mortgagePaydowns.reduce(
+    (total, mortgage) => total + (convertCurrencyWithCoverage(
+      mortgage.next12MonthsInterest,
+      mortgage.currency,
+      reportingCurrency,
+      rateOverrides
+    ).value ?? 0),
+    0
+  );
+  const currentDebt = coveredCandidateDebts.reduce(
+    (total, conversion) => total + conversion.value,
+    0
+  );
+  const candidateMortgageCount = candidates.length;
+  const eligibleMortgageCount = mortgagePaydowns.length;
+  const debtCoveredMortgageCount = coveredCandidateDebts.length;
+  const debtCoverageStatus =
+    unverifiedMortgages.length > 0
+      ? 'partial'
+      : candidateMortgageCount === 0 || debtCoveredMortgageCount === candidateMortgageCount
+      ? 'available'
+      : debtCoveredMortgageCount === 0
+        ? 'unavailable'
+        : 'partial';
+
+  return {
+    currentDebt,
+    projectedDebtAfter12Months: Math.max(currentDebt - next12MonthsPrincipal, 0),
+    currentMonthPrincipal,
+    next12MonthsPrincipal,
+    next12MonthsInterest,
+    reportingCurrency,
+    status:
+      candidateMortgageCount === 0
+        ? 'no-active-mortgages'
+        : eligibleMortgageCount === 0
+          ? 'unavailable'
+          : 'available',
+    debtCoverageStatus,
+    candidateMortgageCount,
+    eligibleMortgageCount,
+    debtCoveredMortgageCount,
+    unverifiedMortgageCount: unverifiedMortgages.length,
+    unverifiedOutstandingBalance,
+    paidMortgageConflictCount: paidMortgageConflicts.length,
+    paidMortgageConflictBalance,
+    mortgages: mortgagePaydowns,
+  };
+};
+
 export const calculatePortfolioDebtProjection = (
   mortgages: Mortgage[],
   monthsAhead: number,
-  today: Date = getToday()
+  today: Date = getToday(),
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PortfolioDebtProjection => {
   const mortgageProjections: Record<string, MortgageProjection> = {};
 
-  const totals = mortgages.reduce(
+  const totals = mortgages.filter((mortgage) => classifyMortgage(mortgage, today).status === 'active').reduce(
     (accumulator, mortgage) => {
       const projection = calculateMortgageProjection(mortgage, monthsAhead, today);
       mortgageProjections[mortgage.id] = projection;
@@ -1054,15 +1325,27 @@ export const calculatePortfolioDebtProjection = (
       accumulator.totalDebtToday += convertCurrency(
         projection.currentBalance,
         mortgageCurrency,
-        'EUR'
+        'EUR',
+        rateOverrides
       );
       accumulator.totalDebtProjected += convertCurrency(
         projection.projectedBalance,
         mortgageCurrency,
-        'EUR'
+        'EUR',
+        rateOverrides
       );
-      accumulator.principalPaid += convertCurrency(projection.principalPaid, mortgageCurrency, 'EUR');
-      accumulator.interestPaid += convertCurrency(projection.interestPaid, mortgageCurrency, 'EUR');
+      accumulator.principalPaid += convertCurrency(
+        projection.principalPaid,
+        mortgageCurrency,
+        'EUR',
+        rateOverrides
+      );
+      accumulator.interestPaid += convertCurrency(
+        projection.interestPaid,
+        mortgageCurrency,
+        'EUR',
+        rateOverrides
+      );
 
       return accumulator;
     },
@@ -1086,34 +1369,38 @@ export const calculatePortfolioDebtProjection = (
 
 export const calculatePropertyFinancials = (
   property: Property,
-  mortgage?: Mortgage
+  mortgage?: Mortgage,
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PropertyFinancials => {
+  const financialValidationIssues = getPropertyFinancialValidationIssues(property);
   const propertyCurrency = getPropertyCurrency(property);
   const mortgageCurrency = getMortgageCurrency(mortgage, property);
   const convertMortgageAmount = (value: number) =>
-    convertCurrency(value, mortgageCurrency, propertyCurrency);
+    convertCurrency(value, mortgageCurrency, propertyCurrency, rateOverrides);
   const taxProfile = getPropertyTaxProfile(property);
-  const monthlyRent = getEffectiveMonthlyRent(property);
+  const monthlyRent = getEffectiveMonthlyRent(property, rateOverrides);
   const mortgageSnapshot = mortgage ? calculateMortgageSnapshot(mortgage) : null;
-  const currentMortgageBalance =
-    mortgageSnapshot && !mortgageSnapshot.usedStoredBalanceFallback
-      ? convertMortgageAmount(mortgageSnapshot.displayedBalance)
-      : preferFilledNumber(
-          mortgageSnapshot?.displayedBalance
-            ? convertMortgageAmount(mortgageSnapshot.displayedBalance)
-            : 0,
-          property.currentMortgageBalance
-        );
+  const mortgageClassification = mortgage ? classifyMortgage(mortgage) : null;
+  const isActiveMortgage = mortgageClassification?.status === 'active';
+  const currentMortgageBalance = mortgageSnapshot && isActiveMortgage
+    ? convertMortgageAmount(mortgageSnapshot.displayedBalance)
+    : mortgage
+      ? 0
+      : getNumericValue(property.currentMortgageBalance);
+  const unverifiedMortgageBalance = mortgageSnapshot && mortgageClassification?.status === 'unverified'
+    ? convertMortgageAmount(mortgageSnapshot.displayedBalance)
+    : 0;
   const monthlyMortgagePayment =
-    mortgageSnapshot?.currentMonthlyPayment && mortgageSnapshot.currentMonthlyPayment > 0
+    (isActiveMortgage || mortgageClassification?.status === 'unverified') && mortgageSnapshot?.currentMonthlyPayment && mortgageSnapshot.currentMonthlyPayment > 0
       ? convertMortgageAmount(mortgageSnapshot.currentMonthlyPayment)
-      : getNumericValue(property.monthlyMortgagePayment);
+      : mortgage
+        ? 0
+        : getNumericValue(property.monthlyMortgagePayment);
 
-  const expenseBreakdown = getAnnualExpenseBreakdown(property);
-  const mortgageBreakdown = getMortgageBreakdown(property, mortgage);
+  const expenseBreakdown = getAnnualExpenseBreakdown(property, rateOverrides);
+  const mortgageBreakdown = getMortgageBreakdown(property, mortgage, rateOverrides);
   const totalMonthlyExpenses =
-    expenseBreakdown.monthlyOperatingExpenses +
-    expenseBreakdown.monthlyInsuranceExpenses +
+    expenseBreakdown.monthlyRecurringExpenses +
     monthlyMortgagePayment;
   const netMonthlyCashflow = monthlyRent - totalMonthlyExpenses;
   const annualRent = monthlyRent * 12;
@@ -1125,12 +1412,12 @@ export const calculatePropertyFinancials = (
   const taxRuntime = calculatePropertyTaxRuntime(
     {
       ...property,
+      annualRent,
       annualMortgageInterest:
-        mortgageBreakdown.annualMortgageInterest || getNumericValue(property.annualMortgageInterest),
+        mortgageBreakdown.annualMortgageInterest,
       annualMortgageInterestTax:
-        mortgageBreakdown.annualMortgageInterest ||
-        getNumericValue(property.annualMortgageInterest) ||
-        getNumericValue(property.annualMortgageInterestTax),
+        mortgageBreakdown.annualMortgageInterest ??
+        (mortgage ? 0 : getNumericValue(property.annualMortgageInterestTax)),
     },
     annualNetCashflow
   );
@@ -1144,7 +1431,8 @@ export const calculatePropertyFinancials = (
     purchasePrice: convertCurrency(
       getNumericValue(property.purchasePrice),
       getPurchasePriceCurrency(property),
-      propertyCurrency
+      propertyCurrency,
+      rateOverrides
     ),
     hasMortgage: Boolean(property.hasMortgage || mortgage),
     originalLoanAmount,
@@ -1154,37 +1442,64 @@ export const calculatePropertyFinancials = (
   const currentEstimatedValue = convertCurrency(
     getNumericValue(property.currentEstimatedValue),
     getCurrentEstimatedValueCurrency(property),
-    propertyCurrency
+    propertyCurrency,
+    rateOverrides
   );
   const purchasePrice = convertCurrency(
     getNumericValue(property.purchasePrice),
     getPurchasePriceCurrency(property),
-    propertyCurrency
+    propertyCurrency,
+    rateOverrides
   );
   const appreciationAmount = currentEstimatedValue - purchasePrice;
-  const appreciationPercentage =
-    purchasePrice === 0 ? 0 : (appreciationAmount / purchasePrice) * 100;
+  const appreciationPercentage = calculatePercentage(appreciationAmount, purchasePrice);
   const equity = currentEstimatedValue - currentMortgageBalance;
-  const equityPercentage =
-    currentEstimatedValue === 0 ? 0 : (equity / currentEstimatedValue) * 100;
-  const grossYield =
-    currentEstimatedValue === 0 ? 0 : (annualRent / currentEstimatedValue) * 100;
-  const netYield =
-    currentEstimatedValue === 0
-      ? 0
-      : ((annualRent - expenseBreakdown.annualRecurringExpenses) / currentEstimatedValue) * 100;
-  const roce =
-    investedCapital === 0
-      ? 0
-      : ((annualNetCashflow + mortgageBreakdown.annualPrincipalAmortized) / investedCapital) * 100;
-  const mortgagePercentageOfRent =
-    monthlyRent === 0 ? 0 : (monthlyMortgagePayment / monthlyRent) * 100;
-  const operatingExpensesPercentageOfRent =
-    monthlyRent === 0 ? 0 : (expenseBreakdown.monthlyOperatingExpenses / monthlyRent) * 100;
-  const cashflowPercentageOfRent =
-    monthlyRent === 0 ? 0 : (netMonthlyCashflow / monthlyRent) * 100;
+  const equityPercentage = calculatePercentage(equity, currentEstimatedValue);
+  const grossYield = calculatePercentage(annualRent, currentEstimatedValue);
+  const netYield = calculatePercentage(
+    annualRent - expenseBreakdown.annualRecurringExpenses,
+    currentEstimatedValue
+  );
+  const roce = calculatePercentage(
+    annualNetCashflow + getNumericValue(mortgageBreakdown.annualPrincipalAmortized),
+    investedCapital
+  );
+  const mortgagePercentageOfRent = calculatePercentage(
+    monthlyMortgagePayment,
+    monthlyRent
+  );
+  const operatingExpensesPercentageOfRent = calculatePercentage(
+    expenseBreakdown.monthlyOperatingExpenses,
+    monthlyRent
+  );
+  const cashflowPercentageOfRent = calculatePercentage(
+    netMonthlyCashflow,
+    monthlyRent
+  );
+  const calculationIssues = [
+    ...financialValidationIssues,
+    ...(currentEstimatedValue <= 0
+      ? ['Property valuation must be greater than zero for valuation-based ratios']
+      : []),
+    ...(purchasePrice <= 0
+      ? ['Purchase price must be greater than zero for appreciation percentage']
+      : []),
+    ...(investedCapital <= 0
+      ? ['Invested capital must be greater than zero for ROCE']
+      : []),
+    ...(monthlyRent <= 0
+      ? ['Monthly rent must be greater than zero for rent-based ratios']
+      : []),
+    ...(mortgageClassification?.status === 'unverified'
+      ? ['Outstanding mortgage balance cannot be verified as active']
+      : []),
+    ...(mortgageClassification?.dataConflict === 'paid-with-positive-balance'
+      ? ['Mortgage is marked paid but retains a positive outstanding balance']
+      : []),
+  ];
 
   return {
+    calculationIssues: [...new Set(calculationIssues)],
     taxModuleId: taxProfile.moduleId,
     taxModuleLabel: taxProfile.label,
     taxModuleStatus: taxProfile.status,
@@ -1197,11 +1512,13 @@ export const calculatePropertyFinancials = (
     monthlyAfterTaxCashflow: taxRuntime.generic.monthlyAfterTaxCashflow,
     monthlyRent,
     currentMortgageBalance,
+    unverifiedMortgageBalance,
+    mortgageClassification: mortgageClassification?.status ?? null,
+    mortgageDataConflict: mortgageClassification?.dataConflict ?? null,
     monthlyMortgagePayment,
     monthlyOperatingExpenses: expenseBreakdown.monthlyOperatingExpenses,
     monthlyInsuranceExpenses: expenseBreakdown.monthlyInsuranceExpenses,
-    monthlyMortgageInterest:
-      mortgageBreakdown.monthlyMortgageInterest || monthlyMortgagePayment,
+    monthlyMortgageInterest: mortgageBreakdown.monthlyMortgageInterest,
     monthlyPrincipalAmortized: mortgageBreakdown.monthlyPrincipalAmortized,
     monthlyTotalMortgagePaid:
       mortgageBreakdown.monthlyTotalMortgagePaid || monthlyMortgagePayment,
@@ -1213,7 +1530,7 @@ export const calculatePropertyFinancials = (
     annualRecurringExpenses: expenseBreakdown.annualRecurringExpenses,
     actualTrailing12MonthsExpenses: expenseBreakdown.actualTrailing12MonthsExpenses,
     projectedNext12MonthsExpenses: expenseBreakdown.projectedNext12MonthsExpenses,
-    annualMortgageInterest: mortgageBreakdown.annualMortgageInterest || annualMortgagePayment,
+    annualMortgageInterest: mortgageBreakdown.annualMortgageInterest,
     annualPrincipalAmortized: mortgageBreakdown.annualPrincipalAmortized,
     annualTotalMortgagePaid: mortgageBreakdown.annualTotalMortgagePaid || annualMortgagePayment,
     annualIbi: expenseBreakdown.annualIbi,
@@ -1222,7 +1539,7 @@ export const calculatePropertyFinancials = (
     annualHomeInsurance: expenseBreakdown.annualHomeInsurance,
     annualLifeInsurance: expenseBreakdown.annualLifeInsurance,
     annualRentDefaultInsurance: expenseBreakdown.annualRentDefaultInsurance,
-    propertyOneTimeCosts: getOneTimeCosts(property),
+    propertyOneTimeCosts: getOneTimeCosts(property, rateOverrides),
     annualMortgagePayment,
     totalAnnualExpenses,
     annualNetCashflow,
@@ -1390,8 +1707,14 @@ export const normalizePropertyRecord = (
     annualMaintenance: expenseBreakdown.annualMaintenance,
     annualUtilitiesPaidByOwner: expenseBreakdown.annualUtilitiesPaidByOwner,
     annualOtherExpenses: expenseBreakdown.annualOtherExpenses,
-    annualMortgageInterest: getNumericValue(property.annualMortgageInterest),
-    annualPrincipalAmortized: getNumericValue(property.annualPrincipalAmortized),
+    annualMortgageInterest:
+      property.annualMortgageInterest === null
+        ? null
+        : getNumericValue(property.annualMortgageInterest),
+    annualPrincipalAmortized:
+      property.annualPrincipalAmortized === null
+        ? null
+        : getNumericValue(property.annualPrincipalAmortized),
     annualTotalMortgagePaid: preferFilledNumber(
       property.annualTotalMortgagePaid,
       getNumericValue(property.annualMortgageInterest) +
@@ -1482,6 +1805,11 @@ export const normalizePropertyRecord = (
       : property.imageUrl
       ? [property.imageUrl]
       : [],
+    imageThumbnailUrls: Array.isArray(property.imageThumbnailUrls)
+      ? property.imageThumbnailUrls
+          .map((url) => normalizePropertyImageUrl(url))
+          .filter((url): url is string => Boolean(url))
+      : [],
     primaryImageIndex: getNumericValue(property.primaryImageIndex),
     imageUrl: property.imageUrl ?? '',
   };
@@ -1496,6 +1824,7 @@ export const normalizePropertyRecord = (
         );
 
   normalizedBase.imageUrls = normalizedImageUrls;
+  normalizedBase.imageThumbnailUrls = normalizedBase.imageThumbnailUrls ?? [];
   normalizedBase.primaryImageIndex = safePrimaryImageIndex;
   normalizedBase.imageUrl =
     normalizedImageUrls[safePrimaryImageIndex] ?? normalizedBase.imageUrl ?? '';
@@ -1513,7 +1842,7 @@ export const normalizePropertyRecord = (
     totalInitialInvestment,
     cashInvested: financials.investedCapital,
     annualRent: financials.annualRent,
-    totalOperatingExpensesMonthly: financials.monthlyOperatingExpenses + financials.monthlyInsuranceExpenses,
+    totalOperatingExpensesMonthly: financials.annualRecurringExpenses / 12,
     totalOperatingExpensesAnnual: financials.annualRecurringExpenses,
     annualMortgageInterest: financials.annualMortgageInterest,
     annualPrincipalAmortized: financials.annualPrincipalAmortized,
@@ -1537,26 +1866,35 @@ export const normalizeProperties = (
     normalizePropertyRecord(property, findMortgageByProperty(property.id, mortgages))
   );
 
-export const calculateTotalPortfolioValue = (properties: Property[]): number =>
+export const calculateTotalPortfolioValue = (
+  properties: Property[],
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+): number =>
   properties.reduce(
     (sum, property) =>
       sum +
       convertCurrency(
         property.currentEstimatedValue,
         getCurrentEstimatedValueCurrency(property),
-        'EUR'
+        'EUR',
+        rateOverrides
       ),
     0
   );
 
-export const calculateTotalDebt = (mortgages: Mortgage[]): number =>
-  mortgages.reduce(
+export const calculateTotalDebt = (
+  mortgages: Mortgage[],
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>,
+  today: Date = getToday()
+): number =>
+  mortgages.filter((mortgage) => classifyMortgage(mortgage, today).status === 'active').reduce(
     (sum, mortgage) =>
       sum +
       convertCurrency(
-        calculateMortgageSnapshot(mortgage).displayedBalance,
+        calculateMortgageSnapshot(mortgage, today).displayedBalance,
         getMortgageCurrency(mortgage),
-        'EUR'
+        'EUR',
+        rateOverrides
       ),
     0
   );
@@ -1577,8 +1915,13 @@ export const calculatePortfolioMetrics = (
 ): PortfolioMetrics => {
   const { valuationDisplayCurrency, operatingDisplayCurrency } =
     getPortfolioDomainCurrencies(properties, reportingCurrency);
-  const totalPortfolioValueBase = calculateTotalPortfolioValue(properties);
-  const debtProjection = calculatePortfolioDebtProjection(mortgages, 12);
+  const totalPortfolioValueBase = calculateTotalPortfolioValue(properties, rateOverrides);
+  const debtProjection = calculatePortfolioDebtProjection(
+    mortgages,
+    12,
+    getToday(),
+    rateOverrides
+  );
   const totalDebtBase = debtProjection.totalDebtToday;
   const totalDebtIn1YearBase = debtProjection.totalDebtProjected;
   const totalEquityBase = calculateTotalEquity(totalPortfolioValueBase, totalDebtBase);
@@ -1637,7 +1980,11 @@ export const calculatePortfolioMetrics = (
   const totalNetWorth = totalEquity + availableCash + investmentsValue;
 
   const propertyFinancials = properties.map((property) =>
-    calculatePropertyFinancials(property, findMortgageByProperty(property.id, mortgages))
+    calculatePropertyFinancials(
+      property,
+      findMortgageByProperty(property.id, mortgages),
+      rateOverrides
+    )
   );
 
   const totalMonthlyRent = sumInCurrency(
@@ -1650,7 +1997,7 @@ export const calculatePortfolioMetrics = (
   );
   const totalMonthlyOperatingExpenses = sumInCurrency(
     propertyFinancials.map((financials, index) => ({
-      value: financials.monthlyOperatingExpenses + financials.monthlyInsuranceExpenses,
+      value: financials.annualRecurringExpenses / 12,
       currency: getPropertyCurrency(properties[index]),
     })),
     operatingDisplayCurrency,
@@ -1734,7 +2081,7 @@ export const calculatePortfolioMetrics = (
     (sum, financials, index) =>
       sum +
       convertCurrency(
-        financials.annualPrincipalAmortized,
+        getNumericValue(financials.annualPrincipalAmortized),
         getPropertyCurrency(properties[index]),
         'EUR',
         rateOverrides
@@ -1875,7 +2222,7 @@ export const calculatePropertyMetrics = (
   _reportingCurrency: DisplayCurrency = 'EUR',
   rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PropertyMetrics => {
-  const financials = calculatePropertyFinancials(property, mortgage);
+  const financials = calculatePropertyFinancials(property, mortgage, rateOverrides);
   const propertyCurrency = getPropertyCurrency(property);
   const valuationDisplayCurrency = getPropertyValueCurrency(property);
   const operatingDisplayCurrency = getOperatingCurrency(property);

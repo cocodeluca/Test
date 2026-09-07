@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Circle,
   Edit,
+  Trash2,
 } from 'lucide-react';
 import { Mortgage, MortgageBonification, Property } from '../../../common/types';
 import { formatCurrency, formatPercentage, formatShortDate } from '../../../common/utils/formatting';
@@ -23,6 +24,7 @@ interface MortgageCardProps {
   selectedMortgageId: string | null;
   onSelectMortgage: (id: string) => void;
   onEdit: (mortgage: Mortgage, section?: string | null) => void;
+  onDelete: (id: string) => void;
 }
 
 const getBonificationCostLabel = (item: MortgageBonification): string | null => {
@@ -153,6 +155,7 @@ export const MortgageCard: React.FC<MortgageCardProps> = ({
   mortgage,
   property,
   onEdit,
+  onDelete,
 }) => {
   const { t } = useSettings();
   const viewModel = buildMortgageViewModel(mortgage, property);
@@ -191,7 +194,7 @@ export const MortgageCard: React.FC<MortgageCardProps> = ({
           : t('common.notSpecified'),
     },
     {
-      label: 'Balance Remaining',
+      label: t('mortgages.card.currentBalance'),
       value: formatCurrency(viewModel.summary.balance, mortgage.currency),
     },
     {
@@ -230,14 +233,28 @@ export const MortgageCard: React.FC<MortgageCardProps> = ({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => onEdit(mortgage, 'rate')}
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-[0.82rem] font-semibold ${appButtonMutedClass} ${appTextStrongClass}`}
-        >
-          <Edit className="h-3.5 w-3.5" />
-          Edit Mortgage
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onEdit(mortgage, 'rate')}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-[0.82rem] font-semibold ${appButtonMutedClass} ${appTextStrongClass}`}
+          >
+            <Edit className="h-3.5 w-3.5" />
+            Edit Mortgage
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('Delete this mortgage? This cannot be undone.')) {
+                onDelete(mortgage.id);
+              }
+            }}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-[0.82rem] font-semibold ${appButtonMutedClass} text-rose-700 dark:text-rose-300`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete Mortgage
+          </button>
+        </div>
       </header>
 
       <div className="px-5 py-3.5 lg:px-6">
@@ -261,9 +278,16 @@ export const MortgageCard: React.FC<MortgageCardProps> = ({
           <MetadataItem label="Mortgage Type" value={viewModel.mortgageTypeLabel} />
           <span className="hidden h-3.5 w-px bg-[color:var(--app-border)]/85 sm:block" />
           <MetadataItem
-            label="Amortized"
+            label={t('mortgages.card.amortized')}
             value={`${formatCurrency(viewModel.summary.amortizedAmount, mortgage.currency)} (${viewModel.summary.amortizedPercentage.toFixed(1)}%)`}
           />
+          {viewModel.summary.hasMaterialBalanceDifference ? <>
+            <span className="hidden h-3.5 w-px bg-[color:var(--app-border)]/85 xl:block" />
+            <MetadataItem
+              label={t('mortgages.card.savedBalance')}
+              value={formatCurrency(viewModel.summary.savedBalance, mortgage.currency)}
+            />
+          </> : null}
           <span className="hidden h-3.5 w-px bg-[color:var(--app-border)]/85 xl:block" />
           <MetadataItem label="Property" value={property?.name ?? t('common.notSpecified')} />
           <span className="hidden h-3.5 w-px bg-[color:var(--app-border)]/85 xl:block" />
@@ -272,6 +296,13 @@ export const MortgageCard: React.FC<MortgageCardProps> = ({
             value={mortgage.mortgageStartDate ? formatShortDate(mortgage.mortgageStartDate) : t('common.notSpecified')}
           />
         </div>
+        {viewModel.summary.hasMaterialBalanceDifference && viewModel.summary.savedBalanceDifference !== null ? (
+          <p className="mx-1.5 mb-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+            {t('mortgages.card.savedBalanceDifference', {
+              amount: formatCurrency(viewModel.summary.savedBalanceDifference, mortgage.currency),
+            })}
+          </p>
+        ) : null}
       </div>
 
       <div className="border-t border-[color:var(--app-border)]/70">

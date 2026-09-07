@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BarChart3, Briefcase, Building2, FileText, Hammer, Settings, Home, Landmark, LogOut, Monitor, ClipboardList, Receipt, Wallet } from 'lucide-react';
+import { AlertTriangle, BarChart3, Briefcase, Building2, FileText, Hammer, Settings, Home, Landmark, LogOut, Monitor, ClipboardList, Receipt, Wallet } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { useSettings } from '../context/SettingsContext';
 import { workspaceModuleLabels } from '../../../common/utils/workspace';
@@ -48,6 +48,9 @@ export const Layout: React.FC<LayoutProps> = ({
 }) => {
   const { settings, fxSyncStatus, t } = useSettings();
   const isDashboardPage = currentPage === 'dashboard';
+  const fxWarningDisplay = fxSyncStatus.usingCachedRates
+    ? t('dashboardUi.fxWarningUsingCache')
+    : t('dashboardUi.fxWarningNoCache');
   const isDemoAccount = currentUserEmail.trim().toLowerCase() === DEMO_ACCOUNT_EMAIL;
   const pageTitles: Record<string, string> = {
     dashboard: t('nav.dashboard'),
@@ -119,16 +122,16 @@ export const Layout: React.FC<LayoutProps> = ({
       />
       <main className="flex-1 overflow-auto lg:pl-[224px]">
         <div className={`sticky top-0 z-20 border-b px-4 py-4 md:hidden ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[var(--app-border-strong)] bg-white text-[var(--app-nav-active-fg)]">
-                <Home className="h-4.5 w-4.5" />
+          <div className="flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 items-center justify-center rounded-[14px] border border-[var(--app-border-strong)] bg-white text-[var(--app-nav-active-fg)]">
+                <Home className="h-4 w-4" />
               </div>
               <div className="min-w-0">
                 <p className={`text-[11px] font-medium ${appTextMutedClass}`}>
                   {t('app.title')}
                 </p>
-                <p className={`truncate text-[17px] font-semibold tracking-[-0.02em] ${appTextStrongClass}`}>
+                <p className={`truncate text-[16px] font-semibold tracking-[-0.02em] ${appTextStrongClass}`}>
                   {pageTitles[currentPage] ?? pageTitles.dashboard}
                 </p>
                 <p className={`truncate text-[11px] ${appTextMutedClass}`}>{currentUserEmail}</p>
@@ -137,7 +140,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <button
               type="button"
               onClick={onLogout}
-              className={`rounded-2xl p-2.5 ${appButtonMutedClass} ${appTextMutedClass}`}
+              className={`rounded-[14px] p-2 ${appButtonMutedClass} ${appTextMutedClass}`}
               title={t('common.logOut')}
             >
               <LogOut className="h-4 w-4" />
@@ -151,8 +154,8 @@ export const Layout: React.FC<LayoutProps> = ({
           className={
             isDashboardPage
               ? settings.density === 'compact'
-                ? 'px-4 pb-24 pt-2 md:px-8 md:pb-8 md:pt-2'
-                : 'px-4 pb-24 pt-2.5 md:px-10 md:pb-10 md:pt-3 xl:px-12'
+                ? 'px-3 pb-24 pt-2 md:px-5 md:pb-3'
+                : 'px-3 pb-24 pt-2 md:px-6 md:pb-3 xl:px-8'
               : settings.density === 'compact'
                 ? 'px-4 pb-24 pt-4 md:px-8 md:pb-8 md:pt-7'
                 : 'px-4 pb-24 pt-5 md:px-10 md:pb-10 md:pt-8 xl:px-12'
@@ -218,19 +221,20 @@ export const Layout: React.FC<LayoutProps> = ({
             </div>
           ) : null}
           {fxSyncStatus.warning ? (
-            <div className={`${isDashboardPage ? 'mb-[14px] rounded-[20px] px-4 py-3' : 'mb-5 rounded-[24px] px-4 py-4'} border border-amber-300/70 bg-amber-50/80 text-amber-800 shadow-[0_18px_32px_-28px_rgba(146,64,14,0.35)] dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200`}>
-              <p className={`${isDashboardPage ? 'text-[11px]' : 'text-[12px]'} font-semibold uppercase tracking-[0.16em]`}>
-                FX Warning
-              </p>
-              <p className={isDashboardPage ? 'mt-1 text-[13px] leading-5' : 'mt-2 text-sm leading-6'}>
-                {fxSyncStatus.warning}
+            <div className={`${isDashboardPage ? 'mb-2.5' : 'mb-4'} flex min-h-11 items-center gap-2.5 rounded-2xl border border-amber-300/70 bg-amber-50/80 px-3.5 py-2 text-amber-800 shadow-[0_18px_32px_-28px_rgba(146,64,14,0.35)] dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200`}>
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <p className="min-w-0 text-[12px] leading-4">
+                <span className="mr-2 font-semibold uppercase tracking-[0.12em]">
+                  {t('dashboardUi.fxWarningLabel')}
+                </span>
+                <span>{fxWarningDisplay}</span>
               </p>
             </div>
           ) : null}
           {children}
         </div>
       </main>
-      <nav className={`fixed inset-x-0 bottom-0 z-30 border-t px-3 pb-[max(env(safe-area-inset-bottom),0.8rem)] pt-3 md:hidden ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}>
+      <nav className={`fixed inset-x-0 bottom-0 z-30 border-t px-2.5 pb-[max(env(safe-area-inset-bottom),0.7rem)] pt-2.5 md:hidden ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}>
         <div className={`grid gap-2 ${mobileNavItems.length >= 7 ? 'grid-cols-7' : mobileNavItems.length === 6 ? 'grid-cols-6' : 'grid-cols-5'}`}>
           {mobileNavItems.map((item) => {
             const Icon = item.icon;
@@ -241,14 +245,16 @@ export const Layout: React.FC<LayoutProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => onNavigate(item.id)}
-                className={`flex min-h-[62px] flex-col items-center justify-center gap-1.5 rounded-[20px] px-2 py-2.5 text-center transition ${
+                aria-label={item.label}
+                title={item.label}
+                className={`flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-[16px] px-1.5 py-2 text-center transition ${
                   isActive
                     ? `${appNavActiveClass}`
                     : `${appButtonMutedClass} ${appTextMutedClass}`
                 }`}
               >
-                <Icon className="h-4.5 w-4.5" />
-                <span className="text-[11px] font-medium leading-4">{item.label}</span>
+                <Icon className="h-4 w-4" />
+                <span className="hidden text-[10px] font-medium leading-[0.875rem] sm:block">{item.label}</span>
               </button>
             );
           })}

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PortfolioMetrics, Property, PropertyMetrics } from '../src/common/types';
+import type { MortgageDebtPaydownSummary } from '../src/common/utils/calculations';
 import {
+  buildDashboardDebtPaydownPresentation,
   buildDashboardViewModel,
   DASHBOARD_ACTIVITY_AVAILABLE,
   DASHBOARD_HISTORY_AVAILABLE,
@@ -47,6 +49,21 @@ const metrics: PortfolioMetrics = {
   estimatedMonthlyAfterTaxCashflow: 50,
   actualTrailing12MonthsExpenses: 90,
   projectedNext12MonthsExpenses: 96,
+};
+
+const debtPaydown: MortgageDebtPaydownSummary = {
+  currentDebt: 10_000,
+  projectedDebtAfter12Months: 8_400,
+  currentMonthPrincipal: 125,
+  next12MonthsPrincipal: 1600,
+  next12MonthsInterest: 600,
+  reportingCurrency: 'USD',
+  status: 'available',
+  debtCoverageStatus: 'available',
+  candidateMortgageCount: 3,
+  eligibleMortgageCount: 2,
+  debtCoveredMortgageCount: 3,
+  mortgages: [],
 };
 
 const makeProperty = (
@@ -98,6 +115,7 @@ test('passes through primary metrics and keeps total assets distinct from net wo
     properties: [],
     propertyMetrics: [],
     alerts: [],
+    debtPaydown,
     rateOverrides: { EUR: 1, USD: 0.8, ARS: 0.001, GBP: 1.2 },
   });
 
@@ -107,6 +125,7 @@ test('passes through primary metrics and keeps total assets distinct from net wo
   assert.equal(result.primary.totalDebt, metrics.totalDebt);
   assert.equal(result.totalAssets, 1300);
   assert.notEqual(result.totalAssets, result.primary.netWorth);
+  assert.deepEqual(result.debtPaydown, debtPaydown);
 });
 
 test('normalizes reserve cash into operating currency and exposes transparent health measures', () => {
@@ -123,6 +142,7 @@ test('normalizes reserve cash into operating currency and exposes transparent he
     properties,
     propertyMetrics,
     alerts: [],
+    debtPaydown,
     rateOverrides: { EUR: 1, USD: 0.8, ARS: 0.001, GBP: 1.2 },
   });
 
@@ -148,6 +168,7 @@ test('preserves stored property order and limits the compact summary to three it
     properties,
     propertyMetrics,
     alerts: [],
+    debtPaydown,
   });
 
   assert.deepEqual(result.properties.map((property) => property.id), ['zeta', 'alpha', 'middle']);
@@ -160,10 +181,87 @@ test('keeps Portfolio History and Recent Activity truthfully unavailable', () =>
     properties: [],
     propertyMetrics: [],
     alerts: [],
+    debtPaydown,
   });
 
   assert.equal(DASHBOARD_HISTORY_AVAILABLE, false);
   assert.equal(DASHBOARD_ACTIVITY_AVAILABLE, false);
   assert.equal(result.historyAvailable, false);
   assert.equal(result.activityAvailable, false);
+});
+
+const debtPaydownTranslations: Record<string, string> = {
+  'dashboardUi.perYear': 'año',
+  'dashboardUi.debtPaydownDescription': 'Capital amortizado.',
+  'dashboardUi.debtPaydownNoActive': 'No hay hipotecas activas.',
+  'dashboardUi.debtPaydownUnavailable': 'Faltan datos.',
+};
+
+const translateDebtPaydown = (
+  key: string,
+  replacements?: Record<string, string | number>
+) => {
+  if (key === 'dashboardUi.debtPaydownCoverage') {
+    return `Calculado con ${replacements?.eligible} de ${replacements?.candidates} hipotecas`;
+  }
+
+  return debtPaydownTranslations[key] ?? key;
+};
+
+test('builds debt paydown card copy without a coverage message for full coverage', () => {
+  const result = buildDashboardDebtPaydownPresentation(
+    {
+      ...debtPaydown,
+      candidateMortgageCount: 2,
+      eligibleMortgageCount: 2,
+    },
+    (value) => `€${value.toLocaleString('en-US')}`,
+    translateDebtPaydown
+  );
+
+  assert.equal(result.mainValue, '€1,600');
+  assert.equal(result.perYearLabel, 'año');
+  assert.equal(result.nextPaymentValue, '€125');
+  assert.equal(result.coverageLabel, null);
+});
+
+test('builds debt paydown card copy for partial, unavailable, and no-active coverage', () => {
+  const partial = buildDashboardDebtPaydownPresentation(
+    {
+      ...debtPaydown,
+      candidateMortgageCount: 3,
+      eligibleMortgageCount: 2,
+    },
+    (value) => `€${value}`,
+    translateDebtPaydown
+  );
+  const unavailable = buildDashboardDebtPaydownPresentation(
+    {
+      ...debtPaydown,
+      status: 'unavailable',
+      candidateMortgageCount: 1,
+      eligibleMortgageCount: 0,
+    },
+    (value) => `€${value}`,
+    translateDebtPaydown
+  );
+  const noActive = buildDashboardDebtPaydownPresentation(
+    {
+      ...debtPaydown,
+      status: 'no-active-mortgages',
+      currentMonthPrincipal: 0,
+      next12MonthsPrincipal: 0,
+      candidateMortgageCount: 0,
+      eligibleMortgageCount: 0,
+    },
+    (value) => `€${value}`,
+    translateDebtPaydown
+  );
+
+  assert.equal(partial.coverageLabel, 'Calculado con 2 de 3 hipotecas');
+  assert.equal(unavailable.mainValue, '—');
+  assert.equal(unavailable.perYearLabel, null);
+  assert.equal(unavailable.nextPaymentValue, '—');
+  assert.equal(unavailable.description, 'Faltan datos.');
+  assert.equal(noActive.description, 'No hay hipotecas activas.');
 });

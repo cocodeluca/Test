@@ -69,6 +69,7 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
     country: localizedDefaultCountry,
   }));
   const [step, setStep] = useState(1);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const hasMortgageStep =
     trackingPreference === 'properties-and-mortgages' || trackingPreference === 'full-portfolio';
   const totalSteps = hasMortgageStep ? 5 : 4;
@@ -102,7 +103,14 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    onCreateProperty(createManualProperty(form));
+    try {
+      onCreateProperty(createManualProperty(form));
+      setValidationError(null);
+    } catch (error) {
+      setValidationError(
+        error instanceof Error ? error.message : 'Invalid property financial values'
+      );
+    }
   };
 
   return (
@@ -130,6 +138,11 @@ export const QuickPropertyCreateModal: React.FC<QuickPropertyCreateModalProps> =
         </div>
 
         <form className="mt-7 space-y-6" onSubmit={handleSubmit}>
+          {validationError ? (
+            <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
+              {validationError}
+            </p>
+          ) : null}
           {basicMode ? (
             <div className="flex flex-wrap gap-2.5">
               {Array.from({ length: totalSteps }, (_, index) => index + 1).map((stepNumber) => (

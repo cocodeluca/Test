@@ -13,7 +13,7 @@ import { areFxRatesStale } from '../../../common/utils/fxRates';
 interface SettingsPageProps {
   currentUser: LocalAccountUser;
   onExportBackup: () => void;
-  onImportBackup: (backup: UserAccountBackup) => void;
+  onImportBackup: (backup: UserAccountBackup) => Promise<void>;
   onSyncBackupToServer: () => Promise<void> | void;
   onRestoreBackupFromServer: () => Promise<void> | void;
   onReplayDemoTutorial?: () => void;
@@ -103,7 +103,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({ currentUser, onExpor
     setBackupError(null);
     setBackupMessage(null);
     try {
-      onImportBackup(JSON.parse(await file.text()) as UserAccountBackup);
+      await onImportBackup(JSON.parse(await file.text()) as UserAccountBackup);
       setBackupMessage(t('settings.backupSection.importSuccess'));
     } catch (error) {
       setBackupError(error instanceof Error ? error.message : t('settings.backupSection.importError'));

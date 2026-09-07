@@ -19,21 +19,37 @@ const readPositiveRate = (value: unknown, label: string): number => {
   return value;
 };
 
+const parseFrankfurterV2Rates = (payload: unknown): { USD: number; ARS: number; GBP: number } => {
+  if (!Array.isArray(payload) || payload.length !== 3) {
+    throw new Error('Frankfurter payload did not include exactly three rate records');
+  }
+
+  const rates = new Map<string, unknown>();
+  for (const record of payload) {
+    if (
+      !isObject(record) ||
+      record.base !== 'EUR' ||
+      typeof record.quote !== 'string' ||
+      !['USD', 'ARS', 'GBP'].includes(record.quote) ||
+      rates.has(record.quote)
+    ) {
+      throw new Error('Frankfurter payload included an invalid rate record');
+    }
+    rates.set(record.quote, record.rate);
+  }
+
+  return {
+    USD: readPositiveRate(rates.get('USD'), 'Frankfurter USD rate'),
+    ARS: readPositiveRate(rates.get('ARS'), 'Frankfurter ARS rate'),
+    GBP: readPositiveRate(rates.get('GBP'), 'Frankfurter GBP rate'),
+  };
+};
+
 const FX_PROVIDERS: JsonProviderDefinition[] = [
   {
     name: 'Frankfurter',
-    url: 'https://api.frankfurter.app/latest?from=EUR&to=USD,ARS,GBP',
-    parseRates: (payload) => {
-      if (!isObject(payload) || !isObject(payload.rates)) {
-        throw new Error('Frankfurter payload did not include a rates object');
-      }
-
-      return {
-        USD: readPositiveRate(payload.rates.USD, 'Frankfurter USD rate'),
-        ARS: readPositiveRate(payload.rates.ARS, 'Frankfurter ARS rate'),
-        GBP: readPositiveRate(payload.rates.GBP, 'Frankfurter GBP rate'),
-      };
-    },
+    url: 'https://api.frankfurter.dev/v2/rates?base=EUR&quotes=USD,ARS,GBP',
+    parseRates: parseFrankfurterV2Rates,
   },
   {
     name: 'ExchangeRate-API',

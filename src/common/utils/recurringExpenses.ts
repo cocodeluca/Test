@@ -110,19 +110,22 @@ export const createRecurringExpense = (
 });
 
 export const ensureRecurringExpenses = (property: Partial<Property>): RecurringExpense[] => {
-  if (property.recurringExpenses && property.recurringExpenses.length > 0) {
-    return property.recurringExpenses;
-  }
+  const existingExpenses = property.recurringExpenses ?? [];
+  const existingTypes = new Set(existingExpenses.map((expense) => expense.expenseType));
 
-  return canonicalExpenseDefaults
+  const legacyBackfills = canonicalExpenseDefaults
     .map((definition) => {
+      if (existingTypes.has(definition.expenseType)) {
+        return null;
+      }
+
       const annualAmount = Number(property[definition.amountKey] ?? 0) || 0;
       if (annualAmount <= 0) {
         return null;
       }
 
       const amount =
-        definition.billingFrequency === 'yearly' ? annualAmount : Math.round((annualAmount / 12) * 100) / 100;
+        definition.billingFrequency === 'yearly' ? annualAmount : annualAmount / 12;
 
       return createRecurringExpense(
         definition.expenseType,
@@ -133,6 +136,8 @@ export const ensureRecurringExpenses = (property: Partial<Property>): RecurringE
       );
     })
     .filter(Boolean) as RecurringExpense[];
+
+  return [...existingExpenses, ...legacyBackfills];
 };
 
 const normalizeProjectionAmount = (
@@ -252,9 +257,10 @@ export const calculateRecurringExpensePortfolioSummary = (
 
       sum.actualTrailing12Months += actual;
       sum.projectedNext12Months += projected;
+      const existingTypeTotal = sum.byType[expense.expenseType];
       sum.byType[expense.expenseType] = {
-        actualTrailing12Months: actual,
-        projectedNext12Months: projected,
+        actualTrailing12Months: (existingTypeTotal?.actualTrailing12Months ?? 0) + actual,
+        projectedNext12Months: (existingTypeTotal?.projectedNext12Months ?? 0) + projected,
       };
 
       return sum;

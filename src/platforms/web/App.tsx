@@ -1,4 +1,5 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortfolioPersistence, type PersistenceStatus } from './services/portfolioPersistence';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DemoGuidedTutorial, DemoTutorialStep } from '../web/components/DemoGuidedTutorial';
 import { AppPageRenderer } from '../web/components/AppPageRenderer';
 import { AppSafetyProvider, useAppSafety } from './context/AppSafetyContext';
@@ -31,6 +32,13 @@ import type {
 } from '../../common/types/settings';
 import { normalizeProperties, normalizePropertyRecord } from '../../common/utils/calculations';
 import { createManualProperty } from '../../common/utils/manualProperty';
+import { assertValidPropertyFinancialValues } from '../../common/utils/financialValidation';
+import {
+  addMortgageRelationship,
+  deleteMortgageRelationship,
+  editMortgageRelationship,
+  synchronizeMortgageProperties,
+} from '../../common/utils/mortgageRelationships';
 import {
   mergeChangedPropertyFields,
   replacePropertyRecord,
@@ -64,15 +72,16 @@ import {
 } from './utils/useCaseCatalog';
 import { fetchEtoroAccountSnapshot } from './services/brokers';
 import {
-  loadUserPortfolio,
+  getPortfolioAutosaveDecision,
   LocalAccountUser,
   makeUserSettingsStorageKey,
   resetDemoAccountData,
   importUserAccountBackup,
-  saveUserPortfolio,
   saveUserRecoverySnapshot,
   DEMO_ACCOUNT_EMAIL,
   UserPortfolioData,
+  UserPortfolioHydrationSnapshot,
+  serializeUserPortfolioForPersistence,
   safeJsonParse,
   safeJsonStringify,
 } from './services/localAccountStore';
@@ -82,11 +91,13 @@ import {
   setStoredUseCaseSelection,
   setStoredSelectedUseCaseId,
 } from '../../common/utils/settingsStore';
-import { flushBackupToServer, loadBackupFromServer, saveBackupToServer } from './services/accountBackupApi';
+import { loadBackupFromServer, saveBackupToServer } from './services/accountBackupApi';
 import '../web/styles/index.css';
 import { translateCurrentLanguage } from '../web/i18n/translations';
 import { GALLERY_SAFE_MODE } from './utils/gallerySafeMode';
 import { APP_RECOVERY_MODE } from './utils/appRecoveryMode';
+import { migrateLegacyGalleryUrls } from './services/galleryMediaStore';
+import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from './services/portfolioPersistenceTrace';
 
 const Layout = lazy(() => import('../web/components/Layout').then((module) => ({ default: module.Layout })));
 const AuthScreen = lazy(() =>
@@ -136,19 +147,6 @@ const isLegacyManualInvestmentPlaceholder = (account: InvestmentAccount): boolea
   account.isManual &&
   account.id === 'inv-1' &&
   account.name === 'Investments';
-
-const normalizeStoredInvestmentAccounts = (
-  accounts: InvestmentAccount[]
-): InvestmentAccount[] =>
-  accounts.map((account) => ({
-    ...account,
-    provider: account.provider ?? 'manual',
-    syncStatus: account.syncStatus ?? 'idle',
-    dailyChangePct: account.dailyChangePct ?? null,
-    lastSyncedAt: account.lastSyncedAt ?? null,
-    lastSuccessfulBalance: account.lastSuccessfulBalance ?? null,
-    syncError: account.syncError ?? null,
-  }));
 
 const DEMO_TUTORIAL_DISMISSED_KEY = 're-portfolio-demo-tutorial-dismissed';
 const DEMO_TUTORIAL_RESTART_REQUEST_KEY = 're-portfolio-demo-tutorial-restart-request';
@@ -206,7 +204,6 @@ interface OnboardingDemoFlowState {
 const DEMO_TUTORIAL_TARGET_RETRY_LIMIT = 12;
 const DEMO_TUTORIAL_TARGET_RETRY_DELAY_MS = 250;
 const ENABLE_LOCAL_RECOVERY_SNAPSHOT_WRITEBACK = false;
-const RECOVERY_SNAPSHOT_LOG_PREFIX = '[recovery-snapshot]';
 const DEMO_SESSION_LOG_PREFIX = '[demo-restore]';
 const USECASE_RESTORE_LOG_PREFIX = '[usecase-restore]';
 const BOOT_LOG_PREFIX = '[boot]';
@@ -621,7 +618,8 @@ const resolveTutorialStepUiState = (
 
 interface WebAppShellProps {
   user: LocalAccountUser;
-  onLogout: (backup: import('./services/localAccountStore').UserAccountBackup) => void;
+  portfolioHydration: UserPortfolioHydrationSnapshot;
+  onLogout: (backup: import('./services/localAccountStore').UserAccountBackup) => Promise<void>;
 }
 
 interface DemoPreviewState {
@@ -757,10 +755,10 @@ const createOnboardingWorkspaceConfig = (
   };
 };
 
-const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
+const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) => {
   const { canAutoWrite, isBootSettled, appRecoveryMode } = useAppSafety();
   const { settings, hasExplicitLanguageSelection, updateSettings, t } = useSettings();
-  const initialPortfolioData = useMemo(() => loadUserPortfolio(user.id), [user.id]);
+  const initialPortfolioData = portfolioHydration.portfolio;
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
   const [pendingStarterPath, setPendingStarterPath] = useState<StarterPath | null>(null);
   const [demoPreviewState, setDemoPreviewState] = useState<DemoPreviewState | null>(null);
@@ -777,7 +775,7 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     initialPortfolioData.bankConnections ?? []
   );
   const [investmentAccounts, setInvestmentAccounts] = useState<InvestmentAccount[]>(
-    () => normalizeStoredInvestmentAccounts(initialPortfolioData.investmentAccounts)
+    initialPortfolioData.investmentAccounts
   );
   const [opportunities, setOpportunities] = useState<Opportunity[]>(
     initialPortfolioData.opportunities ?? []
@@ -1081,31 +1079,54 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   const effectiveReportTemplates = effectivePortfolio?.reportTemplates ?? reportTemplates;
   const effectiveReportBranding = effectivePortfolio?.reportBranding ?? reportBranding;
   const syncedProperties = useMemo(
-    () => normalizeProperties(effectiveProperties, effectiveMortgages),
+    () =>
+      normalizeProperties(
+        synchronizeMortgageProperties(effectiveProperties, effectiveMortgages),
+        effectiveMortgages
+      ),
     [effectiveMortgages, effectiveProperties]
   );
-  const backupExportedAtRef = useRef(new Date().toISOString());
-  const currentBackup = useMemo(
+  const migratedGalleryPropertyIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    let cancelled = false;
+    const migrate = async () => {
+      const candidates = properties.filter((property) => {
+        const urls = property.imageUrls?.length ? property.imageUrls : property.imageUrl ? [property.imageUrl] : [];
+        return !migratedGalleryPropertyIdsRef.current.has(property.id) && urls.some((url) => url.startsWith('data:image/'));
+      });
+      if (candidates.length === 0) return;
+
+      const migrated = await Promise.all(candidates.map(async (property) => {
+        const sourceUrls = property.imageUrls?.length ? property.imageUrls : property.imageUrl ? [property.imageUrl] : [];
+        const result = await migrateLegacyGalleryUrls(sourceUrls, `${property.id}-legacy-image`);
+        migratedGalleryPropertyIdsRef.current.add(property.id);
+        if (result.migratedCount === 0 || result.failedCount > 0) return null;
+        const primaryIndex = Math.min(property.primaryImageIndex ?? 0, Math.max(result.urls.length - 1, 0));
+        return { id: property.id, imageUrls: result.urls, imageUrl: result.urls[primaryIndex] ?? '', primaryImageIndex: primaryIndex };
+      }));
+
+      if (!cancelled && migrated.some(Boolean)) {
+        setProperties((current) => current.map((property) => {
+          const next = migrated.find((item) => item?.id === property.id);
+          return next ? { ...property, ...next } : property;
+        }));
+      }
+    };
+    void migrate();
+    return () => { cancelled = true; };
+  }, [properties]);
+  const currentPortfolioData = useMemo<UserPortfolioData>(
     () => ({
-      version: 1 as const,
-      exportedAt: backupExportedAtRef.current,
-      user: {
-        name: user.name,
-        email: user.email,
-      },
-      portfolio: {
-        properties,
-        mortgages,
-        cashAccounts,
-        bankConnections,
-        investmentAccounts,
-        opportunities,
-        rehabProjects,
-        reports,
-        reportTemplates,
-        reportBranding,
-      },
-      settings,
+      properties,
+      mortgages,
+      cashAccounts,
+      bankConnections,
+      investmentAccounts,
+      opportunities,
+      rehabProjects,
+      reports,
+      reportTemplates,
+      reportBranding,
     }),
     [
       bankConnections,
@@ -1118,6 +1139,32 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       reportBranding,
       reportTemplates,
       reports,
+    ]
+  );
+  const currentPortfolioSignature = useMemo(
+    () => serializeUserPortfolioForPersistence(currentPortfolioData),
+    [currentPortfolioData]
+  );
+  const acceptedHydrationSignatureRef = useRef<string | null>(null);
+  const [isPortfolioTransition, setIsPortfolioTransition] = useState(false);
+  const portfolioTransitionRef = useRef(false);
+  const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>('saved');
+  const persistence = useMemo(() => createPortfolioPersistence(user.id, setPersistenceStatus), [user.id]);
+  const lastScheduledPortfolioSignatureRef = useRef<string | null>(null);
+  const backupExportedAtRef = useRef(new Date().toISOString());
+  const currentBackup = useMemo(
+    () => ({
+      version: 1 as const,
+      exportedAt: backupExportedAtRef.current,
+      user: {
+        name: user.name,
+        email: user.email,
+      },
+      portfolio: currentPortfolioData,
+      settings,
+    }),
+    [
+      currentPortfolioData,
       settings,
       user.email,
       user.name,
@@ -1125,6 +1172,10 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   );
 
   const handleAddProperty = (property: Property) => {
+    assertValidPropertyFinancialValues(property);
+    tracePortfolioPersistence('react:add-property', getPortfolioSnapshotTraceMetadata(user.id, {
+      properties: [...properties, property],
+    }, { accountId: user.id, indexedDbKey: user.id }));
     if (isDemoPreviewActive) {
       setDemoPreviewState((currentPreview) =>
         currentPreview
@@ -1150,6 +1201,7 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   };
 
   const handleEditProperty = (property: Property) => {
+    assertValidPropertyFinancialValues(property);
     const editingBaseline = syncedProperties.find(
       (candidate) => candidate.id === property.id
     );
@@ -1226,69 +1278,77 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
 
   const handleAddMortgage = (mortgage: Mortgage) => {
     if (isDemoPreviewActive) {
-      setDemoPreviewState((currentPreview) =>
-        currentPreview
-          ? {
-              ...currentPreview,
-              portfolio: {
-                ...currentPreview.portfolio,
-                mortgages: [...currentPreview.portfolio.mortgages, mortgage],
-              },
-            }
-          : currentPreview
+      if (!demoPreviewState) {
+        return;
+      }
+      const nextRelationship = addMortgageRelationship(
+        demoPreviewState.portfolio.properties,
+        demoPreviewState.portfolio.mortgages,
+        mortgage
       );
+      setDemoPreviewState({
+        ...demoPreviewState,
+        portfolio: {
+          ...demoPreviewState.portfolio,
+          ...nextRelationship,
+        },
+      });
       return;
     }
 
-    setMortgages((currentMortgages) => [...currentMortgages, mortgage]);
+    const nextRelationship = addMortgageRelationship(properties, mortgages, mortgage);
+    setProperties(nextRelationship.properties);
+    setMortgages(nextRelationship.mortgages);
   };
 
   const handleEditMortgage = (mortgage: Mortgage) => {
     if (isDemoPreviewActive) {
-      setDemoPreviewState((currentPreview) =>
-        currentPreview
-          ? {
-              ...currentPreview,
-              portfolio: {
-                ...currentPreview.portfolio,
-                mortgages: currentPreview.portfolio.mortgages.map((currentMortgage) =>
-                  currentMortgage.id === mortgage.id ? mortgage : currentMortgage
-                ),
-              },
-            }
-          : currentPreview
+      if (!demoPreviewState) {
+        return;
+      }
+      const nextRelationship = editMortgageRelationship(
+        demoPreviewState.portfolio.properties,
+        demoPreviewState.portfolio.mortgages,
+        mortgage
       );
+      setDemoPreviewState({
+        ...demoPreviewState,
+        portfolio: {
+          ...demoPreviewState.portfolio,
+          ...nextRelationship,
+        },
+      });
       return;
     }
 
-    setMortgages((currentMortgages) =>
-      currentMortgages.map((currentMortgage) =>
-        currentMortgage.id === mortgage.id ? mortgage : currentMortgage
-      )
-    );
+    const nextRelationship = editMortgageRelationship(properties, mortgages, mortgage);
+    setProperties(nextRelationship.properties);
+    setMortgages(nextRelationship.mortgages);
   };
 
   const handleDeleteMortgage = (mortgageId: string) => {
     if (isDemoPreviewActive) {
-      setDemoPreviewState((currentPreview) =>
-        currentPreview
-          ? {
-              ...currentPreview,
-              portfolio: {
-                ...currentPreview.portfolio,
-                mortgages: currentPreview.portfolio.mortgages.filter(
-                  (mortgage) => mortgage.id !== mortgageId
-                ),
-              },
-            }
-          : currentPreview
+      if (!demoPreviewState) {
+        return;
+      }
+      const nextRelationship = deleteMortgageRelationship(
+        demoPreviewState.portfolio.properties,
+        demoPreviewState.portfolio.mortgages,
+        mortgageId
       );
+      setDemoPreviewState({
+        ...demoPreviewState,
+        portfolio: {
+          ...demoPreviewState.portfolio,
+          ...nextRelationship,
+        },
+      });
       return;
     }
 
-    setMortgages((currentMortgages) =>
-      currentMortgages.filter((mortgage) => mortgage.id !== mortgageId)
-    );
+    const nextRelationship = deleteMortgageRelationship(properties, mortgages, mortgageId);
+    setProperties(nextRelationship.properties);
+    setMortgages(nextRelationship.mortgages);
   };
 
   const handleAddOpportunity = (opportunity: Opportunity) => {
@@ -1627,9 +1687,19 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     window.URL.revokeObjectURL(objectUrl);
   };
 
-  const handleImportBackup = (backup: import('./services/localAccountStore').UserAccountBackup) => {
-    importUserAccountBackup(user, backup);
-    window.location.reload();
+  const runPortfolioTransition = async (action: () => Promise<void>) => {
+    if (portfolioTransitionRef.current) throw new Error('Portfolio operation already in progress');
+    portfolioTransitionRef.current = true;
+    setIsPortfolioTransition(true);
+    try { await action(); }
+    finally { portfolioTransitionRef.current = false; setIsPortfolioTransition(false); }
+  };
+
+  const handleImportBackup = async (backup: import('./services/localAccountStore').UserAccountBackup) => {
+    await runPortfolioTransition(async () => {
+      await importUserAccountBackup(user, backup);
+      window.location.reload();
+    });
   };
 
   const handleSyncBackupToServer = async () => {
@@ -1637,13 +1707,15 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   };
 
   const handleRestoreBackupFromServer = async () => {
-    const result = await loadBackupFromServer(user.email);
-    importUserAccountBackup(user, result.payload);
-    window.location.reload();
+    await runPortfolioTransition(async () => {
+      const result = await loadBackupFromServer(user.email);
+      await importUserAccountBackup(user, result.payload);
+      window.location.reload();
+    });
   };
 
-  const handleResetDemoData = () => {
-    const result = resetDemoAccountData(user, {
+  const handleResetDemoData = async () => {
+    const result = await resetDemoAccountData(user, {
       properties: [],
       mortgages: [],
       cashAccounts: [],
@@ -1662,7 +1734,8 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
   };
 
   const handleLogoutWithDebug = () => {
-    onLogout(currentBackup);
+    setPersistenceStatus('saving');
+    void runPortfolioTransition(() => onLogout(currentBackup)).catch(() => setPersistenceStatus('error'));
   };
 
   const syncInvestmentAccount = useCallback(async (accountId: string) => {
@@ -1759,9 +1832,43 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     await syncInvestmentAccount(targetId);
   }, [isDemoPreviewActive, syncInvestmentAccount]);
 
-  useEffect(() => {
-    if (!canAutoWrite) {
-      console.debug('[recovery] skipped portfolio auto-save');
+  // Start the durable write before the updated portfolio can be painted as Saved.
+  // A passive effect leaves a refresh-sized gap where React has the property but
+  // IndexedDB still has the previous snapshot.
+  useLayoutEffect(() => {
+    if (!canAutoWrite || portfolioTransitionRef.current) {
+      tracePortfolioPersistence('autosave:blocked', {
+        userId: user.id,
+        accountId: user.id,
+        indexedDbKey: user.id,
+        details: { canAutoWrite, portfolioTransition: portfolioTransitionRef.current, appRecoveryMode },
+      });
+      return;
+    }
+    const decision = getPortfolioAutosaveDecision({
+      isBootSettled,
+      isHydrationComplete: portfolioHydration.storageState !== 'invalid',
+      activeUserId: user.id,
+      hydratedUserId: portfolioHydration.userId,
+      authoritativeSignature: portfolioHydration.canonicalSignature,
+      currentSignature: currentPortfolioSignature,
+      acceptedHydrationSignature: acceptedHydrationSignatureRef.current,
+      lastPersistedSignature: lastScheduledPortfolioSignatureRef.current,
+    });
+
+    if (decision === 'blocked') {
+      console.debug('[portfolio-save] blocked until authoritative hydration is accepted');
+      return;
+    }
+
+    if (decision === 'accept-hydrated') {
+      acceptedHydrationSignatureRef.current = portfolioHydration.canonicalSignature;
+      lastScheduledPortfolioSignatureRef.current = portfolioHydration.canonicalSignature;
+      console.debug('[portfolio-save] authoritative hydration accepted without writeback');
+      return;
+    }
+
+    if (decision === 'unchanged') {
       return;
     }
 
@@ -1773,19 +1880,30 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
         0
       ),
     });
-    saveUserPortfolio(user.id, {
-      properties,
-      mortgages,
-      cashAccounts,
-      bankConnections,
-      investmentAccounts,
-      opportunities,
-      rehabProjects,
-      reports,
-      reportTemplates,
-      reportBranding,
-    });
-  }, [bankConnections, cashAccounts, investmentAccounts, mortgages, opportunities, properties, rehabProjects, reportBranding, reportTemplates, reports, user.id]);
+    lastScheduledPortfolioSignatureRef.current = currentPortfolioSignature;
+    tracePortfolioPersistence('autosave:scheduled', getPortfolioSnapshotTraceMetadata(user.id, currentPortfolioData, {
+      accountId: user.id,
+      indexedDbKey: user.id,
+    }));
+    void persistence.save(currentPortfolioData).catch(() => { /* Persistent UI owns error reporting and retry. */ });
+  }, [
+    currentPortfolioData,
+    currentPortfolioSignature,
+    canAutoWrite,
+    persistence,
+    isBootSettled,
+    portfolioHydration,
+    properties,
+    user.id,
+  ]);
+
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (persistenceStatus !== 'saved') { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [persistenceStatus]);
 
   useEffect(() => {
     if (!ENABLE_LOCAL_RECOVERY_SNAPSHOT_WRITEBACK) {
@@ -1800,20 +1918,9 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       return;
     }
 
-    const serializedBackup = safeJsonStringify(currentBackup);
-
-    if (!serializedBackup) {
-      console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} skipped recovery snapshot writeback`);
-      return;
-    }
-
-    try {
-      saveUserRecoverySnapshot(user, currentBackup);
-    } catch (error) {
-      console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} recovery snapshot writeback failed`, {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    void saveUserRecoverySnapshot(user, currentBackup).catch(error => {
+      console.warn('Recovery copy failed; canonical save status is reported separately', error);
+    });
   }, [
     currentBackup,
     user,
@@ -1850,13 +1957,8 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
     }
 
     const flushCurrentBackup = () => {
-      const flushed = flushBackupToServer(currentBackup);
-
-      if (!flushed) {
-        void saveBackupToServer(currentBackup).catch(() => {
-          // Keep local and recovery snapshot data even if the network is unavailable.
-        });
-      }
+      // Additional best effort only: normal autosave already starts after each edit.
+      if (persistenceStatus === 'error') void persistence.save(currentPortfolioData).catch(() => undefined);
     };
 
     const handleVisibilityChange = () => {
@@ -1872,7 +1974,7 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       window.removeEventListener('pagehide', flushCurrentBackup);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [currentBackup, user]);
+  }, [currentPortfolioData, persistence, persistenceStatus, user]);
 
   useEffect(() => {
     if (!canAutoWrite) {
@@ -2640,6 +2742,11 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
       }
     >
       <>
+        {isPortfolioTransition && <div role="status" tabIndex={-1} ref={element => element?.focus()} onKeyDown={event => event.preventDefault()} className="fixed inset-0 z-[110] flex items-center justify-center bg-white/90 text-slate-900">{t('persistence.saving')}</div>}
+        <div role={persistenceStatus === 'error' ? 'alert' : 'status'} className="fixed bottom-3 right-3 z-[100] max-w-lg rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow dark:bg-slate-800 dark:text-white">
+          {persistenceStatus === 'error' ? t('persistence.error') : persistenceStatus === 'saving' ? t('persistence.saving') : t('persistence.saved')}
+          {persistenceStatus === 'error' && <button className="ml-3 underline" onClick={() => { void persistence.save(currentPortfolioData).catch(() => undefined); }}>{t('persistence.retry')}</button>}
+        </div>
         <SectionCrashBoundary sectionName="provider tree">
           <ProvidersBootLogger />
           <SectionCrashBoundary sectionName="router/app shell">
@@ -2698,6 +2805,8 @@ const WebAppShell = ({ user, onLogout }: WebAppShellProps) => {
                     onDeleteProperty={handleDeleteProperty}
                     onGenerateReportFromSource={handleGenerateReportFromSource}
                     onRequestOpenAddProperty={handleTutorialOpenAddProperty}
+                    onStartAddProperty={() => handleChooseStarterPath('manual-property')}
+                    onOpenProperties={() => setCurrentPage('properties')}
                     onRequestPropertyTabChange={handleTutorialPropertyTabChange}
                     onAddOpportunity={handleAddOpportunity}
                     onUpdateOpportunity={handleUpdateOpportunity}
@@ -2808,6 +2917,9 @@ function WebAppContent() {
   const {
     currentUser,
     isAuthBootstrapLoading,
+    hydrationError,
+    retryHydration,
+    portfolioHydration,
     sessionKey,
     handleLogin,
     handleRegister,
@@ -2827,6 +2939,11 @@ function WebAppContent() {
   useEffect(() => {
     console.info(`${BOOT_LOG_PREFIX} initial screen rendered`);
   }, []);
+
+  if (hydrationError) return <div role="alert" className="p-8">
+    {translateCurrentLanguage('persistence.loadError')}
+    <button className="ml-3 underline" onClick={retryHydration}>{translateCurrentLanguage('persistence.retry')}</button>
+  </div>;
 
   if (!currentUser) {
     if (isAuthBootstrapLoading) {
@@ -2848,7 +2965,11 @@ function WebAppContent() {
     );
   }
 
-  if (isAuthBootstrapLoading) {
+  if (
+    isAuthBootstrapLoading ||
+    !portfolioHydration ||
+    portfolioHydration.userId !== currentUser.id
+  ) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-stone-100 px-6 text-center text-slate-700">
         {translateCurrentLanguage('common.loadingWorkspace')}
@@ -2862,6 +2983,7 @@ function WebAppContent() {
       <WebAppShell
         key={`${currentUser.id}-${sessionKey}`}
         user={currentUser}
+        portfolioHydration={portfolioHydration}
         onLogout={handleLogout}
       />
     </SettingsProvider>

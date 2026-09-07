@@ -9,6 +9,10 @@ import {
 } from '../../../common/utils/calculations';
 import { currencyOptions } from '../../../common/utils/currency';
 import { formatCurrency, formatPercentage, getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
+import {
+  assertValidMortgageFinancialValues,
+  getLowMortgageInterestRateWarning,
+} from '../../../common/utils/financialValidation';
 import { useSettings } from '../context/SettingsContext';
 import { CompactEditModal } from './CompactEditModal';
 import {
@@ -25,6 +29,7 @@ import {
 
 interface MortgageFormProps {
   properties: Property[];
+  mortgages: Mortgage[];
   onAddMortgage: (mortgage: Mortgage) => void;
   onEditMortgage?: (mortgage: Mortgage) => void;
   onClose: () => void;
@@ -69,6 +74,7 @@ const createBlankBonification = (index: number): MortgageBonification => ({
 
 export const MortgageForm: React.FC<MortgageFormProps> = ({
   properties,
+  mortgages,
   onAddMortgage,
   onEditMortgage,
   onClose,
@@ -105,6 +111,8 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
     notes: '',
   });
   const [bonifications, setBonifications] = useState<MortgageBonification[]>([]);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [lowRateConfirmed, setLowRateConfirmed] = useState(false);
   const [editorMode, setEditorMode] = useState<'section' | 'full'>(isEditing ? 'section' : 'full');
   const [activeSection, setActiveSection] = useState<MortgageEditorSection>(
     normalizeMortgageEditorSection(initialSection)
@@ -260,8 +268,13 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
 
     setFormData((currentFormData) => ({
       ...currentFormData,
-      [name]: Number.isNaN(parsedValue) ? (nullable ? null : 0) : parsedValue,
+      [name]: Number.isNaN(parsedValue)
+        ? currentFormData[name as keyof typeof currentFormData]
+        : parsedValue,
     }));
+    if (['interestRate', 'initialInterestRate', 'baseInterestRate', 'currentInterestRate'].includes(name)) {
+      setLowRateConfirmed(false);
+    }
   };
 
   const updateBonification = (
@@ -322,12 +335,41 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
       activeBonifications: normalizedBonifications.filter((item) => item.active),
     };
 
-    if (isEditing && editingMortgage && onEditMortgage) {
-      onEditMortgage(mortgagePayload);
-      return;
-    }
+    try {
+      const lowRateWarning = [
+        mortgagePayload.interestRate,
+        mortgagePayload.baseInterestRate,
+        mortgagePayload.initialInterestRate,
+        mortgagePayload.currentInterestRate,
+      ]
+        .map((rate) => getLowMortgageInterestRateWarning(rate))
+        .find((warning): warning is string => warning !== null);
+      if (lowRateWarning && !lowRateConfirmed) {
+        setValidationError(`${lowRateWarning} Review it, then save again to confirm this rate.`);
+        setLowRateConfirmed(true);
+        return;
+      }
+      assertValidMortgageFinancialValues(mortgagePayload);
+      const conflictingMortgage = mortgages.find(
+        (mortgage) =>
+          mortgage.id !== mortgagePayload.id &&
+          mortgage.propertyId === mortgagePayload.propertyId
+      );
+      if (conflictingMortgage) {
+        throw new Error('This property already has an active mortgage');
+      }
 
-    onAddMortgage(mortgagePayload);
+      if (isEditing && editingMortgage && onEditMortgage) {
+        onEditMortgage(mortgagePayload);
+        return;
+      }
+
+      onAddMortgage(mortgagePayload);
+    } catch (error) {
+      setValidationError(
+        error instanceof Error ? error.message : 'Invalid mortgage values'
+      );
+    }
   };
 
   const panelClass = `${appPanelInsetClass} rounded-3xl p-5`;
@@ -426,6 +468,11 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
     >
       <form onSubmit={handleSubmit} className="px-4 py-4 pb-28 sm:px-6 sm:py-6 sm:pb-6">
         <div className="space-y-5 sm:space-y-6">
+            {validationError ? (
+              <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
+                {validationError}
+              </p>
+            ) : null}
             {showSection('property') ? (
             <section className={panelClass}>
               <h3 className={`text-sm font-semibold uppercase tracking-[0.18em] ${appTextStrongClass}`}>
@@ -448,7 +495,15 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                   >
                     <option value="">{t('mortgages.form.selectProperty')}</option>
                     {properties.map((property) => (
-                      <option key={property.id} value={property.id}>
+                      <option
+                        key={property.id}
+                        value={property.id}
+                        disabled={mortgages.some(
+                          (mortgage) =>
+                            mortgage.id !== editingMortgage?.id &&
+                            mortgage.propertyId === property.id
+                        )}
+                      >
                         {property.name} - {property.address}
                       </option>
                     ))}
@@ -525,6 +580,9 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="originalLoanAmount"
                     value={formData.originalLoanAmount}
                     onChange={(event) => handleNumberChange(event)}
+                    min="0.01"
+                    step="0.01"
+                    required
                     className={inputClass}
                   />
                 </div>
@@ -538,6 +596,9 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="currentBalance"
                     value={formData.currentBalance}
                     onChange={(event) => handleNumberChange(event)}
+                    min="0"
+                    step="0.01"
+                    required
                     className={inputClass}
                   />
                 </div>
@@ -564,6 +625,9 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="mortgageTermYears"
                     value={formData.mortgageTermYears}
                     onChange={(event) => handleNumberChange(event)}
+                    min="0.01"
+                    step="0.01"
+                    required
                     className={inputClass}
                   />
                 </div>
@@ -594,7 +658,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                 </div>
                 <div>
                   <label htmlFor="interestRate" className={labelClass}>
-                    {t('mortgages.form.interestRate')}
+                    {t('mortgages.form.interestRate')} (%)
                   </label>
                   <input
                     type="number"
@@ -602,13 +666,19 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="interestRate"
                     value={formData.interestRate}
                     onChange={(event) => handleNumberChange(event)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />
+                  {getLowMortgageInterestRateWarning(formData.interestRate) ? (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                      {getLowMortgageInterestRateWarning(formData.interestRate)}
+                    </p>
+                  ) : null}
                 </div>
                 <div>
                   <label htmlFor="baseInterestRate" className={labelClass}>
-                    {t('mortgages.card.baseRate')}
+                    {t('mortgages.card.baseRate')} (%)
                   </label>
                   <input
                     type="number"
@@ -616,13 +686,14 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="baseInterestRate"
                     value={formData.baseInterestRate ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />
                 </div>
                 <div>
                   <label htmlFor="initialInterestRate" className={labelClass}>
-                    {t('mortgages.card.initialRate')}
+                    {t('mortgages.card.initialRate')} (%)
                   </label>
                   <input
                     type="number"
@@ -630,13 +701,14 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="initialInterestRate"
                     value={formData.initialInterestRate ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />
                 </div>
                 <div>
                   <label htmlFor="maxBonifiedRate" className={labelClass}>
-                    {t('mortgages.card.maxBonifiedRate')}
+                    {t('mortgages.card.maxBonifiedRate')} (%)
                   </label>
                   <input
                     type="number"
@@ -644,6 +716,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="maxBonifiedRate"
                     value={formData.maxBonifiedRate ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />
@@ -658,6 +731,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="maxTotalBonificationPoints"
                     value={formData.maxTotalBonificationPoints ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />
@@ -672,6 +746,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="monthlyMortgagePayment"
                     value={formData.monthlyMortgagePayment}
                     onChange={(event) => handleNumberChange(event)}
+                    min="0"
                     step="0.01"
                     className={inputClass}
                   />

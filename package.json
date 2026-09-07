@@ -4,12 +4,12 @@
   "type": "module",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "dev": "vite --port 8081",
-    "web": "vite --port 8081",
+    "dev": "node --use-system-ca ./node_modules/vite/bin/vite.js --port 8081",
+    "web": "node --use-system-ca ./node_modules/vite/bin/vite.js --port 8081",
     "build": "tsc && vite build",
     "test": "tsc -p tsconfig.tests.json && powershell -NoProfile -Command \"$pkg = Join-Path '.tmp-tests' 'package.json'; Set-Content -LiteralPath $pkg -Value '{\\\"type\\\":\\\"commonjs\\\"}' -NoNewline; node --test .tmp-tests/tests/*.test.js; Remove-Item -Recurse -Force .tmp-tests\"",
-    "i18n:audit": "tsc --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck --outDir .tmp-i18n-audit scripts/i18n-audit.ts && node .tmp-i18n-audit/scripts/i18n-audit.js && powershell -NoProfile -Command \"Remove-Item -Recurse -Force .tmp-i18n-audit\"",
-    "preview": "vite preview",
+    "i18n:audit": "tsc --module commonjs --target es2020 --moduleResolution node --esModuleInterop --skipLibCheck --outDir .tmp-i18n-audit scripts/i18n-audit.ts && powershell -NoProfile -Command \"$pkg = Join-Path '.tmp-i18n-audit' 'package.json'; Set-Content -LiteralPath $pkg -Value '{\\\"type\\\":\\\"commonjs\\\"}' -NoNewline; node .tmp-i18n-audit/scripts/i18n-audit.js; Remove-Item -Recurse -Force .tmp-i18n-audit\"",
+    "preview": "node --use-system-ca ./node_modules/vite/bin/vite.js preview",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -41,7 +41,8 @@
     "@vitejs/plugin-react": "^4.2.1",
     "vite": "^5.0.8",
     "postcss": "^8.4.32",
-    "autoprefixer": "^10.4.16"
+    "autoprefixer": "^10.4.16",
+    "fake-indexeddb": "^6.2.5"
   },
   "private": true,
   "expo": {

@@ -595,7 +595,6 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
   onDeleteMortgage,
 }) => {
   const { t } = useSettings();
-  void onDeleteMortgage;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingMortgageId, setEditingMortgageId] = useState<string | null>(null);
@@ -605,6 +604,7 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
     mortgages[0]?.id ?? null
   );
   const [isImporting, setIsImporting] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [importState, setImportState] = useState<{
     file: File;
     attachment: OpportunityAttachment;
@@ -714,9 +714,17 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
       })
     );
 
-    onAddMortgage(mortgage);
-    setSelectedMortgageId(mortgage.id);
-    setImportState(null);
+    try {
+      onAddMortgage(mortgage);
+      setMutationError(null);
+      setSelectedMortgageId(mortgage.id);
+      setImportState(null);
+    } catch (error) {
+      setMutationError(
+        error instanceof Error ? error.message : 'Invalid mortgage values'
+      );
+      setImportState(null);
+    }
   };
 
   const selectedProperty = selectedMortgage
@@ -772,6 +780,12 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
           onChange={(event) => void handleImportFile(event)}
         />
 
+        {mutationError ? (
+          <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
+            {mutationError}
+          </p>
+        ) : null}
+
         {mortgages.length === 0 ? (
           <div className={`${appPanelClass} overflow-hidden p-6 sm:p-8`}>
             <div className="mx-auto max-w-3xl text-center">
@@ -798,6 +812,7 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
                   selectedMortgageId={selectedMortgageId}
                   onSelectMortgage={setSelectedMortgageId}
                   onEdit={handleOpenEditForm}
+                  onDelete={onDeleteMortgage}
                 />
               ) : (
                 <div className={`${appPanelClass} p-12 text-center`}>
@@ -816,6 +831,7 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
         {showForm && (
           <MortgageForm
             properties={properties}
+            mortgages={mortgages}
             isEditing={editingMortgageId !== null}
             editingMortgage={editingMortgage}
             initialSection={editingMortgageSection}

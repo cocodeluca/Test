@@ -9,6 +9,7 @@ import {
 import { useSettings } from '../context/SettingsContext';
 import {
   calculateAllPropertyMetrics,
+  calculateMortgageDebtPaydown,
   calculatePortfolioMetrics,
 } from '../../../common/utils/calculations';
 import {
@@ -80,6 +81,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const alerts = useMemo(() => generatePortfolioAlerts(properties), [properties]);
 
+  const debtPaydown = useMemo(
+    () =>
+      calculateMortgageDebtPaydown({
+        mortgages,
+        properties,
+        reportingCurrency: metrics.valuationDisplayCurrency,
+        rateOverrides: fxRates,
+      }),
+    [fxRates, metrics.valuationDisplayCurrency, mortgages, properties]
+  );
+
   const viewModel = useMemo(
     () =>
       buildDashboardViewModel({
@@ -87,9 +99,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
         properties,
         propertyMetrics,
         alerts,
+        debtPaydown,
         rateOverrides: fxRates,
       }),
-    [alerts, fxRates, metrics, properties, propertyMetrics]
+    [alerts, debtPaydown, fxRates, metrics, properties, propertyMetrics]
   );
 
   useEffect(() => {
@@ -155,7 +168,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const firstName = profileName.split(/\s+/)[0] || t('dashboardUi.ownerFallback');
 
   return (
-    <div className="space-y-[14px] pb-2">
+    <div className="space-y-2.5">
       <DashboardHeader
         firstName={firstName}
         onEditWealth={() => setShowWealthEditor(true)}

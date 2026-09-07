@@ -104,30 +104,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       className={`hidden h-screen w-[224px] shrink-0 flex-col border-r lg:fixed lg:inset-y-0 lg:left-0 lg:flex ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}
     >
-      <div className={`border-b px-4 py-4 ${appBorderClass}`}>
-        <div className="flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-[18px] border border-[rgba(24,34,52,0.14)] bg-white text-[var(--app-nav-active-fg)]">
-            <Home className="h-5 w-5" strokeWidth={1.8} />
+      <div className={`border-b px-4 py-3 ${appBorderClass}`}>
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-10 w-10 items-center justify-center rounded-[15px] border border-[rgba(24,34,52,0.14)] bg-white text-[var(--app-nav-active-fg)]">
+            <Home className="h-[18px] w-[18px]" strokeWidth={1.8} />
           </div>
           <div className="min-w-0">
-            <h1 className={`truncate text-[1.26rem] font-medium tracking-[-0.04em] ${appTextStrongClass}`}>
+            <h1 className={`truncate text-[1.1rem] font-medium tracking-[-0.04em] ${appTextStrongClass}`}>
               {t('app.title')}
             </h1>
-            <p className={`mt-0.5 truncate text-[0.78rem] font-normal tracking-[-0.02em] ${appTextMutedClass}`}>
+            <p className={`mt-0.5 truncate text-[0.72rem] font-normal tracking-[-0.02em] ${appTextMutedClass}`}>
               {t('app.subtitle')}
             </p>
           </div>
         </div>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-3.5">
-        <div className="space-y-4">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
+        <div className="space-y-3">
           {sections.map((section) => (
-            <div key={section.label} className="space-y-2">
-              <p className={`text-[0.9rem] font-normal tracking-[-0.03em] ${appTextMutedClass}`}>
+            <div key={section.label} className="space-y-1.5">
+              <p className={`text-[0.82rem] font-normal tracking-[-0.03em] ${appTextMutedClass}`}>
                 {section.label}
               </p>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 {section.items.map((item) => {
                   const Icon = item.icon;
                   const isActive = currentPage === item.id;
@@ -149,7 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   ? 'nav-settings'
                                   : undefined
                       }
-                      className={`group flex w-full items-center gap-3 rounded-[18px] px-3.5 py-3 text-left transition-all duration-200 ${
+                      className={`group flex w-full items-center gap-2.5 rounded-[14px] px-3 py-2 text-left transition-all duration-200 ${
                         isActive
                           ? `${appNavActiveClass}`
                           : `${appNavIdleClass} border border-transparent bg-transparent shadow-none hover:border-transparent`
@@ -171,7 +171,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }`}
                     >
                     <span
-                      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] border-none transition-all ${
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] border-none transition-all ${
                         isActive
                           ? 'bg-transparent text-[#1f5aa6]'
                           : 'bg-transparent text-[var(--app-text-muted)] group-hover:text-[var(--app-nav-active-fg)]'
@@ -179,7 +179,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                       <Icon className="h-4 w-4" strokeWidth={1.8} />
                     </span>
-                    <span className={`text-[0.96rem] font-normal tracking-[-0.03em] ${appTextStrongClass}`}>
+                    <span className={`text-[0.9rem] font-normal tracking-[-0.03em] ${appTextStrongClass}`}>
                       {item.label}
                     </span>
                   </button>
@@ -191,17 +191,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </nav>
 
-      <div className={`border-t px-4 py-3.5 ${appBorderClass}`}>
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[rgba(31,79,136,0.12)] text-[var(--app-nav-active-fg)]">
-            <UserCircle2 className="h-[30px] w-[30px]" strokeWidth={1.6} />
+      <div className={`border-t px-4 py-3 ${appBorderClass}`}>
+        <div className="flex items-start gap-2.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[rgba(31,79,136,0.12)] text-[var(--app-nav-active-fg)]">
+            <UserCircle2 className="h-7 w-7" strokeWidth={1.6} />
           </div>
           <div className="min-w-0">
-            <p className={`truncate text-[0.95rem] font-medium tracking-[-0.03em] ${appTextStrongClass}`}>{currentUserName}</p>
-            <p className={`mt-0.5 truncate text-[0.8rem] font-normal tracking-[-0.02em] ${appTextMutedClass}`}>
+            <p className={`truncate text-[0.88rem] font-medium tracking-[-0.03em] ${appTextStrongClass}`}>{currentUserName}</p>
+            <p className={`mt-0.5 truncate text-[0.74rem] font-normal tracking-[-0.02em] ${appTextMutedClass}`}>
               {settings.profile.role || t('settings.fields.role')}
             </p>
-            <p className={`mt-1 truncate text-[0.74rem] font-normal tracking-[-0.01em] ${appTextMutedClass}`}>
+            <p className={`mt-0.5 truncate text-[0.7rem] font-normal tracking-[-0.01em] ${appTextMutedClass}`}>
               {currentUserEmail}
             </p>
           </div>
@@ -209,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onLogout}
-          className={`mt-3 inline-flex min-w-[146px] items-center gap-2 rounded-[18px] px-3.5 py-2 text-[0.85rem] font-medium ${appButtonMutedClass} ${appTextStrongClass}`}
+          className={`mt-2 inline-flex min-w-[138px] items-center gap-2 rounded-[14px] px-3 py-1.5 text-[0.8rem] font-medium ${appButtonMutedClass} ${appTextStrongClass}`}
         >
           <LogOut className="h-3.5 w-3.5" strokeWidth={1.8} />
           <span>{t('common.logOut')}</span>

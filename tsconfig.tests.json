@@ -15,6 +15,7 @@
   "include": [
     "tests/**/*.ts",
     "src/common/**/*.ts",
-    "src/platforms/web/services/localAccountStore.ts"
+    "src/platforms/web/services/localAccountStore.ts",
+    "src/platforms/web/services/galleryMediaStore.ts"
   ]
 }

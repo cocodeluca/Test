@@ -1,3 +1,4 @@
+import { accountSnapshotTransaction, serializeAccountOperation } from './portfolioDatabase';
 import { AppSettings } from '../../../common/types/settings';
 import {
   BankConnection,
@@ -23,6 +24,8 @@ import {
   mockMortgages,
   mockProperties,
 } from '../../../common/data/mockData';
+import { commitGalleryMediaRefs, isGalleryMediaRef } from './galleryMediaStore';
+import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from './portfolioPersistenceTrace';
 
 const LOCAL_USERS_STORAGE_KEY = 're-portfolio-local-users';
 const LOCAL_SESSION_STORAGE_KEY = 're-portfolio-local-session';
@@ -101,6 +104,23 @@ export interface UserPortfolioData {
   reportBranding: ReportBrandingConfig;
 }
 
+export type UserPortfolioStorageState = 'missing' | 'empty' | 'meaningful' | 'invalid';
+
+export interface UserPortfolioHydrationSnapshot {
+  userId: string;
+  portfolio: UserPortfolioData;
+  storageState: UserPortfolioStorageState;
+  storageExists: boolean;
+  hasMeaningfulData: boolean;
+  canonicalSignature: string;
+}
+
+export type PortfolioAutosaveDecision =
+  | 'blocked'
+  | 'accept-hydrated'
+  | 'unchanged'
+  | 'persist';
+
 export interface AccountCredentials {
   email: string;
   password: string;
@@ -160,7 +180,7 @@ const mergeUserSettings = (
   },
 });
 
-const emptyPortfolioData: UserPortfolioData = {
+export const emptyPortfolioData: UserPortfolioData = {
   properties: [],
   mortgages: [],
   cashAccounts: [],
@@ -172,6 +192,39 @@ const emptyPortfolioData: UserPortfolioData = {
   reportTemplates: defaultReportTemplates,
   reportBranding: defaultReportBranding,
 };
+
+const toPersistedUserPortfolio = (data: UserPortfolioData): UserPortfolioData => ({
+  properties: data.properties,
+  mortgages: data.mortgages,
+  cashAccounts: data.cashAccounts,
+  bankConnections: data.bankConnections,
+  investmentAccounts: data.investmentAccounts,
+  opportunities: data.opportunities,
+  rehabProjects: data.rehabProjects,
+  reports: data.reports,
+  reportTemplates: data.reportTemplates,
+  reportBranding: data.reportBranding,
+});
+
+const canonicalizeJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeJsonValue(item));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  return Object.keys(value)
+    .sort()
+    .reduce<Record<string, unknown>>((result, key) => {
+      result[key] = canonicalizeJsonValue((value as Record<string, unknown>)[key]);
+      return result;
+    }, {});
+};
+
+export const serializeUserPortfolioForPersistence = (data: UserPortfolioData): string =>
+  JSON.stringify(canonicalizeJsonValue(toPersistedUserPortfolio(data)));
 
 const toPublicUser = (account: StoredAccountRecord): LocalAccountUser => ({
   id: account.id,
@@ -300,21 +353,6 @@ export const safeLocalStorageSet = (key: string, value: string): boolean => {
   }
 };
 
-const safeLocalStorageRemove = (key: string): void => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  try {
-    window.localStorage.removeItem(key);
-  } catch (error) {
-    console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} localStorage remove failed`, {
-      key,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-};
-
 const readStoredAccounts = (): StoredAccountRecord[] =>
   readJson<StoredAccountRecord[]>(LOCAL_USERS_STORAGE_KEY, []);
 
@@ -418,17 +456,17 @@ const clearDemoAccountSelectionState = (user: Pick<LocalAccountUser, 'id'>) => {
   setStoredSelectedUseCaseId(settingsStorageKey, null);
 };
 
-export const normalizeDemoAccountState = (
+export const normalizeDemoAccountState = async (
   user: LocalAccountUser,
   portfolio: UserPortfolioData | null = null
-): { normalized: boolean } => {
+): Promise<{ normalized: boolean }> => {
   if (!isDemoLocalAccount(user)) {
     return { normalized: false };
   }
 
   const currentSettings = loadUserSettings(user);
 
-  saveUserPortfolio(user.id, portfolio ?? loadUserPortfolio(user.id));
+  if (portfolio) await saveUserPortfolio(user.id, portfolio);
   saveUserSettings(user, {
     ...currentSettings,
     userMode: 'basic',
@@ -559,6 +597,7 @@ const isBackupUsableForUser = (
   Boolean(
     backup &&
       backup.version === 1 &&
+      backup.user && typeof backup.user.email === 'string' &&
       normalizeEmail(backup.user.email) === normalizeEmail(user.email) &&
       backup.settings &&
       backup.portfolio
@@ -712,7 +751,6 @@ export const ensureLocalAccountPassword = (
   };
 
   writeStoredAccounts([...accounts, newAccount]);
-  saveUserPortfolio(newAccount.id, emptyPortfolioData);
   saveUserSettings(
     { id: newAccount.id, name: fallbackName, email },
     {
@@ -760,7 +798,6 @@ export const registerLocalAccount = (
   };
 
   writeStoredAccounts([...accounts, account]);
-  saveUserPortfolio(account.id, emptyPortfolioData);
   saveUserSettings(
     { id: account.id, name, email },
     {
@@ -822,13 +859,35 @@ export const logoutLocalAccount = () => {
   });
 };
 
-export const loadUserPortfolio = (userId: string): UserPortfolioData => {
-  const storedValue = readJson<Partial<UserPortfolioData>>(
-    makeUserPortfolioStorageKey(userId),
-    emptyPortfolioData
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const hasRecognizedPortfolioShape = (value: unknown): value is Partial<UserPortfolioData> =>
+  isRecord(value) &&
+  ['properties', 'mortgages', 'cashAccounts', 'bankConnections', 'investmentAccounts', 'opportunities', 'rehabProjects', 'reports', 'reportTemplates'].every(key => value[key] === undefined || (Array.isArray(value[key]) && (value[key] as unknown[]).every(isRecord))) &&
+  ['properties', 'mortgages', 'cashAccounts', 'investmentAccounts'].some((key) =>
+    Array.isArray(value[key])
   );
 
-  return {
+const unwrapStoredPortfolio = (value: unknown): Partial<UserPortfolioData> | null => {
+  if (hasRecognizedPortfolioShape(value)) {
+    return value;
+  }
+
+  if (
+    isRecord(value) &&
+    value.version === 2 &&
+    hasRecognizedPortfolioShape(value.portfolio)
+  ) {
+    return value.portfolio;
+  }
+
+  return null;
+};
+
+const normalizeLoadedPortfolio = (
+  storedValue: Partial<UserPortfolioData> = emptyPortfolioData
+): UserPortfolioData => ({
     properties: storedValue.properties ?? [],
     mortgages: storedValue.mortgages ?? [],
     cashAccounts: (storedValue.cashAccounts ?? []).map((account) => normalizeCashAccount(account)),
@@ -839,7 +898,104 @@ export const loadUserPortfolio = (userId: string): UserPortfolioData => {
     reports: storedValue.reports ?? [],
     reportTemplates: storedValue.reportTemplates ?? defaultReportTemplates,
     reportBranding: storedValue.reportBranding ?? defaultReportBranding,
-  };
+  });
+
+const readUserPortfolioStorage = async (userId: string): Promise<{ portfolio: UserPortfolioData; storageState: UserPortfolioStorageState }> => {
+  const record = await accountSnapshotTransaction('portfolios', userId);
+  let stored: Partial<UserPortfolioData> | null;
+  if (record !== undefined) {
+    if (record.userId !== userId || record.schemaVersion !== 1) throw new Error('Invalid account snapshot');
+    stored = unwrapStoredPortfolio(record.portfolio);
+    if (!stored) throw new Error('Corrupt IndexedDB portfolio; recovery required');
+  } else {
+    // Do not turn storage access or parsing failures into an empty account.
+    const raw = window.localStorage.getItem(makeUserPortfolioStorageKey(userId));
+    if (raw === null) {
+      const portfolio = normalizeLoadedPortfolio();
+      tracePortfolioPersistence('load:raw', getPortfolioSnapshotTraceMetadata(userId, portfolio, {
+        accountId: userId,
+        indexedDbKey: userId,
+      }));
+      return { portfolio, storageState: 'missing' };
+    }
+    stored = unwrapStoredPortfolio(JSON.parse(raw));
+    if (!stored) throw new Error('Corrupt legacy portfolio; recovery required');
+    const portfolio = normalizeLoadedPortfolio(stored);
+    const migrated = await accountSnapshotTransaction('portfolios', userId, portfolio, true);
+    if (migrated?.portfolio !== portfolio) {
+      const authoritative = unwrapStoredPortfolio(migrated?.portfolio);
+      if (!authoritative) throw new Error('Invalid concurrent account snapshot');
+      const resolved = normalizeLoadedPortfolio(authoritative);
+      tracePortfolioPersistence('load:raw', getPortfolioSnapshotTraceMetadata(userId, resolved, {
+        accountId: userId,
+        indexedDbKey: userId,
+        snapshotUpdatedAt: migrated?.updatedAt,
+        snapshotVersion: migrated?.schemaVersion,
+      }));
+      return { portfolio: resolved, storageState: hasMeaningfulPortfolioData(resolved) ? 'meaningful' : 'empty' };
+    }
+    // Legacy is retained unchanged; transaction completion confirms migration.
+    tracePortfolioPersistence('load:raw', getPortfolioSnapshotTraceMetadata(userId, portfolio, {
+      accountId: userId,
+      indexedDbKey: userId,
+      snapshotUpdatedAt: migrated?.updatedAt,
+      snapshotVersion: migrated?.schemaVersion,
+    }));
+    return { portfolio, storageState: hasMeaningfulPortfolioData(portfolio) ? 'meaningful' : 'empty' };
+  }
+  const portfolio = normalizeLoadedPortfolio(stored);
+  tracePortfolioPersistence('load:raw', getPortfolioSnapshotTraceMetadata(userId, portfolio, {
+    accountId: userId,
+    indexedDbKey: userId,
+    snapshotUpdatedAt: record?.updatedAt,
+    snapshotVersion: record?.schemaVersion,
+  }));
+  return { portfolio, storageState: hasMeaningfulPortfolioData(portfolio) ? 'meaningful' : 'empty' };
+};
+
+export const loadUserPortfolioHydrationSnapshot = (userId: string): Promise<UserPortfolioHydrationSnapshot> =>
+  serializeAccountOperation(userId, async () => {
+    const stored = await readUserPortfolioStorage(userId);
+    return { userId, ...stored, storageExists: stored.storageState !== 'missing',
+      hasMeaningfulData: stored.storageState === 'meaningful',
+      canonicalSignature: serializeUserPortfolioForPersistence(stored.portfolio) };
+  });
+
+export const loadUserPortfolio = async (userId: string): Promise<UserPortfolioData> =>
+  (await loadUserPortfolioHydrationSnapshot(userId)).portfolio;
+
+export const getPortfolioAutosaveDecision = (args: {
+  isBootSettled: boolean;
+  isHydrationComplete: boolean;
+  activeUserId: string;
+  hydratedUserId: string | null;
+  authoritativeSignature: string | null;
+  currentSignature: string | null;
+  acceptedHydrationSignature: string | null;
+  lastPersistedSignature: string | null;
+}): PortfolioAutosaveDecision => {
+  if (
+    !args.isBootSettled ||
+    !args.isHydrationComplete ||
+    !args.hydratedUserId ||
+    args.hydratedUserId !== args.activeUserId ||
+    !args.authoritativeSignature ||
+    !args.currentSignature
+  ) {
+    return 'blocked';
+  }
+
+  if (args.acceptedHydrationSignature !== args.authoritativeSignature) {
+    return args.currentSignature === args.authoritativeSignature
+      ? 'accept-hydrated'
+      : 'blocked';
+  }
+
+  if (args.currentSignature === args.lastPersistedSignature) {
+    return 'unchanged';
+  }
+
+  return 'persist';
 };
 
 export const loadUserSettings = (
@@ -894,111 +1050,62 @@ export const normalizeUserOnboardingState = (
   });
 };
 
-export const saveUserPortfolio = (userId: string, data: UserPortfolioData) => {
-  writeJson(makeUserPortfolioStorageKey(userId), data);
+export const saveUserPortfolio = (userId: string, data: UserPortfolioData): Promise<void> => {
+  // Capture at invocation, before entering the queue; callers may mutate their input later.
+  let snapshot: UserPortfolioData;
+  let galleryRefs: string[];
+  try {
+    if (!userId || !hasRecognizedPortfolioShape(data)) throw new Error('Invalid portfolio snapshot');
+    snapshot = JSON.parse(serializeUserPortfolioForPersistence(data));
+    if (!Array.isArray(snapshot.properties) || snapshot.properties.some(property => !isRecord(property))) throw new Error('Invalid properties');
+    galleryRefs = snapshot.properties.flatMap(property =>
+      [...(property.imageUrls ?? []), ...(property.imageThumbnailUrls ?? []), property.imageUrl ?? ''].filter(isGalleryMediaRef));
+  }
+  catch (error) { return Promise.reject(error); }
+  tracePortfolioPersistence('save:input', getPortfolioSnapshotTraceMetadata(userId, snapshot, {
+    accountId: userId,
+    indexedDbKey: userId,
+    snapshotVersion: 1,
+  }));
+  return serializeAccountOperation(userId, async () => {
+    await accountSnapshotTransaction('portfolios', userId, snapshot);
+    commitGalleryMediaRefs(galleryRefs);
+    // Retain removed blobs: legacy/recovery snapshots or another account may still reference them.
+    // Failed writes also retain pending blobs so retry never saves dangling references.
+  });
 };
 
-export const saveUserRecoverySnapshot = (
-  user: LocalAccountUser,
-  backup: UserAccountBackup
-) => {
-  if (
-    !backup ||
-    !backup.user ||
-    !backup.portfolio ||
-    !backup.settings ||
-    !isBackupUsableForUser(backup, user)
-  ) {
-    return;
-  }
-
-  if (
-    !hasMeaningfulPortfolioData(backup.portfolio) &&
-    !hasMeaningfulSettings(backup.settings, user)
-  ) {
-    return;
-  }
-
-  const serializedBackup = safeJsonStringify(backup);
-
-  if (!serializedBackup) {
-    return;
-  }
-
-  safeLocalStorageSet(makeUserRecoverySnapshotKey(user.id), serializedBackup);
+export const saveUserRecoverySnapshot = (user: LocalAccountUser, backup: UserAccountBackup): Promise<void> => {
+  if (!isBackupUsableForUser(backup, user)) return Promise.reject(new Error('Invalid recovery snapshot'));
+  const snapshot = JSON.parse(JSON.stringify(backup));
+  return serializeAccountOperation(user.id, async () => { await accountSnapshotTransaction('recovery', user.id, snapshot); });
 };
 
-export const loadUserRecoverySnapshot = (
-  user: LocalAccountUser
-): UserAccountBackup | null => {
-  const key = makeUserRecoverySnapshotKey(user.id);
-  const rawSnapshot = safeLocalStorageGet(key);
-  const snapshot = safeJsonParse<UserAccountBackup | null>(rawSnapshot, null);
-
-  if (snapshot && isBackupUsableForUser(snapshot, user)) {
+export const loadUserRecoverySnapshot = (user: LocalAccountUser): Promise<UserAccountBackup | null> =>
+  serializeAccountOperation(user.id, async () => {
+    const record = await accountSnapshotTransaction('recovery', user.id);
+    const raw = record ? null : window.localStorage.getItem(makeUserRecoverySnapshotKey(user.id));
+    if (!record && raw === null) return null;
+    const snapshot = record ? record.portfolio as UserAccountBackup : JSON.parse(raw!);
+    if (!isBackupUsableForUser(snapshot, user) || !unwrapStoredPortfolio(snapshot.portfolio)) throw new Error('Invalid recovery snapshot');
     return snapshot;
-  }
+  });
 
-  if (rawSnapshot !== null) {
-    console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} ignoring malformed recovery snapshot`);
-    safeLocalStorageRemove(key);
-  }
-
-  return null;
+export const restoreUserRecoverySnapshotIfNeeded = async (
+  user: LocalAccountUser
+): Promise<{ restored: boolean }> => {
+  const current = await loadUserPortfolioHydrationSnapshot(user.id);
+  if (current.storageExists) return { restored: false };
+  const snapshot = await loadUserRecoverySnapshot(user);
+  if (!snapshot) return { restored: false };
+  await importUserAccountBackup(user, snapshot);
+  return { restored: true };
 };
 
-export const restoreUserRecoverySnapshotIfNeeded = (
+export const exportUserAccountBackup = async (
   user: LocalAccountUser
-): { restored: boolean } => {
-  let currentPortfolio: UserPortfolioData;
-  let currentSettings: AppSettings;
-
-  try {
-    currentPortfolio = loadUserPortfolio(user.id);
-  } catch (error) {
-    console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} failed to read current portfolio`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return { restored: false };
-  }
-
-  try {
-    currentSettings = loadUserSettings(user);
-  } catch (error) {
-    console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} failed to read current settings`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return { restored: false };
-  }
-
-  if (
-    hasMeaningfulPortfolioData(currentPortfolio) ||
-    hasMeaningfulSettings(currentSettings, user)
-  ) {
-    return { restored: false };
-  }
-
-  const snapshot = loadUserRecoverySnapshot(user);
-
-  if (!snapshot) {
-    return { restored: false };
-  }
-
-  try {
-    importUserAccountBackup(user, snapshot);
-    return { restored: true };
-  } catch (error) {
-    console.warn(`${RECOVERY_SNAPSHOT_LOG_PREFIX} failed to restore snapshot`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return { restored: false };
-  }
-};
-
-export const exportUserAccountBackup = (
-  user: LocalAccountUser
-): UserAccountBackup => {
-  const portfolio = loadUserPortfolio(user.id);
+): Promise<UserAccountBackup> => {
+  const portfolio = await loadUserPortfolio(user.id);
   const settings = loadUserSettings(user);
 
   return {
@@ -1013,15 +1120,22 @@ export const exportUserAccountBackup = (
   };
 };
 
-export const importUserAccountBackup = (
+export const importUserAccountBackup = async (
   user: LocalAccountUser,
   backup: UserAccountBackup
 ) => {
-  if (!backup || backup.version !== 1 || !backup.portfolio || !backup.settings) {
+  if (!isBackupUsableForUser(backup, user) || !unwrapStoredPortfolio(backup.portfolio)) {
     throw new Error('Invalid backup file.');
   }
 
-  saveUserPortfolio(user.id, {
+  tracePortfolioPersistence('hydration:remote-import', getPortfolioSnapshotTraceMetadata(user.id, backup.portfolio, {
+    accountId: user.id,
+    indexedDbKey: user.id,
+    snapshotVersion: backup.version,
+    snapshotUpdatedAt: backup.exportedAt,
+  }));
+
+  await saveUserPortfolio(user.id, normalizeLoadedPortfolio({
     properties: backup.portfolio.properties ?? [],
     mortgages: backup.portfolio.mortgages ?? [],
     cashAccounts: backup.portfolio.cashAccounts ?? [],
@@ -1032,23 +1146,16 @@ export const importUserAccountBackup = (
     reports: backup.portfolio.reports ?? [],
     reportTemplates: backup.portfolio.reportTemplates ?? defaultReportTemplates,
     reportBranding: backup.portfolio.reportBranding ?? defaultReportBranding,
-  });
+  }));
 
-  const normalizedSettings = saveUserSettings(user, backup.settings);
-  saveUserRecoverySnapshot(user, {
-    ...backup,
-    user: {
-      name: user.name,
-      email: user.email,
-    },
-    portfolio: loadUserPortfolio(user.id),
-    settings: normalizedSettings,
-  });
+  window.localStorage.setItem(makeUserSettingsStorageKey(user.id), JSON.stringify(mergeUserSettings(user, backup.settings)));
+  await loadUserPortfolio(user.id); // Confirm normalization and readback before caller reloads.
+
 };
 
-export const recoverLegacyPortfolioForUser = (
+export const recoverLegacyPortfolioForUser = async (
   user: LocalAccountUser
-): { recovered: boolean } => {
+): Promise<{ recovered: boolean }> => {
   if (typeof window === 'undefined') {
     return { recovered: false };
   }
@@ -1064,7 +1171,7 @@ export const recoverLegacyPortfolioForUser = (
     return { recovered: false };
   }
 
-  const currentData = loadUserPortfolio(user.id);
+  const currentData = await loadUserPortfolio(user.id);
 
   if (!isPortfolioEmpty(currentData)) {
     return { recovered: false };
@@ -1089,7 +1196,7 @@ export const recoverLegacyPortfolioForUser = (
     return { recovered: false };
   }
 
-  saveUserPortfolio(user.id, {
+  await saveUserPortfolio(user.id, {
     properties: mockProperties,
     mortgages: mockMortgages,
     cashAccounts: legacyCashAccounts,
@@ -1109,16 +1216,16 @@ export const recoverLegacyPortfolioForUser = (
   return { recovered: true };
 };
 
-export const seedLegacyPortfolioForUserIfEmpty = (
+export const seedLegacyPortfolioForUserIfEmpty = async (
   user: LocalAccountUser
-): { seeded: boolean } => {
-  const currentData = loadUserPortfolio(user.id);
+): Promise<{ seeded: boolean }> => {
+  const currentData = await loadUserPortfolio(user.id);
 
   if (!isPortfolioEmpty(currentData)) {
     return { seeded: false };
   }
 
-  saveUserPortfolio(user.id, {
+  await saveUserPortfolio(user.id, {
     properties: mockProperties,
     mortgages: mockMortgages,
     cashAccounts: mockCashAccounts,
@@ -1137,41 +1244,41 @@ export const seedLegacyPortfolioForUserIfEmpty = (
   return { seeded: true };
 };
 
-export const seedDemoPortfolioForUser = (
+export const seedDemoPortfolioForUser = async (
   user: LocalAccountUser,
   overwrite = false
-): { seeded: boolean } => {
+): Promise<{ seeded: boolean }> => {
   if (!isDemoLocalAccount(user)) {
     return { seeded: false };
   }
 
-  const currentData = loadUserPortfolio(user.id);
+  const currentData = await loadUserPortfolio(user.id);
 
   if (!overwrite && !isPortfolioEmpty(currentData)) {
     return { seeded: false };
   }
 
-  normalizeDemoAccountState(user, emptyPortfolioData);
+  await normalizeDemoAccountState(user, emptyPortfolioData);
 
   return { seeded: true };
 };
 
-export const resetDemoAccountData = (
+export const resetDemoAccountData = async (
   user: LocalAccountUser,
   seedPortfolio: UserPortfolioData
-): { reset: boolean } => {
+): Promise<{ reset: boolean }> => {
   if (!isDemoLocalAccount(user)) {
     return { reset: false };
   }
 
-  normalizeDemoAccountState(user, seedPortfolio);
+  await normalizeDemoAccountState(user, seedPortfolio);
 
   return { reset: true };
 };
 
-export const ensureDemoLocalAccount = (): { user: LocalAccountUser } => {
+export const ensureDemoLocalAccount = async (): Promise<{ user: LocalAccountUser }> => {
   const { user } = ensureLocalAccountPassword(DEMO_ACCOUNT_EMAIL, DEMO_ACCOUNT_PASSWORD, DEMO_ACCOUNT_NAME);
-  normalizeDemoAccountState(user);
+  await normalizeDemoAccountState(user);
   return { user };
 };
 

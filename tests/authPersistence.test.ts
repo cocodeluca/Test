@@ -1,3 +1,4 @@
+import { IDBFactory } from 'fake-indexeddb';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -62,10 +63,11 @@ const seedAccountAndLogin = (email = 'persist@example.com', password = 'secret12
 };
 
 test.beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
   resetAuthState();
 });
 
-test('login persists after refresh and restores the same user', () => {
+test('login persists after refresh and restores the same user', async () => {
   const user = seedAccountAndLogin();
 
   const storedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
@@ -80,7 +82,7 @@ test('login persists after refresh and restores the same user', () => {
   assert.equal(restored.debug.restored, true);
 });
 
-test('protected route state remains authenticated after reload bootstrap', () => {
+test('protected route state remains authenticated after reload bootstrap', async () => {
   const user = seedAccountAndLogin('route@example.com', 'route-pass');
 
   const restored = restoreLocalSession();
@@ -89,7 +91,7 @@ test('protected route state remains authenticated after reload bootstrap', () =>
   assert.equal(getCurrentLocalAccount()?.id, user.id);
 });
 
-test('expired access token with valid refresh token restores the session', () => {
+test('expired access token with valid refresh token restores the session', async () => {
   const user = seedAccountAndLogin('refresh@example.com', 'refresh-pass');
   const session = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
   const now = new Date('2026-04-14T12:00:00.000Z');
@@ -108,7 +110,7 @@ test('expired access token with valid refresh token restores the session', () =>
   assert.ok(new Date(refreshedSession.accessTokenExpiresAt).getTime() > now.getTime());
 });
 
-test('invalid expired session clears persistence and falls back to anonymous state', () => {
+test('invalid expired session clears persistence and falls back to anonymous state', async () => {
   seedAccountAndLogin('expired@example.com', 'expired-pass');
   const session = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
   const now = new Date('2026-04-14T12:00:00.000Z');
@@ -124,7 +126,7 @@ test('invalid expired session clears persistence and falls back to anonymous sta
   assert.equal(window.localStorage.getItem(SESSION_STORAGE_KEY), null);
 });
 
-test('logout clears persisted session correctly', () => {
+test('logout clears persisted session correctly', async () => {
   seedAccountAndLogin('logout@example.com', 'logout-pass');
   assert.ok(window.localStorage.getItem(SESSION_STORAGE_KEY));
 
@@ -134,7 +136,7 @@ test('logout clears persisted session correctly', () => {
   assert.equal(getCurrentLocalAccount(), null);
 });
 
-test('legacy userId-only sessions are upgraded during restore', () => {
+test('legacy userId-only sessions are upgraded during restore', async () => {
   const user = seedAccountAndLogin('legacy@example.com', 'legacy-pass');
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ userId: user.id }));
 
@@ -147,15 +149,15 @@ test('legacy userId-only sessions are upgraded during restore', () => {
   assert.ok(upgradedSession.refreshToken);
 });
 
-test('account persistence lives in localStorage for the current stack', () => {
+test('account persistence lives in localStorage for the current stack', async () => {
   seedAccountAndLogin('storage@example.com', 'storage-pass');
 
   assert.ok(window.localStorage.getItem(USERS_STORAGE_KEY));
   assert.ok(window.localStorage.getItem(SESSION_STORAGE_KEY));
 });
 
-test('demo account normalization rewrites stale full-portfolio state back to properties-only', () => {
-  const { user } = ensureDemoLocalAccount();
+test('demo account normalization rewrites stale full-portfolio state back to properties-only', async () => {
+  const { user } = await ensureDemoLocalAccount();
   const settingsKey = makeUserSettingsStorageKey(user.id);
 
   saveUserSettings(user, {
@@ -191,10 +193,10 @@ test('demo account normalization rewrites stale full-portfolio state back to pro
   window.localStorage.setItem(makeUseCaseSelectionStorageKey(settingsKey), 'true');
   window.localStorage.setItem(makeSelectedUseCaseIdStorageKey(settingsKey), 'full-portfolio');
 
-  normalizeDemoAccountState(user);
+  await normalizeDemoAccountState(user);
 
   const normalizedSettings = loadUserSettings(user);
-  const normalizedPortfolio = loadUserPortfolio(user.id);
+  const normalizedPortfolio = (await loadUserPortfolio(user.id));
 
   assert.equal(normalizedSettings.userMode, 'basic');
   assert.equal(normalizedSettings.onboarding.trackingPreference, 'properties-only');

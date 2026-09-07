@@ -1258,7 +1258,8 @@ export const calculateOpportunityAnalysis = (
   const estimatedSaleProfit =
     estimatedSalePrice - acquisitionPrice - closingCosts - renovationCost - furnitureCost - contingencyCost - sellingCosts;
   const roiOnSale = totalCashNeeded === 0 ? 0 : (estimatedSaleProfit / totalCashNeeded) * 100;
-  const breakEvenSalePrice = acquisitionPrice + closingCosts + renovationCost + furnitureCost + contingencyCost;
+  const sellingCostRate = Math.max(toNumber(opportunity.sellingCostPct), 0) / 100;
+  const breakEvenSalePrice = totalProjectCost / (1 - sellingCostRate);
 
   return {
     totalCashNeeded,

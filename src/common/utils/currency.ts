@@ -10,6 +10,11 @@ export interface CurrencyOption {
 
 export type CurrencyRates = Record<DisplayCurrency, number>;
 
+export interface CurrencyConversionCoverage {
+  value: number | null;
+  available: boolean;
+}
+
 export const currencyOptions: CurrencyOption[] = [
   { code: 'EUR', symbol: 'EUR', locale: 'de-DE' },
   { code: 'USD', symbol: '$', locale: 'en-US' },
@@ -58,6 +63,52 @@ const normalizeRateOverrides = (
     ...defaultRates,
     ...overrides,
     EUR: 1,
+  };
+};
+
+const getStrictRate = (
+  currency: DisplayCurrency,
+  rateOverrides?: number | Partial<CurrencyRates>
+): number | null => {
+  if (currency === 'EUR') {
+    return 1;
+  }
+
+  if (typeof rateOverrides === 'number') {
+    return currency === 'USD' && Number.isFinite(rateOverrides) && rateOverrides > 0
+      ? rateOverrides
+      : null;
+  }
+
+  const rates = rateOverrides ?? getSettingsCurrencyRates(getCurrentSettings());
+  const rate = rates[currency];
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : null;
+};
+
+export const convertCurrencyWithCoverage = (
+  value: number,
+  fromCurrency: DisplayCurrency,
+  toCurrency: DisplayCurrency,
+  rateOverrides?: number | Partial<CurrencyRates>
+): CurrencyConversionCoverage => {
+  if (!Number.isFinite(value)) {
+    return { value: null, available: false };
+  }
+
+  if (fromCurrency === toCurrency) {
+    return { value, available: true };
+  }
+
+  const fromRate = getStrictRate(fromCurrency, rateOverrides);
+  const toRate = getStrictRate(toCurrency, rateOverrides);
+
+  if (fromRate === null || toRate === null) {
+    return { value: null, available: false };
+  }
+
+  return {
+    value: value * (fromRate / toRate),
+    available: true,
   };
 };
 

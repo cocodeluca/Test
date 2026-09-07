@@ -126,6 +126,8 @@ type AppPageRendererProps = {
     sourceId: string
   ) => void;
   onRequestOpenAddProperty: () => void;
+  onStartAddProperty: () => void;
+  onOpenProperties: () => void;
   onRequestPropertyTabChange: (
     tab:
       | 'summary'
@@ -153,7 +155,7 @@ type AppPageRendererProps = {
   onAddTemplate: (template: InvestmentReportTemplate) => void;
   onUpdateBranding: (branding: ReportBrandingConfig) => void;
   onExportBackup: () => void;
-  onImportBackup: (backup: UserAccountBackup) => void;
+  onImportBackup: (backup: UserAccountBackup) => Promise<void>;
   onSyncBackupToServer: () => Promise<void>;
   onRestoreBackupFromServer: () => Promise<void>;
   onReplayDemoTutorial: () => void;
@@ -165,7 +167,13 @@ const DashboardBranch = (props: AppPageRendererProps) => {
     return (
       <SectionCrashBoundary sectionName="dashboard route">
         <DashboardMountLogger />
-        <PropertiesOnlyDashboard properties={props.syncedProperties} />
+        <PropertiesOnlyDashboard
+          properties={props.syncedProperties}
+          mortgages={props.effectiveMortgages}
+          cashAccounts={props.effectiveCashAccounts}
+          onAddProperty={props.onStartAddProperty}
+          onOpenProperties={props.onOpenProperties}
+        />
       </SectionCrashBoundary>
     );
   }

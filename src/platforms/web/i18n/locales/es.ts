@@ -603,6 +603,8 @@ export const es = {
       fixed: 'Fijo',
       variable: 'Variable',
       amortized: 'Amortizado',
+      savedBalance: 'Saldo guardado',
+      savedBalanceDifference: 'El saldo guardado difiere del saldo modelado en {{amount}}.',
       rateAndBonifications: 'Tipo y bonificaciones',
       currentRate: 'Tipo actual',
       baseRate: 'Tipo base',

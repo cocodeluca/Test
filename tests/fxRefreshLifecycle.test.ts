@@ -148,19 +148,108 @@ test('single-flight coordinator reuses a same-day session result but force refre
   assert.equal(requestCount, 2);
 });
 
+test('Frankfurter v2 supplies one complete atomic EUR dataset', async () => {
+  const requestedUrls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    requestedUrls.push(String(input));
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => [
+        { date: '2026-04-14', base: 'EUR', quote: 'ARS', rate: 1500 },
+        { date: '2026-04-14', base: 'EUR', quote: 'GBP', rate: 0.75 },
+        { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 3 },
+      ],
+      text: async () => '',
+    } as Response;
+  }) as typeof fetch;
+
+  const snapshot = await fetchLatestFxRatesWith(
+    fetchImpl,
+    () => new Date('2026-04-14T12:00:00.000Z')
+  );
+
+  assert.equal(requestedUrls.length, 1);
+  assert.match(requestedUrls[0], /api\.frankfurter\.dev\/v2\/rates/);
+  assert.equal(snapshot.provider, 'Frankfurter');
+  assert.deepEqual(
+    snapshot.rates.map(({ quoteCurrency, rate }) => [quoteCurrency, rate]),
+    [['EUR', 1], ['USD', 3], ['ARS', 1500], ['GBP', 0.75]]
+  );
+});
+
+test('duplicate Frankfurter quotes are rejected before using the complete fallback dataset', async () => {
+  const requestedUrls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    requestedUrls.push(url);
+    const payload = url.includes('frankfurter')
+      ? [
+          { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 2 },
+          { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 3 },
+          { date: '2026-04-14', base: 'EUR', quote: 'GBP', rate: 0.8 },
+        ]
+      : { rates: { USD: 3, ARS: 1500, GBP: 0.75 } };
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => payload,
+      text: async () => '',
+    } as Response;
+  }) as typeof fetch;
+
+  const snapshot = await fetchLatestFxRatesWith(fetchImpl);
+
+  assert.equal(requestedUrls.length, 2);
+  assert.equal(snapshot.provider, 'ExchangeRate-API');
+  assert.deepEqual(
+    snapshot.rates.map(({ quoteCurrency, rate }) => [quoteCurrency, rate]),
+    [['EUR', 1], ['USD', 3], ['ARS', 1500], ['GBP', 0.75]]
+  );
+});
+
+test('non-positive rates from every provider reject the refresh atomically', async () => {
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const payload = String(input).includes('frankfurter')
+      ? [
+          { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 2 },
+          { date: '2026-04-14', base: 'EUR', quote: 'ARS', rate: 0 },
+          { date: '2026-04-14', base: 'EUR', quote: 'GBP', rate: 0.8 },
+        ]
+      : { rates: { USD: 3, ARS: -1500, GBP: 0.75 } };
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => payload,
+      text: async () => '',
+    } as Response;
+  }) as typeof fetch;
+
+  await assert.rejects(
+    () => fetchLatestFxRatesWith(fetchImpl),
+    /All FX providers failed.*ARS rate was missing or invalid/
+  );
+});
+
 test('provider missing ARS is rejected atomically and the fallback supplies the whole dataset', async () => {
   const requestedUrls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input);
     requestedUrls.push(url);
-    const rates = url.includes('frankfurter')
-      ? { USD: 2, GBP: 0.8 }
-      : { USD: 3, ARS: 1500, GBP: 0.75 };
+    const payload = url.includes('frankfurter')
+      ? [
+          { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 2 },
+          { date: '2026-04-14', base: 'EUR', quote: 'GBP', rate: 0.8 },
+        ]
+      : { rates: { USD: 3, ARS: 1500, GBP: 0.75 } };
     return {
       ok: true,
       status: 200,
       statusText: 'OK',
-      json: async () => ({ rates }),
+      json: async () => payload,
       text: async () => '',
     } as Response;
   }) as typeof fetch;
@@ -180,13 +269,21 @@ test('provider missing ARS is rejected atomically and the fallback supplies the 
 
 test('incomplete responses from every provider fail without replacing the cached dataset', async () => {
   const cachedSnapshot = makeSnapshot('2026-04-13T12:00:00.000Z');
-  const fetchImpl = (async () => ({
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    json: async () => ({ rates: { USD: 4, GBP: 0.7 } }),
-    text: async () => '',
-  } as Response)) as typeof fetch;
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const payload = String(input).includes('frankfurter')
+      ? [
+          { date: '2026-04-14', base: 'EUR', quote: 'USD', rate: 4 },
+          { date: '2026-04-14', base: 'EUR', quote: 'GBP', rate: 0.7 },
+        ]
+      : { rates: { USD: 4, GBP: 0.7 } };
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => payload,
+      text: async () => '',
+    } as Response;
+  }) as typeof fetch;
 
   await assert.rejects(() => fetchLatestFxRatesWith(fetchImpl), /All FX providers failed/);
   const settings = makeSettings(cachedSnapshot);
@@ -227,6 +324,28 @@ test('rebasing preserves EUR legacy scalar meanings and does not mutate native p
   assert.equal(result.nextSettings.arsToEurRate, 0.001);
   assert.equal(convertCurrency(property.currentEstimatedValue, 'GBP', 'EUR', rates), 312_500);
   assert.deepEqual(property, originalProperty);
+});
+
+test('EUR quote rates are inverted exactly once for ARS conversions', () => {
+  const snapshot = createFxSnapshot({
+    provider: 'Frankfurter',
+    baseCurrency: 'EUR',
+    rates: { EUR: 1, USD: 1.1545, ARS: 1729.62, GBP: 0.85791 },
+    fetchedAt: '2026-08-09T11:40:28.677Z',
+    lastSuccessfulUpdateAt: '2026-08-09T11:40:28.677Z',
+    status: 'fresh',
+  });
+  const result = buildFxSyncResult(
+    makeSettings(),
+    snapshot,
+    null,
+    new Date('2026-08-09T12:00:00.000Z')
+  );
+  const rates = getSettingsCurrencyRates(result.nextSettings);
+
+  assert.equal(rates.ARS, 1 / 1729.62);
+  assert.equal(convertCurrency(1, 'EUR', 'ARS', rates), 1729.62);
+  assert.equal(convertCurrency(1_000_000, 'ARS', 'EUR', rates), 1_000_000 / 1729.62);
 });
 
 test('legacy snapshots keep their cached currencies, infer EUR base, and request completion', () => {

@@ -106,7 +106,7 @@ test('renders the compact Summary hero, KPI strip, valuation and mortgage sectio
   assert.match(markup, /Málaga Apartment/);
   assert.match(markup, /Compra y valoracion/);
   assert.match(markup, /CaixaBank/);
-  assert.match(markup, /67\.5% LTV/);
+  assert.match(markup, /68\.0% LTV/);
 });
 
 test('uses the compact photo empty state when no gallery image exists', () => {

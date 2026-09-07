@@ -88,6 +88,10 @@ export const formatPortfolioDisplayCurrency = (
 };
 
 export const formatPercentage = (value: number, decimals: number = 1): string => {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
   return new Intl.NumberFormat(getNumberLocale(), {
     style: 'percent',
     minimumFractionDigits: decimals,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, X } from 'lucide-react';
 import {
   Lease,
@@ -14,6 +14,8 @@ import {
   calculatePropertyDetails,
   calculateSpainDeductibleExpenseSummary,
 } from '../../../common/utils/calculations';
+import { assertValidPropertyFinancialValues } from '../../../common/utils/financialValidation';
+import { PropertyPhotoError } from '../../../common/utils/propertyImagePipeline';
 import { convertCurrency, currencyOptions } from '../../../common/utils/currency';
 import {
   defaultPropertyType,
@@ -41,6 +43,8 @@ import {
   formatPercentage,
 } from '../../../common/utils/formatting';
 import { useSettings } from '../context/SettingsContext';
+import { uploadPropertyGalleryPhotos } from '../services/propertyGalleryUpload';
+import { discardPendingGalleryMediaRefs } from '../services/galleryMediaStore';
 import { CompactEditModal } from './CompactEditModal';
 import {
   appBorderClass,
@@ -115,6 +119,7 @@ interface PropertyFormData {
   condition: string;
   imageUrl: string;
   imageUrls: string[];
+  imageThumbnailUrls: string[];
   primaryImageIndex: number;
   purchasePrice: number;
   acquisitionTaxes: number;
@@ -361,14 +366,6 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
     { value: 'increase-by-x-every-y-months', label: 'Increase by X% every Y months' },
     { value: 'custom-schedule', label: 'Custom schedule' },
   ] as const;
-  const readFileAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
   const calculateDerivedTotalInvestment = (data: {
     operatingCurrency: DisplayCurrency;
     purchasePrice: number;
@@ -437,6 +434,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
     condition: '',
     imageUrl: '',
     imageUrls: [],
+    imageThumbnailUrls: [],
     primaryImageIndex: 0,
     purchasePrice: 0,
     acquisitionTaxes: 0,
@@ -469,6 +467,16 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
     spainMonthsRentedInTaxYear: 12,
   });
   const [lastSavedFormData, setLastSavedFormData] = useState<PropertyFormData>(() => formData);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const stagedGalleryRefsRef = useRef(new Set<string>());
+  const gallerySaveSubmittedRef = useRef(false);
+  useEffect(() => () => {
+    if (!gallerySaveSubmittedRef.current) {
+      void discardPendingGalleryMediaRefs(stagedGalleryRefsRef.current);
+    }
+  }, []);
   const [activeSection, setActiveSection] = useState<PropertyEditorSection>(
     normalizePropertyEditorSection(initialSection)
   );
@@ -667,6 +675,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
             : editingProperty.imageUrl
             ? [editingProperty.imageUrl]
             : [],
+        imageThumbnailUrls: editingProperty.imageThumbnailUrls ?? [],
         primaryImageIndex: editingProperty.primaryImageIndex ?? 0,
         purchasePrice: editingProperty.purchasePrice,
         acquisitionTaxes: editingProperty.acquisitionTaxes,
@@ -766,9 +775,12 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       'spainMonthsRentedInTaxYear',
     ];
 
-    const parsedValue = numericFields.includes(name) ? parseFloat(value) || 0 : value;
-
     setFormData((currentFormData) => {
+      const parsedNumber = numericFields.includes(name) ? parseFloat(value) : null;
+      const parsedValue =
+        parsedNumber !== null && Number.isNaN(parsedNumber)
+          ? currentFormData[name as keyof PropertyFormData]
+          : parsedNumber ?? value;
       const nextFormData = {
         ...currentFormData,
         ...(name === 'operatingCurrency'
@@ -826,27 +838,33 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       return;
     }
 
-    const uploadedImages = await Promise.all(files.map(readFileAsDataUrl));
-
-    setFormData((currentFormData) => {
-      const nextImageUrls = [...currentFormData.imageUrls, ...uploadedImages];
-      const nextPrimaryImageIndex =
-        currentFormData.imageUrls.length === 0 ? 0 : currentFormData.primaryImageIndex;
-
-      return {
-        ...currentFormData,
-        imageUrls: nextImageUrls,
-        primaryImageIndex: nextPrimaryImageIndex,
-        imageUrl: nextImageUrls[nextPrimaryImageIndex] ?? '',
-      };
-    });
-
-    event.target.value = '';
+    setImageUploadError(null);
+    setIsUploadingImages(true);
+    try {
+      const uploadedImages = await uploadPropertyGalleryPhotos(files);
+      uploadedImages.forEach((image) => {
+        stagedGalleryRefsRef.current.add(image.fullRef);
+        stagedGalleryRefsRef.current.add(image.thumbnailRef);
+      });
+      setFormData((currentFormData) => {
+        const nextImageUrls = [...currentFormData.imageUrls, ...uploadedImages.map((image) => image.fullRef)];
+        const nextThumbnailUrls = [...currentFormData.imageThumbnailUrls, ...uploadedImages.map((image) => image.thumbnailRef)];
+        const nextPrimaryImageIndex = currentFormData.imageUrls.length === 0 ? 0 : currentFormData.primaryImageIndex;
+        return { ...currentFormData, imageUrls: nextImageUrls, imageThumbnailUrls: nextThumbnailUrls, primaryImageIndex: nextPrimaryImageIndex, imageUrl: nextImageUrls[nextPrimaryImageIndex] ?? '' };
+      });
+    } catch (error) {
+      const code = error instanceof PropertyPhotoError ? error.code : 'processing-failed';
+      setImageUploadError(t(`propertyPhotos.errors.${code}`));
+    } finally {
+      setIsUploadingImages(false);
+      event.target.value = '';
+    }
   };
 
   const handleRemoveImage = (indexToRemove: number) => {
     setFormData((currentFormData) => {
       const nextImageUrls = currentFormData.imageUrls.filter((_, index) => index !== indexToRemove);
+      const nextThumbnailUrls = currentFormData.imageThumbnailUrls.filter((_, index) => index !== indexToRemove);
       const nextPrimaryImageIndex =
         nextImageUrls.length === 0
           ? 0
@@ -857,6 +875,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       return {
         ...currentFormData,
         imageUrls: nextImageUrls,
+        imageThumbnailUrls: nextThumbnailUrls,
         primaryImageIndex: nextPrimaryImageIndex,
         imageUrl: nextImageUrls[nextPrimaryImageIndex] ?? '',
       };
@@ -1421,7 +1440,17 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
             editedDraft
           )
         : editedDraft;
+    try {
+      assertValidPropertyFinancialValues(propertyPayload);
+      setValidationError(null);
+    } catch (error) {
+      setValidationError(
+        error instanceof Error ? error.message : 'Invalid property financial values'
+      );
+      return;
+    }
     commitSectionChanges();
+    gallerySaveSubmittedRef.current = stagedGalleryRefsRef.current.size > 0;
 
     if (isEditing && editingProperty && onEditProperty) {
       onEditProperty(propertyPayload);
@@ -1547,6 +1576,8 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
           name={amountName}
           value={formData[amountName]}
           onChange={handleChange}
+          min="0"
+          required={amountName === 'purchasePrice' || amountName === 'currentEstimatedValue'}
           step={options?.step ?? '1000'}
           className={`${inputClass} ${options?.tutorialId && tutorialTargetId === options.tutorialId ? 'app-tutorial-target' : ''}`}
         />
@@ -1739,6 +1770,12 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       sectionsAreLocked={initialSection !== null && initialSection !== undefined}
     >
       <form onSubmit={handleSubmit} className="space-y-7 bg-[linear-gradient(180deg,rgba(247,250,253,0.98)_0%,rgba(251,253,255,1)_100%)] p-4 pb-28 sm:space-y-8 sm:p-6 sm:pb-6">
+
+          {validationError ? (
+            <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
+              {validationError}
+            </p>
+          ) : null}
 
           {showLiveResults ? (
             <div
@@ -1956,17 +1993,20 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
             <label htmlFor="imageUrl" className={labelClass}>
               {isGarageParking ? t('properties.form.photosDocuments') : t('properties.form.propertyImage')}
             </label>
-            <label className={`${inputClass} flex cursor-pointer items-center justify-center hover:brightness-[1.02]`}>
-              <input type="file" id="imageUrl" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
+            <label className={`${inputClass} flex cursor-pointer items-center justify-center hover:brightness-[1.02] ${isUploadingImages ? 'pointer-events-none opacity-65' : ''}`}>
+              <input type="file" id="imageUrl" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleImageUpload} disabled={isUploadingImages} className="hidden" />
               <div className={`flex items-center gap-2 ${appTextMutedClass}`}>
                 <Upload className="h-4 w-4" />
                 <span>
-                  {formData.imageUrls.length > 0
+                  {isUploadingImages
+                    ? t('propertyPhotos.processing')
+                    : formData.imageUrls.length > 0
                     ? t('properties.form.imagesUploaded', { count: formData.imageUrls.length })
                     : t('properties.form.clickToUpload')}
                 </span>
               </div>
             </label>
+            {imageUploadError ? <p className="mt-2 text-sm text-rose-600 dark:text-rose-300">{imageUploadError}</p> : null}
             {formData.imageUrls.length > 0 ? (
               <div className="mt-3 space-y-3">
                 <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
@@ -1980,7 +2020,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                       >
                         <button type="button" onClick={() => handleSetPrimaryImage(index)} className="w-full">
                           <img
-                            src={imageUrl}
+                            src={formData.imageThumbnailUrls[index] ?? imageUrl}
                             alt={`Property upload ${index + 1}`}
                             className="h-24 w-full bg-[var(--app-panel-inset)] object-contain object-center"
                           />

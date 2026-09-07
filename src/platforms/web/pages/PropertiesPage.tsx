@@ -339,7 +339,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
               className={`inline-flex min-h-[42px] cursor-pointer list-none items-center justify-center gap-2 rounded-xl px-4 py-2 text-[13px] font-medium ${appButtonPrimaryClass} ${tutorialTargetId === 'properties-add' ? 'app-tutorial-target' : ''}`}
             >
               <Plus className="h-4.5 w-4.5" />
-              <span>{t('common.addProperty')}</span>
+              <span>{t('properties.addProperty')}</span>
               <ChevronDown className="h-3.5 w-3.5 transition group-open:rotate-180" />
             </summary>
             <div className={`absolute right-0 z-20 mt-2 w-52 overflow-hidden rounded-xl border p-1.5 shadow-[0_18px_38px_-24px_rgba(15,23,42,0.32)] ${appPanelClass}`}>

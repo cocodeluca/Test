@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { resolveGalleryMediaUrl } from '../services/galleryMediaStore';
+import { releaseGalleryMediaUrl, resolveGalleryMediaUrl } from '../services/galleryMediaStore';
 import { GALLERY_SAFE_MODE } from '../utils/gallerySafeMode';
 
 const areUrlListsEqual = (left: string[], right: string[]): boolean =>
@@ -101,6 +101,7 @@ export const useResolvedGalleryUrls = (urls: string[]) => {
 
     return () => {
       cancelled = true;
+      normalizedUrls.forEach(releaseGalleryMediaUrl);
     };
   }, [normalizedUrls]);
 

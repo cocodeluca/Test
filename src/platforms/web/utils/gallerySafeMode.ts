@@ -1,1 +1,1 @@
-export const GALLERY_SAFE_MODE = true;
+export const GALLERY_SAFE_MODE = false;

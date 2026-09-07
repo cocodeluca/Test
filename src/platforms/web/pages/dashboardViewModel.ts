@@ -6,6 +6,7 @@ import type {
 import type { DisplayCurrency } from '../../../common/types/settings';
 import { convertCurrency } from '../../../common/utils/currency';
 import type { PortfolioAlert } from '../../../common/utils/alerts';
+import type { MortgageDebtPaydownSummary } from '../../../common/utils/calculations';
 
 export const DASHBOARD_HISTORY_AVAILABLE = false;
 export const DASHBOARD_ACTIVITY_AVAILABLE = false;
@@ -63,9 +64,67 @@ export interface DashboardViewModel {
   properties: DashboardPropertySummaryItem[];
   totalPropertyCount: number;
   health: DashboardHealthViewModel;
+  debtPaydown: MortgageDebtPaydownSummary;
   historyAvailable: boolean;
   activityAvailable: boolean;
 }
+
+export interface DashboardDebtPaydownPresentation {
+  isUnavailable: boolean;
+  mainValue: string;
+  perYearLabel: string | null;
+  nextPaymentValue: string;
+  description: string;
+  coverageLabel: string | null;
+}
+
+type DashboardTranslate = (
+  key: string,
+  replacements?: Record<string, string | number>
+) => string;
+
+export const buildDashboardDebtPaydownPresentation = (
+  debtPaydown: MortgageDebtPaydownSummary,
+  formatValuation: (value: number) => string,
+  t: DashboardTranslate
+): DashboardDebtPaydownPresentation => {
+  const isUnavailable = debtPaydown.status === 'unavailable';
+  const hasPartialCoverage =
+    debtPaydown.status === 'available' &&
+    debtPaydown.eligibleMortgageCount > 0 &&
+    debtPaydown.eligibleMortgageCount < debtPaydown.candidateMortgageCount;
+  const hasUnverifiedDebt = (debtPaydown.unverifiedMortgageCount ?? 0) > 0;
+  const hasPaidDebtConflict = (debtPaydown.paidMortgageConflictCount ?? 0) > 0;
+  const description = debtPaydown.status === 'no-active-mortgages'
+    ? t('dashboardUi.debtPaydownNoActive')
+    : isUnavailable
+      ? t('dashboardUi.debtPaydownUnavailable')
+      : t('dashboardUi.debtPaydownDescription');
+
+  return {
+    isUnavailable,
+    mainValue: isUnavailable ? '—' : formatValuation(debtPaydown.next12MonthsPrincipal),
+    perYearLabel: isUnavailable ? null : t('dashboardUi.perYear'),
+    nextPaymentValue: isUnavailable ? '—' : formatValuation(debtPaydown.currentMonthPrincipal),
+    description,
+    coverageLabel: hasPaidDebtConflict
+      ? t('dashboardUi.paidMortgageConflict', {
+          count: debtPaydown.paidMortgageConflictCount ?? 0,
+          amount: formatValuation(debtPaydown.paidMortgageConflictBalance ?? 0),
+        })
+      : hasUnverifiedDebt
+      ? t('dashboardUi.unverifiedMortgageDebt', {
+          count: debtPaydown.unverifiedMortgageCount ?? 0,
+          amount: formatValuation(debtPaydown.unverifiedOutstandingBalance ?? 0),
+        })
+      : hasPartialCoverage
+      ? t('dashboardUi.debtPaydownCoverage', {
+          eligible: debtPaydown.eligibleMortgageCount,
+          candidates: debtPaydown.candidateMortgageCount,
+        })
+      : null,
+  };
+};
 
 type RateOverrides = number | Partial<Record<DisplayCurrency, number>>;
 
@@ -74,6 +133,7 @@ interface BuildDashboardViewModelArgs {
   properties: Property[];
   propertyMetrics: PropertyMetrics[];
   alerts: PortfolioAlert[];
+  debtPaydown: MortgageDebtPaydownSummary;
   rateOverrides?: RateOverrides;
 }
 
@@ -127,6 +187,7 @@ export const buildDashboardViewModel = ({
   properties,
   propertyMetrics,
   alerts,
+  debtPaydown,
   rateOverrides,
 }: BuildDashboardViewModelArgs): DashboardViewModel => {
   const totalAssets =
@@ -223,6 +284,7 @@ export const buildDashboardViewModel = ({
       debtToValuePct: metrics.debtToValueRatio,
       liquidityPct,
     },
+    debtPaydown,
     historyAvailable: DASHBOARD_HISTORY_AVAILABLE,
     activityAvailable: DASHBOARD_ACTIVITY_AVAILABLE,
   };

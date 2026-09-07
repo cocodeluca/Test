@@ -7,9 +7,9 @@ import {
   setStoredLanguageSelection,
 } from '../../../common/utils/settingsStore';
 import {
-  ensureDemoLocalAccount,
   ensureLocalAccountPassword,
   getLocalSessionDebugInfo,
+  loadUserPortfolioHydrationSnapshot,
   loadUserSettings,
   loginLocalAccount,
   logoutLocalAccount,
@@ -17,15 +17,18 @@ import {
   normalizeDemoAccountState,
   registerLocalAccount,
   restoreLocalSession,
-  restoreUserRecoverySnapshotIfNeeded,
   saveUserSettings,
+  saveUserPortfolio,
   UserAccountBackup,
+  UserPortfolioHydrationSnapshot,
   LocalAccountUser,
   DEMO_ACCOUNT_EMAIL,
+  demoAccountCredentials,
   safeJsonParse,
 } from '../services/localAccountStore';
-import { flushBackupToServer, saveBackupToServer } from '../services/accountBackupApi';
+import { saveBackupToServer } from '../services/accountBackupApi';
 import { useAccountWorkspaceHydration } from './useAccountWorkspaceHydration';
+import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from '../services/portfolioPersistenceTrace';
 
 type LoginPayload = { email: string; password: string };
 type RegisterPayload = { name: string; email: string; password: string };
@@ -33,12 +36,18 @@ type RegisterPayload = { name: string; email: string; password: string };
 export const useAuthBootstrapController = () => {
   const [currentUser, setCurrentUser] = useState<LocalAccountUser | null>(null);
   const [isAuthBootstrapLoading, setIsAuthBootstrapLoading] = useState(true);
+  const [portfolioHydration, setPortfolioHydration] =
+    useState<UserPortfolioHydrationSnapshot | null>(null);
+  const [hydrationError, setHydrationError] = useState<unknown>(null);
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [sessionKey, setSessionKey] = useState(0);
   const { hydrateAccountWorkspace } = useAccountWorkspaceHydration();
 
   useEffect(() => {
+    tracePortfolioPersistence('bootstrap:start', {});
     ensureLocalAccountPassword('cocodeluca97@gmail.com', 'cocococo97', 'Coco Deluca');
-    ensureDemoLocalAccount();
+    ensureLocalAccountPassword(demoAccountCredentials.email, demoAccountCredentials.password, demoAccountCredentials.name);
+    // Demo settings are normalized only when that account is hydrated.
 
     const persistedSessionBeforeRestore = getLocalSessionDebugInfo();
     console.info('[auth] App bootstrap started.', {
@@ -56,13 +65,17 @@ export const useAuthBootstrapController = () => {
 
   useEffect(() => {
     if (!currentUser) {
+      setPortfolioHydration(null);
       setIsAuthBootstrapLoading(false);
       return;
     }
 
     let isCancelled = false;
+    setPortfolioHydration(null);
+    setHydrationError(null);
     setIsAuthBootstrapLoading(true);
-    void hydrateAccountWorkspace(currentUser).then(({ shouldRefreshSession }) => {
+    void hydrateAccountWorkspace(currentUser).then(async ({ shouldRefreshSession }) => {
+      const hydration = await loadUserPortfolioHydrationSnapshot(currentUser.id);
       if (isCancelled) {
         return;
       }
@@ -71,13 +84,18 @@ export const useAuthBootstrapController = () => {
         setSessionKey((currentKey) => currentKey + 1);
       }
 
+      setPortfolioHydration(hydration);
+      tracePortfolioPersistence('bootstrap:hydrated', getPortfolioSnapshotTraceMetadata(currentUser.id, hydration.portfolio, {
+        accountId: currentUser.id,
+        indexedDbKey: currentUser.id,
+      }));
       setIsAuthBootstrapLoading(false);
-    });
+    }).catch(error => { if (!isCancelled) { setHydrationError(error); setIsAuthBootstrapLoading(false); } });
 
     return () => {
       isCancelled = true;
     };
-  }, [currentUser, hydrateAccountWorkspace]);
+  }, [currentUser, hydrateAccountWorkspace, hydrationAttempt]);
 
   const handleLogin = async (payload: LoginPayload) => {
     const { user } = loginLocalAccount(payload);
@@ -110,10 +128,11 @@ export const useAuthBootstrapController = () => {
     }
 
     if (isDemoLogin) {
-      normalizeDemoAccountState(user);
+      await normalizeDemoAccountState(user);
     }
 
-    restoreUserRecoverySnapshotIfNeeded(user);
+
+    setPortfolioHydration(null);
     setIsAuthBootstrapLoading(true);
     setCurrentUser(user);
     setSessionKey((currentKey) => currentKey + 1);
@@ -131,28 +150,29 @@ export const useAuthBootstrapController = () => {
       setStoredLanguageSelection(makeUserSettingsStorageKey(user.id), true);
     }
 
+    setPortfolioHydration(null);
     setIsAuthBootstrapLoading(true);
     setCurrentUser(user);
     setSessionKey((currentKey) => currentKey + 1);
   };
 
-  const handleLogout = (backup: UserAccountBackup) => {
-    const flushed = flushBackupToServer(backup);
-
-    if (!flushed) {
-      void saveBackupToServer(backup).catch(() => {
-        // Keep local state if the final sync cannot complete.
-      });
-    }
+  const handleLogout = async (backup: UserAccountBackup) => {
+    if (currentUser) await saveUserPortfolio(currentUser.id, backup.portfolio);
+    // Local commit above is mandatory; remote availability does not prevent logout.
+    await saveBackupToServer(backup).catch(() => undefined);
 
     logoutLocalAccount();
+    setPortfolioHydration(null);
     setCurrentUser(null);
     setSessionKey((currentKey) => currentKey + 1);
   };
 
   return {
     currentUser,
+    hydrationError,
+    retryHydration: () => setHydrationAttempt(value => value + 1),
     isAuthBootstrapLoading,
+    portfolioHydration,
     sessionKey,
     handleLogin,
     handleRegister,

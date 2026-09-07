@@ -288,7 +288,7 @@ export const calculateSpainTaxSummary = (property: Partial<Property>): SpainTaxS
         : 'Long-term',
     autonomousCommunity: property.spainAutonomousCommunity || 'Not specified',
     reductionRate,
-    taxableIncomeAfterHousingReduction: netIncomeBeforeTax * (1 - reductionRate),
+    taxableIncomeAfterHousingReduction: Math.max(netIncomeBeforeTax, 0) * (1 - reductionRate),
     estimatedPersonalMarginalIrpfRate: marginalIrpfRate,
     deductibleLabels: [
       {
@@ -333,8 +333,11 @@ export const calculatePropertyTaxRuntime = (
     : null;
 
   if (spain) {
+    const currentPeriodTaxableIncome = Math.max(generic.netIncomeBeforeTax, 0);
     generic.estimatedTax =
-      generic.netIncomeBeforeTax * (1 - spain.reductionRate) * spain.estimatedPersonalMarginalIrpfRate;
+      currentPeriodTaxableIncome *
+      (1 - spain.reductionRate) *
+      spain.estimatedPersonalMarginalIrpfRate;
     generic.annualAfterTaxCashflow = annualNetCashflow - generic.estimatedTax;
     generic.monthlyAfterTaxCashflow = generic.annualAfterTaxCashflow / 12;
   }

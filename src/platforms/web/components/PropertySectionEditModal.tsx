@@ -1,10 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ImagePlus, Upload, X } from 'lucide-react';
 import type { Lease, Property, RentUpdateIndexType, RentUpdateRuleType } from '../../../common/types';
 import { createDefaultLease, getActiveLease, rentUpdateIndexTypes, rentUpdateRuleTypes } from '../../../common/utils/leaseUpdates';
 import { defaultPropertyType, propertyTypeValues } from '../../../common/utils/propertyTypes';
+import { PropertyPhotoError } from '../../../common/utils/propertyImagePipeline';
 import { CompactEditModal } from './CompactEditModal';
 import { useSettings } from '../context/SettingsContext';
+import { uploadPropertyGalleryPhotos } from '../services/propertyGalleryUpload';
+import { useResolvedGalleryUrls } from '../hooks/useResolvedGalleryUrls';
+import { discardPendingGalleryMediaRefs } from '../services/galleryMediaStore';
 import { appBorderClass, appButtonMutedClass, appButtonPrimaryClass, appInputClass, appPanelClass, appTextMutedClass, appTextSoftClass, appTextStrongClass } from '../styles/dashboardTheme';
 
 export type PropertySectionEditorKey = 'documents' | 'gallery' | 'lease-tenancy' | 'property-details' | 'purchase-details';
@@ -60,10 +64,21 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
   const [purchaseDate, setPurchaseDate] = useState(property.purchaseDate ?? '');
   const [imageUrl, setImageUrl] = useState(property.imageUrl ?? '');
   const [imageUrls, setImageUrls] = useState(property.imageUrls ?? []);
+  const [imageThumbnailUrls, setImageThumbnailUrls] = useState(property.imageThumbnailUrls ?? []);
   const [primaryImageIndex, setPrimaryImageIndex] = useState(property.primaryImageIndex ?? 0);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const stagedGalleryRefsRef = useRef(new Set<string>());
+  const gallerySaveSubmittedRef = useRef(false);
+  useEffect(() => () => {
+    if (!gallerySaveSubmittedRef.current) {
+      void discardPendingGalleryMediaRefs(stagedGalleryRefsRef.current);
+    }
+  }, []);
   const [documentImageUrl, setDocumentImageUrl] = useState(property.imageUrl ?? '');
   const [documentImageUrls, setDocumentImageUrls] = useState((property.imageUrls ?? []).join('\n'));
   const [documentPrimaryImageIndex, setDocumentPrimaryImageIndex] = useState(property.primaryImageIndex ?? 0);
+  const resolvedThumbnailUrls = useResolvedGalleryUrls(imageThumbnailUrls);
   useEffect(() => {
     const nextActiveLease = getActiveLease(property) ?? createDefaultLease(property);
     setOccupancyStatus(property.occupancyStatus);
@@ -88,24 +103,18 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
     setPurchaseDate(property.purchaseDate ?? '');
     setImageUrl(property.imageUrl ?? '');
     setImageUrls(property.imageUrls ?? []);
+    setImageThumbnailUrls(property.imageThumbnailUrls ?? []);
     setPrimaryImageIndex(property.primaryImageIndex ?? 0);
     setDocumentImageUrl(property.imageUrl ?? '');
     setDocumentImageUrls((property.imageUrls ?? []).join('\n'));
     setDocumentPrimaryImageIndex(property.primaryImageIndex ?? 0);
   }, [property]);
 
-  const readFileAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
-  const syncPrimaryImage = (nextImageUrls: string[], nextPrimaryImageIndex: number) => {
+  const syncPrimaryImage = (nextImageUrls: string[], nextThumbnailUrls: string[], nextPrimaryImageIndex: number) => {
     const safePrimaryImageIndex = Math.min(Math.max(nextPrimaryImageIndex, 0), Math.max(nextImageUrls.length - 1, 0));
 
     setImageUrls(nextImageUrls);
+    setImageThumbnailUrls(nextThumbnailUrls);
     setPrimaryImageIndex(safePrimaryImageIndex);
     setImageUrl(nextImageUrls[safePrimaryImageIndex] ?? '');
   };
@@ -117,16 +126,29 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
       return;
     }
 
-    const uploadedImages = await Promise.all(files.map(readFileAsDataUrl));
-    const nextImageUrls = [...imageUrls, ...uploadedImages];
-    const nextPrimaryImageIndex = imageUrls.length === 0 ? 0 : primaryImageIndex;
-
-    syncPrimaryImage(nextImageUrls, nextPrimaryImageIndex);
-    event.target.value = '';
+    setImageUploadError(null);
+    setIsUploadingImages(true);
+    try {
+      const uploadedImages = await uploadPropertyGalleryPhotos(files);
+      uploadedImages.forEach((image) => {
+        stagedGalleryRefsRef.current.add(image.fullRef);
+        stagedGalleryRefsRef.current.add(image.thumbnailRef);
+      });
+      const nextImageUrls = [...imageUrls, ...uploadedImages.map((image) => image.fullRef)];
+      const nextThumbnailUrls = [...imageThumbnailUrls, ...uploadedImages.map((image) => image.thumbnailRef)];
+      syncPrimaryImage(nextImageUrls, nextThumbnailUrls, imageUrls.length === 0 ? 0 : primaryImageIndex);
+    } catch (error) {
+      const code = error instanceof PropertyPhotoError ? error.code : 'processing-failed';
+      setImageUploadError(t(`propertyPhotos.errors.${code}`));
+    } finally {
+      setIsUploadingImages(false);
+      event.target.value = '';
+    }
   };
 
   const handleRemoveImage = (indexToRemove: number) => {
     const nextImageUrls = imageUrls.filter((_, index) => index !== indexToRemove);
+    const nextThumbnailUrls = imageThumbnailUrls.filter((_, index) => index !== indexToRemove);
     const nextPrimaryImageIndex =
       nextImageUrls.length === 0
         ? 0
@@ -134,11 +156,11 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
         ? primaryImageIndex - 1
         : Math.min(primaryImageIndex, nextImageUrls.length - 1);
 
-    syncPrimaryImage(nextImageUrls, nextPrimaryImageIndex);
+    syncPrimaryImage(nextImageUrls, nextThumbnailUrls, nextPrimaryImageIndex);
   };
 
   const handleSetPrimaryImage = (nextPrimaryImageIndex: number) => {
-    syncPrimaryImage(imageUrls, nextPrimaryImageIndex);
+    syncPrimaryImage(imageUrls, imageThumbnailUrls, nextPrimaryImageIndex);
   };
 
   const handleMoveImage = (index: number, direction: -1 | 1) => {
@@ -156,7 +178,9 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
     }
 
     const nextImageUrls = [...imageUrls];
+    const nextThumbnailUrls = [...imageThumbnailUrls];
     [nextImageUrls[index], nextImageUrls[targetIndex]] = [nextImageUrls[targetIndex], nextImageUrls[index]];
+    [nextThumbnailUrls[index], nextThumbnailUrls[targetIndex]] = [nextThumbnailUrls[targetIndex], nextThumbnailUrls[index]];
 
     const nextPrimaryImageIndex =
       primaryImageIndex === index
@@ -165,7 +189,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
         ? index
         : primaryImageIndex;
 
-    syncPrimaryImage(nextImageUrls, nextPrimaryImageIndex);
+    syncPrimaryImage(nextImageUrls, nextThumbnailUrls, nextPrimaryImageIndex);
   };
 
   const purchasePerSqm = purchasePrice && builtAreaSqm > 0 ? purchasePrice / builtAreaSqm : 0;
@@ -222,10 +246,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
     }
 
     if (section === 'gallery') {
+      gallerySaveSubmittedRef.current = stagedGalleryRefsRef.current.size > 0;
       onSave({
         ...property,
         imageUrl,
         imageUrls,
+        imageThumbnailUrls,
         primaryImageIndex: Math.min(primaryImageIndex, Math.max(imageUrls.length - 1, 0)),
       });
       return;
@@ -604,10 +630,10 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                   Upload images, choose a primary image, and reorder them without leaving this section.
                 </p>
               </div>
-              <label className={`inline-flex cursor-pointer items-center gap-2 rounded-2xl px-3 py-2 ${appButtonMutedClass} ${appTextStrongClass}`}>
+              <label className={`inline-flex cursor-pointer items-center gap-2 rounded-2xl px-3 py-2 ${appButtonMutedClass} ${appTextStrongClass} ${isUploadingImages ? 'pointer-events-none opacity-65' : ''}`}>
                 <Upload className="h-4 w-4" />
-                <span>Upload</span>
-                <input type="file" accept="image/*" multiple onChange={handleImageUpload} className="hidden" />
+                <span>{isUploadingImages ? t('propertyPhotos.processing') : t('propertyPhotos.upload')}</span>
+                <input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={handleImageUpload} disabled={isUploadingImages} className="hidden" />
               </label>
             </div>
 
@@ -628,7 +654,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                           className="block w-full"
                         >
                           <img
-                            src={galleryImageUrl}
+                            src={resolvedThumbnailUrls[index] ?? galleryImageUrl}
                             alt={`Property image ${index + 1}`}
                             className="h-40 w-full bg-[var(--app-panel-inset)] object-cover object-center"
                           />
@@ -693,6 +719,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <p className={`mt-1 text-xs ${appTextSoftClass}`}>Upload one or more images to start the gallery.</p>
               </div>
             )}
+            {imageUploadError ? <p className="text-sm text-rose-600 dark:text-rose-300">{imageUploadError}</p> : null}
           </div>
         ) : null}
 

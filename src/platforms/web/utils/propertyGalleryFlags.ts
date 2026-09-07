@@ -1,1 +1,1 @@
-export const ENABLE_REAL_PROPERTY_GALLERY = false;
+export const ENABLE_REAL_PROPERTY_GALLERY = true;

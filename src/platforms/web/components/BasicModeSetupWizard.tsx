@@ -34,6 +34,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
   const [propertyValue, setPropertyValue] = useState(0);
   const [monthlyRent, setMonthlyRent] = useState(0);
   const [monthlyExpenses, setMonthlyExpenses] = useState(0);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const steps: WizardStep[] = ['welcome', 'property', 'rent', 'expenses', 'finish'];
   const currentStepIndex = steps.indexOf(step);
@@ -50,8 +51,8 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
   };
 
   const handleSave = () => {
-    onFinish(
-      createManualProperty({
+    try {
+      onFinish(createManualProperty({
         operatingCurrency: 'EUR',
         propertyValueCurrency: 'EUR',
         name,
@@ -65,8 +66,13 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
         monthlyInsurance: 0,
         monthlyTaxes: 0,
         notes: '',
-      })
-    );
+      }));
+      setValidationError(null);
+    } catch (error) {
+      setValidationError(
+        error instanceof Error ? error.message : 'Invalid property financial values'
+      );
+    }
   };
 
   const helperTextClass = `mt-2 text-sm leading-6 ${appTextMutedClass}`;
@@ -90,6 +96,11 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
       fullWidthClassName="sm:max-w-2xl"
     >
       <div className="space-y-5 p-4 sm:p-6">
+        {validationError ? (
+          <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
+            {validationError}
+          </p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {steps.map((item, index) => (
             <span
@@ -159,6 +170,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
                 <label className={labelClass}>{t('basicModeSetupWizard.propertyValueLabel')}</label>
                 <input
                   type="number"
+                  min="0.01"
                   value={propertyValue || ''}
                   onChange={(event) => setPropertyValue(Number(event.target.value) || 0)}
                   className={appInputClass}
@@ -179,6 +191,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
               <label className={labelClass}>{t('basicModeSetupWizard.monthlyRentLabel')}</label>
               <input
                 type="number"
+                min="0"
                 value={monthlyRent || ''}
                 onChange={(event) => setMonthlyRent(Number(event.target.value) || 0)}
                 className={appInputClass}
@@ -198,6 +211,7 @@ export const BasicModeSetupWizard: React.FC<BasicModeSetupWizardProps> = ({
               <label className={labelClass}>{t('basicModeSetupWizard.monthlyExpensesLabel')}</label>
               <input
                 type="number"
+                min="0"
                 value={monthlyExpenses || ''}
                 onChange={(event) => setMonthlyExpenses(Number(event.target.value) || 0)}
                 className={appInputClass}

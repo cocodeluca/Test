@@ -352,6 +352,10 @@ export const buildMortgageViewModel = (mortgage: Mortgage, property?: Property) 
     summary: {
       monthlyPayment,
       balance: snapshot.displayedBalance,
+      savedBalance: snapshot.savedBalance,
+      savedBalanceDifference: snapshot.savedBalanceDifference,
+      hasMaterialBalanceDifference: snapshot.hasMaterialBalanceDifference,
+      balanceSource: snapshot.balanceSource,
       remainingMonths,
       remainingTermLabel:
         remainingMonths > 0

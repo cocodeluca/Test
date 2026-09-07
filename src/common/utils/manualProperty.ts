@@ -1,6 +1,7 @@
 import type { Property } from '../types';
 import type { DisplayCurrency } from '../types/settings';
 import { defaultPropertyType } from './propertyTypes';
+import { assertValidPropertyFinancialValues } from './financialValidation';
 
 export interface ManualPropertyInput {
   operatingCurrency: DisplayCurrency;
@@ -24,6 +25,15 @@ export const createManualProperty = (
   input: ManualPropertyInput,
   overrides: Partial<Property> = {}
 ): Property => {
+  assertValidPropertyFinancialValues({
+    purchasePrice: input.estimatedPropertyValue,
+    currentEstimatedValue: input.estimatedPropertyValue,
+    monthlyRent: input.monthlyRent,
+    annualCommunityFees: toAnnual(input.monthlyExpenses),
+    annualHomeInsurance: toAnnual(input.monthlyInsurance),
+    annualIBI: toAnnual(input.monthlyTaxes),
+  });
+
   const monthlyOperatingExpenses =
     input.monthlyExpenses + input.monthlyInsurance + input.monthlyTaxes;
   const annualOperatingExpenses = toAnnual(monthlyOperatingExpenses);
