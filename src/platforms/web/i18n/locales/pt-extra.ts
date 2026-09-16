@@ -3,6 +3,26 @@ import { esExtra } from './es-extra';
 
 export const ptExtra: TranslationTree = {
   ...esExtra,
+  cashAccounts: {
+    ...(esExtra.cashAccounts as TranslationTree),
+    transactionsTab: 'Transações',
+    transactionsTitle: 'Transações bancárias',
+    transactionsDescription: 'Consulte as transações já sincronizadas das contas simuladas ligadas.',
+    transactionDate: 'Data',
+    transactionAccount: 'Conta',
+    transactionDescription: 'Descrição',
+    transactionAmount: 'Montante',
+    transactionCurrency: 'Moeda',
+    transactionState: 'Estado',
+    transactionPending: 'Pendente',
+    transactionPosted: 'Registada',
+    transactionEmptyTitle: 'Ainda não existem transações bancárias',
+    transactionEmptyBody: 'Ligue ou atualize uma conta bancária simulada para carregar as transações.',
+    transactionAllAccounts: 'Todas as contas',
+    transactionUnknownAccount: 'Conta desconhecida',
+    transactionSyncMock: 'Sincronizar transações simuladas',
+    transactionSyncing: 'A sincronizar...',
+  },
   propertyPhotos: {
     upload: 'Carregar',
     processing: 'Processando fotos…',

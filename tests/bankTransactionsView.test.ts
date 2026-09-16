@@ -1,0 +1,174 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import type { BankTransaction, CashAccount } from '../src/common/types';
+import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
+import { normalizeProviderTransactions, upsertBankTransactions } from '../src/common/utils/bankTransactions';
+import { BankTransactionsView } from '../src/platforms/web/components/BankTransactionsView';
+import { openBankingAdapters } from '../src/platforms/web/services/openBanking';
+
+const { renderToStaticMarkup } = require('react-dom/server') as {
+  renderToStaticMarkup: (element: React.ReactNode) => string;
+};
+
+const account = createLinkedCashAccount({
+  id: 'cash-account-1',
+  userId: 'transactions-ui-user',
+  nickname: 'Main Checking',
+  institutionName: 'Mock Institution',
+  institutionId: 'mock-institution-ui',
+  connectionId: 'connection-ui',
+  providerName: 'mock-bank',
+  externalAccountId: 'mock-institution-ui:checking',
+  currency: 'EUR',
+});
+
+const transaction = (overrides: Partial<BankTransaction> = {}): BankTransaction => ({
+  id: 'mock-bank:provider-transaction-1',
+  providerName: 'mock-bank',
+  connectionId: 'connection-ui',
+  externalTransactionId: 'provider-transaction-1',
+  cashAccountId: account.id,
+  externalAccountId: account.externalAccountId,
+  bookingDate: '2026-09-15',
+  authorizedDate: null,
+  amount: 1450,
+  currency: 'EUR',
+  normalizedAmount: 1450,
+  normalizedCurrency: 'EUR',
+  fxCoverage: 'same-currency',
+  fxRate: 1,
+  fxRateTimestamp: null,
+  description: 'September rent',
+  counterparty: 'Tenant transfer',
+  pending: false,
+  createdAt: '2026-09-16T12:00:00.000Z',
+  updatedAt: '2026-09-16T12:00:00.000Z',
+  syncedAt: '2026-09-16T12:00:00.000Z',
+  ...overrides,
+});
+
+const translations: Record<string, string> = {
+  'cashAccounts.transactionsTitle': 'Bank transactions',
+  'cashAccounts.transactionsDescription': 'Synced transaction records.',
+  'cashAccounts.transactionDate': 'Date',
+  'cashAccounts.transactionAccount': 'Account',
+  'cashAccounts.transactionDescription': 'Description',
+  'cashAccounts.transactionAmount': 'Amount',
+  'cashAccounts.transactionCurrency': 'Currency',
+  'cashAccounts.transactionState': 'State',
+  'cashAccounts.transactionPending': 'Pending',
+  'cashAccounts.transactionPosted': 'Posted',
+  'cashAccounts.transactionEmptyTitle': 'No bank transactions yet',
+  'cashAccounts.transactionEmptyBody': 'Sync a mock account.',
+  'cashAccounts.transactionAllAccounts': 'All accounts',
+  'cashAccounts.transactionUnknownAccount': 'Unknown account',
+  'cashAccounts.transactionSyncMock': 'Sync mock transactions',
+  'cashAccounts.transactionSyncing': 'Syncing...',
+};
+
+const t = (key: string) => translations[key] ?? key;
+
+const renderView = (
+  transactions: BankTransaction[],
+  cashAccounts: CashAccount[] = [account]
+) => renderToStaticMarkup(React.createElement(BankTransactionsView, {
+  transactions,
+  cashAccounts,
+  selectedAccountId: 'all',
+  onSelectedAccountIdChange: () => undefined,
+  isSyncing: false,
+  language: 'en',
+  t,
+}));
+
+test.beforeEach(() => {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { setTimeout },
+  });
+});
+
+test('renders persisted transaction details with the stable linked account', () => {
+  const html = renderView([transaction()]);
+
+  assert.match(html, /September rent/);
+  assert.match(html, /Tenant transfer/);
+  assert.match(html, /Main Checking/);
+  assert.match(html, /EUR/);
+  assert.match(html, /Sep 15, 2026/);
+  assert.match(html, /data-bank-transaction-id="mock-bank:provider-transaction-1"/);
+});
+
+test('renders pending state and signed inflow and outflow amounts', () => {
+  const html = renderView([
+    transaction({ pending: true }),
+    transaction({
+      id: 'mock-bank:provider-transaction-2',
+      externalTransactionId: 'provider-transaction-2',
+      amount: -185,
+      description: 'Property insurance',
+    }),
+  ]);
+
+  assert.match(html, /data-state="pending"/);
+  assert.match(html, />Pending</);
+  assert.match(html, /data-direction="inflow"/);
+  assert.match(html, /data-raw-amount="1450"/);
+  assert.match(html, /\+1450/);
+  assert.match(html, /data-direction="outflow"/);
+  assert.match(html, /data-raw-amount="-185"/);
+  assert.match(html, /−185/);
+});
+
+test('renders an empty state when no persisted transactions exist', () => {
+  const html = renderView([]);
+
+  assert.match(html, /No bank transactions yet/);
+  assert.match(html, /Sync a mock account\./);
+  assert.doesNotMatch(html, /data-bank-transaction-id=/);
+});
+
+test('repeated mock sync remains idempotent in the rendered rows', async () => {
+  const connection = createBankConnection({
+    id: 'connection-ui',
+    userId: 'transactions-ui-user',
+    providerName: 'mock-bank',
+    institutionName: 'Mock Institution',
+    institutionId: 'mock-institution-ui',
+  });
+  const savings = createLinkedCashAccount({
+    ...account,
+    id: 'cash-account-2',
+    nickname: 'Reserve Savings',
+    externalAccountId: 'mock-institution-ui:savings',
+    currency: 'USD',
+  });
+  const accounts = [account, savings];
+  const adapter = openBankingAdapters['mock-bank'];
+  assert.ok(adapter.fetchTransactions);
+  const firstPage = await adapter.fetchTransactions(connection, accounts, null);
+  const first = upsertBankTransactions([], normalizeProviderTransactions(firstPage.transactions, {
+    providerName: 'mock-bank',
+    connectionId: connection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1, USD: 0.9 },
+    fxRateTimestamp: '2026-09-16T00:00:00.000Z',
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  }));
+  const secondPage = await adapter.fetchTransactions(connection, accounts, firstPage.nextCursor);
+  const twiceSynced = upsertBankTransactions(first, normalizeProviderTransactions(secondPage.transactions, {
+    providerName: 'mock-bank',
+    connectionId: connection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1, USD: 0.9 },
+    fxRateTimestamp: '2026-09-16T00:00:00.000Z',
+    syncedAt: '2026-09-16T13:00:00.000Z',
+  }));
+  const html = renderView(twiceSynced, accounts);
+
+  assert.equal(twiceSynced.length, 4);
+  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 4);
+});

@@ -51,6 +51,7 @@ import {
   appTextStrongClass,
 } from '../styles/dashboardTheme';
 import { CompactEditModal } from '../components/CompactEditModal';
+import { BankTransactionsView } from '../components/BankTransactionsView';
 import { useSettings } from '../context/SettingsContext';
 import { openBankingAdapters } from '../services/openBanking';
 
@@ -66,7 +67,7 @@ interface CashAccountsPageProps {
   onUpdateBankTransactionSyncStates: (states: BankTransactionSyncState[]) => void;
 }
 
-type CashTab = 'accounts' | 'connections' | 'settings';
+type CashTab = 'accounts' | 'transactions' | 'connections' | 'settings';
 type ManualAccountEditorSection = 'basic' | 'balances' | 'notes';
 
 const inputClass = `w-full ${appInputClass}`;
@@ -103,6 +104,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 }) => {
   const { settings, t } = useSettings();
   const [activeTab, setActiveTab] = useState<CashTab>('accounts');
+  const [transactionAccountId, setTransactionAccountId] = useState('all');
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(cashAccounts[0]?.id ?? null);
   const [editingAccount, setEditingAccount] = useState<CashAccount | null>(null);
   const [showManualModal, setShowManualModal] = useState(false);
@@ -118,6 +120,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 
   const summary = useMemo(() => calculateCashAccountSummary(cashAccounts), [cashAccounts]);
   const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? cashAccounts[0] ?? null;
+  const mockConnection = bankConnections.find(
+    (connection) => connection.providerName === 'mock-bank' && connection.connectionStatus !== 'disconnected'
+  );
 
   const mergeProviderAccounts = (connection: BankConnection, incoming: CashAccount[]) => {
     const accounts = upsertLinkedCashAccounts(cashAccounts, incoming);
@@ -398,7 +403,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 
         <section className={`${appPanelClass} rounded-[32px] p-5 sm:p-6`}>
           <div className="flex flex-wrap gap-2">
-            {(['accounts', 'connections', 'settings'] as CashTab[]).map((tab) => (
+            {(['accounts', 'transactions', 'connections', 'settings'] as CashTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -407,6 +412,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
               >
                 {tab === 'accounts'
                   ? t('common.accounts')
+                  : tab === 'transactions'
+                  ? t('cashAccounts.transactionsTab')
                   : tab === 'connections'
                   ? t('common.connections')
                   : t('settings.title')}
@@ -543,6 +550,17 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                 </div>
               ))}
             </div>
+          ) : activeTab === 'transactions' ? (
+            <BankTransactionsView
+              transactions={bankTransactions}
+              cashAccounts={cashAccounts}
+              selectedAccountId={transactionAccountId}
+              onSelectedAccountIdChange={setTransactionAccountId}
+              onSyncMock={mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
+              isSyncing={isRefreshingConnectionId === mockConnection?.id}
+              language={settings.language}
+              t={t}
+            />
           ) : (
             <div className="mt-6 grid gap-4 xl:grid-cols-2">
               <div className={`${appPanelInsetClass} rounded-[24px] p-5`}>
