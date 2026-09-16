@@ -580,6 +580,44 @@ export interface BankConnection {
   updatedAt: string;
 }
 
+export type BankTransactionFxCoverage = 'same-currency' | 'snapshot' | 'unavailable';
+
+export interface BankTransaction {
+  id: string;
+  providerName: OpenBankingProviderName;
+  connectionId: string;
+  externalTransactionId: string;
+  cashAccountId: string;
+  externalAccountId?: string | null;
+  bookingDate: string;
+  authorizedDate?: string | null;
+  /** Canonical sign convention: inflows are positive and outflows are negative. */
+  amount: number;
+  currency: DisplayCurrency;
+  normalizedAmount: number | null;
+  normalizedCurrency: DisplayCurrency;
+  fxCoverage: BankTransactionFxCoverage;
+  fxRate?: number | null;
+  fxRateTimestamp?: string | null;
+  description: string;
+  counterparty?: string | null;
+  pending: boolean;
+  providerMetadata?: Record<string, string | number | boolean | null>;
+  createdAt: string;
+  updatedAt: string;
+  syncedAt: string;
+}
+
+export interface BankTransactionSyncState {
+  connectionId: string;
+  providerName: OpenBankingProviderName;
+  cursor?: string | null;
+  lastSuccessfulSyncAt?: string | null;
+  syncStatus: SyncStatus;
+  errorMessage?: string | null;
+  updatedAt: string;
+}
+
 export interface InvestmentAccount {
   id: string;
   name: string;

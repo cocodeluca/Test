@@ -3,6 +3,8 @@ import { useEffect } from 'react';
 import type {
   CashAccount,
   BankConnection,
+  BankTransaction,
+  BankTransactionSyncState,
   InvestmentReport,
   InvestmentReportTemplate,
   InvestmentAccount,
@@ -100,6 +102,8 @@ type AppPageRendererProps = {
   effectiveMortgages: Mortgage[];
   effectiveCashAccounts: CashAccount[];
   effectiveBankConnections: BankConnection[];
+  effectiveBankTransactions: BankTransaction[];
+  effectiveBankTransactionSyncStates: BankTransactionSyncState[];
   effectiveInvestmentAccounts: InvestmentAccount[];
   effectiveOpportunities: Opportunity[];
   effectiveRehabProjects: RehabProject[];
@@ -131,6 +135,8 @@ type AppPageRendererProps = {
   } | null;
   onUpdateCashAccounts: (accounts: CashAccount[]) => void;
   onUpdateBankConnections: (connections: BankConnection[]) => void;
+  onUpdateBankTransactions: (transactions: BankTransaction[]) => void;
+  onUpdateBankTransactionSyncStates: (states: BankTransactionSyncState[]) => void;
   onUpdateInvestmentAccounts: (accounts: InvestmentAccount[]) => void;
   onConnectEtoroAccount: () => Promise<void>;
   onSyncInvestmentAccount: (accountId: string) => Promise<void>;
@@ -241,8 +247,12 @@ export const AppPageRenderer = (props: AppPageRendererProps) => {
           userId={props.user.id}
           cashAccounts={props.effectiveCashAccounts}
           bankConnections={props.effectiveBankConnections}
+          bankTransactions={props.effectiveBankTransactions}
+          bankTransactionSyncStates={props.effectiveBankTransactionSyncStates}
           onUpdateCashAccounts={props.onUpdateCashAccounts}
           onUpdateBankConnections={props.onUpdateBankConnections}
+          onUpdateBankTransactions={props.onUpdateBankTransactions}
+          onUpdateBankTransactionSyncStates={props.onUpdateBankTransactionSyncStates}
         />
       );
     case 'rent-collection':

@@ -12,16 +12,31 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { BankConnection, CashAccount, CashAccountType, OpenBankingProviderName } from '../../../common/types';
+import type {
+  BankConnection,
+  BankTransaction,
+  BankTransactionSyncState,
+  CashAccount,
+  CashAccountType,
+  OpenBankingProviderName,
+} from '../../../common/types';
 import {
   calculateCashAccountSummary,
   cashAccountTypeLabels,
   createManualCashAccount,
+  getLinkedCashAccountIdentity,
   getCashAccountBalance,
   getCashAccountDisplayName,
   providerLabels,
   syncStatusLabels,
+  upsertLinkedCashAccounts,
 } from '../../../common/utils/cashAccounts';
+import {
+  normalizeProviderTransactions,
+  upsertBankTransactions,
+  upsertBankTransactionSyncState,
+} from '../../../common/utils/bankTransactions';
+import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { currencyOptions } from '../../../common/utils/currency';
 import { formatCurrencyValue, getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
 import {
@@ -43,8 +58,12 @@ interface CashAccountsPageProps {
   userId: string;
   cashAccounts: CashAccount[];
   bankConnections: BankConnection[];
+  bankTransactions: BankTransaction[];
+  bankTransactionSyncStates: BankTransactionSyncState[];
   onUpdateCashAccounts: (accounts: CashAccount[]) => void;
   onUpdateBankConnections: (connections: BankConnection[]) => void;
+  onUpdateBankTransactions: (transactions: BankTransaction[]) => void;
+  onUpdateBankTransactionSyncStates: (states: BankTransactionSyncState[]) => void;
 }
 
 type CashTab = 'accounts' | 'connections' | 'settings';
@@ -75,8 +94,12 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   userId,
   cashAccounts,
   bankConnections,
+  bankTransactions,
+  bankTransactionSyncStates,
   onUpdateCashAccounts,
   onUpdateBankConnections,
+  onUpdateBankTransactions,
+  onUpdateBankTransactionSyncStates,
 }) => {
   const { settings, t } = useSettings();
   const [activeTab, setActiveTab] = useState<CashTab>('accounts');
@@ -95,6 +118,65 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 
   const summary = useMemo(() => calculateCashAccountSummary(cashAccounts), [cashAccounts]);
   const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? cashAccounts[0] ?? null;
+
+  const mergeProviderAccounts = (connection: BankConnection, incoming: CashAccount[]) => {
+    const accounts = upsertLinkedCashAccounts(cashAccounts, incoming);
+    const linkedAccountIds = incoming
+      .map((candidate) => {
+        const identity = getLinkedCashAccountIdentity(candidate);
+        return accounts.find((account) => getLinkedCashAccountIdentity(account) === identity)?.id;
+      })
+      .filter((id): id is string => Boolean(id));
+    return {
+      accounts,
+      connection: { ...connection, linkedAccountIds },
+    };
+  };
+
+  const syncMockTransactions = async (connection: BankConnection, accounts: CashAccount[]) => {
+    const adapter = openBankingAdapters[connection.providerName];
+    if (!adapter.fetchTransactions || connection.providerName !== 'mock-bank') {
+      return;
+    }
+    const previousState = bankTransactionSyncStates.find(
+      (state) => state.connectionId === connection.id
+    );
+    const syncedAt = new Date().toISOString();
+    try {
+      const page = await adapter.fetchTransactions(connection, accounts, previousState?.cursor);
+      const snapshot = getActiveFxSnapshot(settings);
+      const normalized = normalizeProviderTransactions(page.transactions, {
+        providerName: connection.providerName,
+        connectionId: connection.id,
+        accounts,
+        reportingCurrency: settings.currency,
+        fxRates: getSettingsCurrencyRates(settings),
+        fxRateTimestamp: snapshot?.lastSuccessfulUpdateAt ?? null,
+        syncedAt,
+      });
+      onUpdateBankTransactions(upsertBankTransactions(bankTransactions, normalized));
+      onUpdateBankTransactionSyncStates(
+        upsertBankTransactionSyncState(bankTransactionSyncStates, {
+          connectionId: connection.id,
+          providerName: connection.providerName,
+          cursor: page.nextCursor,
+          syncStatus: 'success',
+          syncedAt,
+        })
+      );
+    } catch (error) {
+      onUpdateBankTransactionSyncStates(
+        upsertBankTransactionSyncState(bankTransactionSyncStates, {
+          connectionId: connection.id,
+          providerName: connection.providerName,
+          syncStatus: 'error',
+          errorMessage: error instanceof Error ? error.message : 'Mock transaction sync failed.',
+          syncedAt,
+        })
+      );
+      throw error;
+    }
+  };
 
   useEffect(() => {
     if (cashAccounts.length === 0) {
@@ -179,9 +261,11 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         scenario: mockScenario,
       });
 
-      onUpdateBankConnections([...bankConnections, result.connection]);
-      onUpdateCashAccounts([...cashAccounts, ...result.accounts]);
-      setSelectedAccountId(result.accounts[0]?.id ?? selectedAccountId);
+      const merged = mergeProviderAccounts(result.connection, result.accounts);
+      onUpdateBankConnections([...bankConnections, merged.connection]);
+      onUpdateCashAccounts(merged.accounts);
+      await syncMockTransactions(merged.connection, merged.accounts);
+      setSelectedAccountId(merged.connection.linkedAccountIds[0] ?? selectedAccountId);
       setActiveTab('connections');
       setShowConnectModal(false);
     } catch (error) {
@@ -201,13 +285,12 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       const linkedAccounts = cashAccounts.filter((account) => account.connectionId === connection.id);
       const result = await adapter.refreshConnection(connection, linkedAccounts);
 
+      const merged = mergeProviderAccounts(result.connection, result.accounts);
       onUpdateBankConnections(
-        bankConnections.map((item) => (item.id === connection.id ? result.connection : item))
+        bankConnections.map((item) => (item.id === connection.id ? merged.connection : item))
       );
-      onUpdateCashAccounts([
-        ...cashAccounts.filter((account) => account.connectionId !== connection.id),
-        ...result.accounts,
-      ]);
+      onUpdateCashAccounts(merged.accounts);
+      await syncMockTransactions(merged.connection, merged.accounts);
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.refreshUnavailable')
@@ -235,14 +318,16 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         scenario: 'success',
       });
 
+      const merged = mergeProviderAccounts(
+        { ...result.connection, id: connection.id },
+        result.accounts.map((account) => ({ ...account, connectionId: connection.id }))
+      );
       onUpdateBankConnections([
         ...bankConnections.filter((item) => item.id !== connection.id),
-        { ...result.connection, id: connection.id, linkedAccountIds: result.accounts.map((account) => account.id) },
+        merged.connection,
       ]);
-      onUpdateCashAccounts([
-        ...cashAccounts.filter((account) => account.connectionId !== connection.id),
-        ...result.accounts.map((account) => ({ ...account, connectionId: connection.id })),
-      ]);
+      onUpdateCashAccounts(merged.accounts);
+      await syncMockTransactions(merged.connection, merged.accounts);
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.reconnectUnavailable')

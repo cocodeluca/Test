@@ -13,6 +13,8 @@ import { SectionCrashBoundary } from '../web/components/SectionCrashBoundary';
 import {
   CashAccount,
   BankConnection,
+  BankTransaction,
+  BankTransactionSyncState,
   InvestmentReport,
   InvestmentReportTemplate,
   InvestmentAccount,
@@ -787,6 +789,12 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const [bankConnections, setBankConnections] = useState<BankConnection[]>(
     initialPortfolioData.bankConnections ?? []
   );
+  const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>(
+    initialPortfolioData.bankTransactions ?? []
+  );
+  const [bankTransactionSyncStates, setBankTransactionSyncStates] = useState<BankTransactionSyncState[]>(
+    initialPortfolioData.bankTransactionSyncStates ?? []
+  );
   const [investmentAccounts, setInvestmentAccounts] = useState<InvestmentAccount[]>(
     initialPortfolioData.investmentAccounts
   );
@@ -1093,6 +1101,9 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const effectiveMortgages = effectivePortfolio?.mortgages ?? mortgages;
   const effectiveCashAccounts = effectivePortfolio?.cashAccounts ?? cashAccounts;
   const effectiveBankConnections = effectivePortfolio?.bankConnections ?? bankConnections;
+  const effectiveBankTransactions = effectivePortfolio?.bankTransactions ?? bankTransactions;
+  const effectiveBankTransactionSyncStates =
+    effectivePortfolio?.bankTransactionSyncStates ?? bankTransactionSyncStates;
   const effectiveInvestmentAccounts =
     effectivePortfolio?.investmentAccounts ?? investmentAccounts;
   const effectiveOpportunities = effectivePortfolio?.opportunities ?? opportunities;
@@ -1148,6 +1159,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       mortgages,
       cashAccounts,
       bankConnections,
+      bankTransactions,
+      bankTransactionSyncStates,
       investmentAccounts,
       opportunities,
       rehabProjects,
@@ -1162,6 +1175,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     }),
     [
       bankConnections,
+      bankTransactions,
+      bankTransactionSyncStates,
       cashAccounts,
       investmentAccounts,
       mortgages,
@@ -1697,6 +1712,28 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     }
 
     setBankConnections(connections);
+  };
+
+  const handleUpdateBankTransactions = (transactions: BankTransaction[]) => {
+    if (isDemoPreviewActive) {
+      setDemoPreviewState((currentPreview) => currentPreview ? {
+        ...currentPreview,
+        portfolio: { ...currentPreview.portfolio, bankTransactions: transactions },
+      } : currentPreview);
+      return;
+    }
+    setBankTransactions(transactions);
+  };
+
+  const handleUpdateBankTransactionSyncStates = (states: BankTransactionSyncState[]) => {
+    if (isDemoPreviewActive) {
+      setDemoPreviewState((currentPreview) => currentPreview ? {
+        ...currentPreview,
+        portfolio: { ...currentPreview.portfolio, bankTransactionSyncStates: states },
+      } : currentPreview);
+      return;
+    }
+    setBankTransactionSyncStates(states);
   };
 
   const handleUpdateReportBranding = (branding: ReportBrandingConfig) => {
@@ -2880,6 +2917,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     effectiveMortgages={effectiveMortgages}
                     effectiveCashAccounts={effectiveCashAccounts}
                     effectiveBankConnections={effectiveBankConnections}
+                    effectiveBankTransactions={effectiveBankTransactions}
+                    effectiveBankTransactionSyncStates={effectiveBankTransactionSyncStates}
                     effectiveInvestmentAccounts={effectiveInvestmentAccounts}
                     effectiveOpportunities={effectiveOpportunities}
                     effectiveRehabProjects={effectiveRehabProjects}
@@ -2896,6 +2935,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     activeTutorialUiState={activeTutorialUiState}
                     onUpdateCashAccounts={handleUpdateCashAccounts}
                     onUpdateBankConnections={handleUpdateBankConnections}
+                    onUpdateBankTransactions={handleUpdateBankTransactions}
+                    onUpdateBankTransactionSyncStates={handleUpdateBankTransactionSyncStates}
                     onUpdateInvestmentAccounts={handleUpdateInvestmentAccounts}
                     onConnectEtoroAccount={connectEtoroAccount}
                     onSyncInvestmentAccount={syncInvestmentAccount}

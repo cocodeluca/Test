@@ -6,6 +6,10 @@ import {
   normalizeBankConnection,
   normalizeCashAccount,
 } from '../../../common/utils/cashAccounts';
+import type {
+  ProviderTransactionPage,
+  ProviderTransactionRecord,
+} from '../../../common/utils/bankTransactions';
 
 declare global {
   interface Window {
@@ -62,6 +66,11 @@ export interface ProviderAdapter {
   ) => Promise<ProviderConnectionResult>;
   fetchAccounts: (connection: BankConnection) => Promise<CashAccount[]>;
   fetchBalances: (accounts: CashAccount[]) => Promise<CashAccount[]>;
+  fetchTransactions?: (
+    connection: BankConnection,
+    accounts: CashAccount[],
+    cursor?: string | null
+  ) => Promise<ProviderTransactionPage>;
   refreshConnection: (connection: BankConnection, accounts: CashAccount[]) => Promise<ProviderConnectionResult>;
   disconnectConnection: (connection: BankConnection) => Promise<BankConnection>;
 }
@@ -169,6 +178,7 @@ const buildMockAccounts = (
     institutionId,
     connectionId,
     providerName,
+    externalAccountId: `${institutionId}:checking`,
     accountType: 'checking',
     currency: 'EUR',
     currentBalance: 14320,
@@ -183,12 +193,66 @@ const buildMockAccounts = (
     institutionId,
     connectionId,
     providerName,
+    externalAccountId: `${institutionId}:savings`,
     accountType: 'savings',
     currency: 'USD',
     currentBalance: 11890,
     availableBalance: 11890,
     maskedReference: '****5580',
   }),
+];
+
+const buildMockTransactions = (
+  institutionId: string
+): ProviderTransactionRecord[] => [
+  {
+    externalTransactionId: `${institutionId}:rent-2026-09`,
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: '2026-09-03',
+    authorizedDate: '2026-09-02',
+    amount: 1450,
+    direction: 'credit',
+    currency: 'EUR',
+    description: 'September rent',
+    counterparty: 'Tenant transfer',
+    pending: false,
+    metadata: { category: 'transfer' },
+  },
+  {
+    externalTransactionId: `${institutionId}:insurance-2026`,
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: '2026-09-05',
+    amount: 185,
+    direction: 'debit',
+    currency: 'EUR',
+    description: 'Property insurance',
+    counterparty: 'Insurance provider',
+    pending: false,
+    metadata: { category: 'insurance' },
+  },
+  {
+    externalTransactionId: `${institutionId}:maintenance-pending`,
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: '2026-09-15',
+    amount: 72,
+    direction: 'debit',
+    currency: 'EUR',
+    description: 'Maintenance authorization',
+    pending: true,
+    metadata: { category: 'maintenance' },
+  },
+  {
+    externalTransactionId: `${institutionId}:usd-interest`,
+    externalAccountId: `${institutionId}:savings`,
+    bookingDate: '2026-09-10',
+    amount: 25,
+    direction: 'credit',
+    currency: 'USD',
+    description: 'Savings interest',
+    counterparty: 'Mock Bank',
+    pending: false,
+    metadata: { category: 'interest' },
+  },
 ];
 
 const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapter => ({
@@ -250,6 +314,18 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
       })
     );
   },
+  ...(providerName === 'mock-bank'
+    ? {
+        async fetchTransactions(connection: BankConnection, _accounts: CashAccount[], cursor?: string | null) {
+          await delay(320);
+          return {
+            transactions: buildMockTransactions(connection.institutionId),
+            nextCursor: cursor ?? `${connection.id}:mock-v1`,
+            hasMore: false,
+          };
+        },
+      }
+    : {}),
   async refreshConnection(connection, accounts) {
     await delay(480);
     const refreshedAccounts =

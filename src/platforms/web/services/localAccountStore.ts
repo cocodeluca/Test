@@ -2,6 +2,8 @@ import { accountSnapshotTransaction, serializeAccountOperation } from './portfol
 import { AppSettings } from '../../../common/types/settings';
 import {
   BankConnection,
+  BankTransaction,
+  BankTransactionSyncState,
   CashAccount,
   InvestmentAccount,
   Mortgage,
@@ -102,6 +104,8 @@ export interface UserPortfolioData {
   mortgages: Mortgage[];
   cashAccounts: CashAccount[];
   bankConnections: BankConnection[];
+  bankTransactions?: BankTransaction[];
+  bankTransactionSyncStates?: BankTransactionSyncState[];
   investmentAccounts: InvestmentAccount[];
   opportunities: Opportunity[];
   rehabProjects: RehabProject[];
@@ -196,6 +200,8 @@ export const emptyPortfolioData: UserPortfolioData = {
   mortgages: [],
   cashAccounts: [],
   bankConnections: [],
+  bankTransactions: [],
+  bankTransactionSyncStates: [],
   investmentAccounts: [],
   opportunities: [],
   rehabProjects: [],
@@ -214,6 +220,8 @@ const toPersistedUserPortfolio = (data: UserPortfolioData): UserPortfolioData =>
   mortgages: data.mortgages,
   cashAccounts: data.cashAccounts,
   bankConnections: data.bankConnections,
+  bankTransactions: data.bankTransactions ?? [],
+  bankTransactionSyncStates: data.bankTransactionSyncStates ?? [],
   investmentAccounts: data.investmentAccounts,
   opportunities: data.opportunities,
   rehabProjects: data.rehabProjects,
@@ -518,6 +526,8 @@ const isPortfolioEmpty = (data: UserPortfolioData): boolean =>
   data.mortgages.length === 0 &&
   data.cashAccounts.length === 0 &&
   data.bankConnections.length === 0 &&
+  (data.bankTransactions?.length ?? 0) === 0 &&
+  (data.bankTransactionSyncStates?.length ?? 0) === 0 &&
   data.investmentAccounts.length === 0 &&
   data.opportunities.length === 0 &&
   data.rehabProjects.length === 0 &&
@@ -890,7 +900,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const hasRecognizedPortfolioShape = (value: unknown): value is Partial<UserPortfolioData> =>
   isRecord(value) &&
-  ['properties', 'mortgages', 'cashAccounts', 'bankConnections', 'investmentAccounts', 'opportunities', 'rehabProjects', 'reports', 'reportTemplates', 'rentReceivables', 'rentPayments', 'propertyExpenseRules', 'expenseObligations', 'expensePayments'].every(key => value[key] === undefined || (Array.isArray(value[key]) && (value[key] as unknown[]).every(isRecord))) &&
+  ['properties', 'mortgages', 'cashAccounts', 'bankConnections', 'bankTransactions', 'bankTransactionSyncStates', 'investmentAccounts', 'opportunities', 'rehabProjects', 'reports', 'reportTemplates', 'rentReceivables', 'rentPayments', 'propertyExpenseRules', 'expenseObligations', 'expensePayments'].every(key => value[key] === undefined || (Array.isArray(value[key]) && (value[key] as unknown[]).every(isRecord))) &&
   ['properties', 'mortgages', 'cashAccounts', 'investmentAccounts'].some((key) =>
     Array.isArray(value[key])
   );
@@ -921,6 +931,8 @@ const normalizeLoadedPortfolio = (
     mortgages: storedValue.mortgages ?? [],
     cashAccounts: (storedValue.cashAccounts ?? []).map((account) => normalizeCashAccount(account)),
     bankConnections: (storedValue.bankConnections ?? []).map((connection) => normalizeBankConnection(connection)),
+    bankTransactions: storedValue.bankTransactions ?? [],
+    bankTransactionSyncStates: storedValue.bankTransactionSyncStates ?? [],
     investmentAccounts: storedValue.investmentAccounts ?? [],
     opportunities: storedValue.opportunities ?? [],
     rehabProjects: storedValue.rehabProjects ?? [],

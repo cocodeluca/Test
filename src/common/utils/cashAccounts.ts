@@ -176,6 +176,43 @@ export const groupCashAccountsByCurrency = (accounts: CashAccount[]) =>
     return totals;
   }, {} as Record<DisplayCurrency, number>);
 
+export const getLinkedCashAccountIdentity = (
+  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'externalAccountId'>
+): string | null =>
+  account.sourceType === 'linked' && account.providerName && account.externalAccountId
+    ? `${account.providerName}:${account.externalAccountId}`
+    : null;
+
+export const upsertLinkedCashAccounts = (
+  existingAccounts: CashAccount[],
+  incomingAccounts: CashAccount[]
+): CashAccount[] => {
+  const incomingIdentities = new Set(
+    incomingAccounts.map(getLinkedCashAccountIdentity).filter((identity): identity is string => Boolean(identity))
+  );
+  const existingByIdentity = new Map(
+    existingAccounts
+      .map((account) => [getLinkedCashAccountIdentity(account), account] as const)
+      .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
+  );
+  const retained = existingAccounts.filter((account) => {
+    const identity = getLinkedCashAccountIdentity(account);
+    return identity === null || !incomingIdentities.has(identity);
+  });
+  const upserted = incomingAccounts.map((account) => {
+    const identity = getLinkedCashAccountIdentity(account);
+    const existing = identity ? existingByIdentity.get(identity) : undefined;
+    return normalizeCashAccount({
+      ...existing,
+      ...account,
+      id: existing?.id ?? account.id,
+      createdAt: existing?.createdAt ?? account.createdAt,
+    });
+  });
+
+  return [...retained, ...upserted];
+};
+
 export const calculateCashAccountSummary = (accounts: CashAccount[]) => {
   const manualAccounts = accounts.filter((account) => account.sourceType === 'manual');
   const linkedAccounts = accounts.filter((account) => account.sourceType === 'linked');

@@ -41,6 +41,8 @@ const makePortfolio = (overrides: Partial<UserPortfolioData> = {}): UserPortfoli
   mortgages: [],
   cashAccounts: [],
   bankConnections: [],
+  bankTransactions: [],
+  bankTransactionSyncStates: [],
   investmentAccounts: [],
   opportunities: [],
   rehabProjects: [],
