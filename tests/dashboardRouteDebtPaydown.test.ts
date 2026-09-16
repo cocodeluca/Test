@@ -22,10 +22,35 @@ test('properties-only dashboard receives real data and keeps its presentation is
   assert.match(propertiesOnlySource, /onClick=\{onAddProperty\}/);
   assert.match(propertiesOnlySource, /onClick=\{onOpenProperties\}/);
   assert.doesNotMatch(propertiesOnlySource, /DebtPaydownCard/);
-  assert.doesNotMatch(propertiesOnlySource, /Cashflow/i);
+  assert.match(propertiesOnlySource, /netMonthlyCashflow/);
+  assert.match(propertiesOnlySource, /afterTaxMonthlyCashflow/);
+  assert.match(propertiesOnlySource, /xl:grid-cols-5/);
+  assert.match(propertiesOnlySource, /PropertiesOnlyOwnCapitalCard/);
+  assert.match(propertiesOnlySource, /ownCapitalInvested/);
+
+  const topRowStart = propertiesOnlySource.indexOf('xl:grid-cols-5');
+  const topRowEnd = propertiesOnlySource.indexOf('</section>', topRowStart);
+  const topRow = propertiesOnlySource.slice(topRowStart, topRowEnd);
+  assert.equal((topRow.match(/<MetricCard/g) ?? []).length, 5);
+  assert.doesNotMatch(topRow, /ownCapitalInvested/);
+
+  const secondRowStart = propertiesOnlySource.indexOf('xl:grid-cols-[minmax(0,0.95fr)');
+  const secondRowEnd = propertiesOnlySource.indexOf('</section>', secondRowStart);
+  const secondRow = propertiesOnlySource.slice(secondRowStart, secondRowEnd);
+  assert.ok(secondRow.indexOf('liquidityTitle') < secondRow.indexOf('PropertiesOnlyOwnCapitalCard'));
+  assert.ok(secondRow.indexOf('PropertiesOnlyOwnCapitalCard') < secondRow.indexOf('PropertiesOnlyMortgageDebtCard'));
+  assert.ok(secondRow.indexOf('PropertiesOnlyMortgageDebtCard') < secondRow.indexOf('equityTitle'));
+  assert.doesNotMatch(secondRow, /eventsTitle/);
+
+  const lowerRowStart = propertiesOnlySource.indexOf('xl:grid-cols-[minmax(0,1.15fr)');
+  const lowerRow = propertiesOnlySource.slice(lowerRowStart);
+  assert.ok(lowerRow.indexOf('occupancyTitle') < lowerRow.indexOf('eventsTitle'));
+  assert.match(lowerRow, /flex h-full flex-col gap-4/);
 
   const getPropertiesOnlyBlock = (source: string) =>
     source.slice(source.indexOf('propertiesOnly:'), source.indexOf('starterTitle:', source.indexOf('propertiesOnly:')));
-  assert.doesNotMatch(getPropertiesOnlyBlock(englishLabels), /Cashflow/i);
-  assert.doesNotMatch(getPropertiesOnlyBlock(spanishLabels), /Cashflow/i);
+  assert.match(getPropertiesOnlyBlock(englishLabels), /netMonthlyCashflowTitle/);
+  assert.match(getPropertiesOnlyBlock(spanishLabels), /netMonthlyCashflowTitle/);
+  assert.match(getPropertiesOnlyBlock(englishLabels), /ownCapitalInvestedTitle/);
+  assert.match(getPropertiesOnlyBlock(spanishLabels), /ownCapitalInvestedTitle/);
 });

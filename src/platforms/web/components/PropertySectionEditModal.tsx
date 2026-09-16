@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, ImagePlus, Upload, X } from 'lucide-react';
-import type { Lease, Property, RentUpdateIndexType, RentUpdateRuleType } from '../../../common/types';
+import type { Lease, Property, RentPayment, RentReceivable, RentUpdateIndexType, RentUpdateRuleType } from '../../../common/types';
 import { createDefaultLease, getActiveLease, rentUpdateIndexTypes, rentUpdateRuleTypes } from '../../../common/utils/leaseUpdates';
+import { toRentPeriod } from '../../../common/utils/rentCollection';
 import { defaultPropertyType, propertyTypeValues } from '../../../common/utils/propertyTypes';
 import { PropertyPhotoError } from '../../../common/utils/propertyImagePipeline';
 import { CompactEditModal } from './CompactEditModal';
@@ -18,6 +19,10 @@ interface PropertySectionEditModalProps {
   section: PropertySectionEditorKey;
   onClose: () => void;
   onSave: (property: Property) => void;
+  dueDaySetupContext?: { position: number; total: number };
+  onSaveAndNext?: (property: Property) => void;
+  rentReceivables?: RentReceivable[];
+  rentPayments?: RentPayment[];
 }
 
 const sectionLabels: Record<PropertySectionEditorKey, string> = {
@@ -33,6 +38,10 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
   section,
   onClose,
   onSave,
+  dueDaySetupContext,
+  onSaveAndNext,
+  rentReceivables = [],
+  rentPayments = [],
 }) => {
   const { t } = useSettings();
   const activeLease = useMemo(() => getActiveLease(property) ?? createDefaultLease(property), [property]);
@@ -49,6 +58,12 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
   );
   const [securityDeposit, setSecurityDeposit] = useState(
     activeLease.securityDeposit ?? property.rentalDeposit ?? 0
+  );
+  const [leaseStartDate, setLeaseStartDate] = useState(activeLease.startDate ?? '');
+  const [rentDueDay, setRentDueDay] = useState<number | ''>(activeLease.rentDueDay ?? '');
+  const [rentTrackingStartPeriod, setRentTrackingStartPeriod] = useState(activeLease.rentTrackingStartDate?.slice(0, 7) ?? toRentPeriod(new Date()));
+  const [rentGracePeriodDays, setRentGracePeriodDays] = useState(
+    activeLease.rentGracePeriodDays ?? 0
   );
   const [propertyType, setPropertyType] = useState(property.propertyType ?? defaultPropertyType);
   const [bedrooms, setBedrooms] = useState(property.bedrooms ?? 0);
@@ -68,6 +83,9 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
   const [primaryImageIndex, setPrimaryImageIndex] = useState(property.primaryImageIndex ?? 0);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const rentDueDayRef = useRef<HTMLInputElement>(null);
+  const saveAndNextRef = useRef(false);
+  const [isDueDayHighlighted, setIsDueDayHighlighted] = useState(false);
   const stagedGalleryRefsRef = useRef(new Set<string>());
   const gallerySaveSubmittedRef = useRef(false);
   useEffect(() => () => {
@@ -75,6 +93,22 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
       void discardPendingGalleryMediaRefs(stagedGalleryRefsRef.current);
     }
   }, []);
+  useEffect(() => {
+    if (!dueDaySetupContext || section !== 'lease-tenancy') {
+      return undefined;
+    }
+
+    setIsDueDayHighlighted(true);
+    const focusTimer = window.setTimeout(() => {
+      rentDueDayRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      rentDueDayRef.current?.focus({ preventScroll: true });
+    }, 0);
+    const highlightTimer = window.setTimeout(() => setIsDueDayHighlighted(false), 2200);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(highlightTimer);
+    };
+  }, [dueDaySetupContext?.position, dueDaySetupContext?.total, section, property.id]);
   const [documentImageUrl, setDocumentImageUrl] = useState(property.imageUrl ?? '');
   const [documentImageUrls, setDocumentImageUrls] = useState((property.imageUrls ?? []).join('\n'));
   const [documentPrimaryImageIndex, setDocumentPrimaryImageIndex] = useState(property.primaryImageIndex ?? 0);
@@ -89,6 +123,10 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
     setRentRuleIndexType((nextActiveLease.rentUpdateRule.indexType ?? '') as '' | RentUpdateIndexType);
     setRentRuleNextUpdateDate(nextActiveLease.rentUpdateRule.nextUpdateDate ?? '');
     setSecurityDeposit(nextActiveLease.securityDeposit ?? property.rentalDeposit ?? 0);
+    setLeaseStartDate(nextActiveLease.startDate ?? '');
+    setRentDueDay(nextActiveLease.rentDueDay ?? '');
+    setRentTrackingStartPeriod(nextActiveLease.rentTrackingStartDate?.slice(0, 7) ?? toRentPeriod(new Date()));
+    setRentGracePeriodDays(nextActiveLease.rentGracePeriodDays ?? 0);
     setPropertyType(property.propertyType ?? defaultPropertyType);
     setBedrooms(property.bedrooms ?? 0);
     setBathrooms(property.bathrooms ?? 0);
@@ -194,13 +232,19 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
 
   const purchasePerSqm = purchasePrice && builtAreaSqm > 0 ? purchasePrice / builtAreaSqm : 0;
   const estimatedPerSqm = currentEstimatedValue && builtAreaSqm > 0 ? currentEstimatedValue / builtAreaSqm : 0;
+  const paidReceivableIds = new Set(rentPayments.filter((payment) => payment.propertyId === property.id && payment.leaseId === activeLease.id).flatMap((payment) => payment.allocations.map((allocation) => allocation.receivableId)));
+  const earliestPaidRentPeriod = rentReceivables.filter((receivable) => paidReceivableIds.has(receivable.id)).map((receivable) => receivable.period).sort()[0];
 
-  const handleSave = () => {
+  const handleSave = (afterSave?: (property: Property) => void) => {
     if (section === 'lease-tenancy') {
       const updatedLease: Lease = {
         ...activeLease,
         name: leaseType || 'Current lease',
+        startDate: leaseStartDate,
         endDate: leaseEndDate,
+        rentDueDay: rentDueDay === '' ? null : rentDueDay,
+        rentTrackingStartDate: `${rentTrackingStartPeriod}-01`,
+        rentGracePeriodDays,
         securityDeposit,
         rentUpdateRule: {
           ...activeLease.rentUpdateRule,
@@ -211,7 +255,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
         },
       };
 
-      onSave({
+      const updatedProperty = {
         ...property,
         occupancyStatus,
         leaseType,
@@ -225,7 +269,9 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
             .map((lease) => ({ ...lease, active: false })),
         ],
         activeLeaseId: updatedLease.id,
-      });
+      };
+      onSave(updatedProperty);
+      afterSave?.(updatedProperty);
       return;
     }
 
@@ -290,7 +336,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
       title={sectionLabels[section]}
       subtitle={
         section === 'lease-tenancy'
-          ? 'Edit the lease-specific fields only.'
+          ? `${'Edit the lease-specific fields only.'}${dueDaySetupContext ? ` · ${t('properties.form.rentDueDayProgress', { position: dueDaySetupContext.position, total: dueDaySetupContext.total })}` : ''}`
           : section === 'property-details'
           ? 'Edit the property description fields only.'
           : section === 'purchase-details'
@@ -310,6 +356,18 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
           >
             Cancel
           </button>
+          {dueDaySetupContext && dueDaySetupContext.position < dueDaySetupContext.total && onSaveAndNext ? (
+            <button
+              type="button"
+              onClick={() => {
+                saveAndNextRef.current = true;
+                (document.getElementById('property-section-edit-form') as HTMLFormElement | null)?.requestSubmit();
+              }}
+              className={`rounded-2xl px-4 py-2 ${appButtonMutedClass} ${appTextMutedClass}`}
+            >
+              {t('properties.form.saveAndConfigureNext')}
+            </button>
+          ) : null}
           <button type="submit" form="property-section-edit-form" className={`rounded-2xl px-4 py-2 ${appButtonPrimaryClass}`}>
             Save
           </button>
@@ -320,7 +378,9 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
         id="property-section-edit-form"
         onSubmit={(event) => {
           event.preventDefault();
-          handleSave();
+          const afterSave = saveAndNextRef.current ? onSaveAndNext : undefined;
+          saveAndNextRef.current = false;
+          handleSave(afterSave);
         }}
         className="space-y-5 p-4 pb-16 sm:p-6 sm:pb-20"
       >
@@ -355,6 +415,18 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
+                  Lease Start
+                </label>
+                <input
+                  type="date"
+                  required
+                  className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
+                  value={leaseStartDate}
+                  onChange={(event) => setLeaseStartDate(event.target.value)}
+                />
+              </div>
+              <div>
+                <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
                   Lease End
                 </label>
                 <input
@@ -374,6 +446,51 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                   value={rentRuleNextUpdateDate}
                   onChange={(event) => setRentRuleNextUpdateDate(event.target.value)}
                 />
+              </div>
+              <div>
+                <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
+                  Rent Due Day
+                </label>
+                <input
+                  ref={rentDueDayRef}
+                  type="number"
+                  min="1"
+                  max="31"
+                  step="1"
+                  required
+                  aria-describedby={dueDaySetupContext ? 'rent-due-day-context' : undefined}
+                  className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass} ${isDueDayHighlighted ? 'border-blue-400 bg-blue-50/70 ring-2 ring-blue-200/70' : ''}`}
+                  value={rentDueDay}
+                  onChange={(event) => setRentDueDay(event.target.value === '' ? '' : Number(event.target.value))}
+                />
+                {dueDaySetupContext ? <p id="rent-due-day-context" className="mt-1.5 text-xs text-blue-700">{t('properties.form.rentDueDayHelper')}</p> : null}
+              </div>
+              <div>
+                <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
+                  Grace Period (days)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
+                  value={rentGracePeriodDays}
+                  onChange={(event) => setRentGracePeriodDays(Math.max(0, Number(event.target.value) || 0))}
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>
+                  {t('properties.form.rentTrackingStart')}
+                </label>
+                <input
+                  type="month"
+                  required
+                  max={earliestPaidRentPeriod}
+                  className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
+                  value={rentTrackingStartPeriod}
+                  onChange={(event) => setRentTrackingStartPeriod(event.target.value)}
+                />
+                <p className={`mt-1.5 text-xs ${appTextSoftClass}`}>{t('properties.form.rentTrackingStartHelp')}</p>
               </div>
             </div>
             <div>
@@ -432,7 +549,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
               <input
                 type="number"
                 min="0"
-                step="10"
+                step="1"
                 className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                 value={securityDeposit}
                 onChange={(event) => setSecurityDeposit(parseFloat(event.target.value) || 0)}
@@ -586,7 +703,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <input
                   type="number"
                   min="0"
-                  step="1000"
+                  step="1"
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={purchasePrice}
                   onChange={(event) => setPurchasePrice(parseFloat(event.target.value) || 0)}
@@ -604,7 +721,7 @@ export const PropertySectionEditModal: React.FC<PropertySectionEditModalProps> =
                 <input
                   type="number"
                   min="0"
-                  step="1000"
+                  step="1"
                   className={`mt-2 w-full rounded-2xl px-3 py-2 ${appInputClass}`}
                   value={currentEstimatedValue}
                   onChange={(event) => setCurrentEstimatedValue(parseFloat(event.target.value) || 0)}

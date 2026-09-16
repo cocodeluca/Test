@@ -47,6 +47,11 @@ const makePortfolio = (overrides: Partial<UserPortfolioData> = {}): UserPortfoli
   reports: [],
   reportTemplates: [],
   reportBranding: {} as never,
+  rentReceivables: [],
+  rentPayments: [],
+  propertyExpenseRules: [],
+  expenseObligations: [],
+  expensePayments: [],
   ...overrides,
 });
 
@@ -110,6 +115,36 @@ test('property edit round-trip preserves editable scalar, nested, optional, and 
 
   const reloaded = (await loadUserPortfolio(userId));
   assert.deepEqual(reloaded.properties, [editedProperty, untouchedProperty]);
+});
+
+test('monthly rent 1230 saves as a number and survives the account storage round-trip', async () => {
+  const userId = 'audit-monthly-rent-1230';
+  const property = {
+    ...mockProperties[0],
+    monthlyRent: 1230,
+    monthlyRentCurrency: 'EUR',
+  } as Property;
+
+  await saveUserPortfolio(userId, makePortfolio({ properties: [property] }));
+
+  const reloaded = await loadUserPortfolio(userId);
+  assert.equal(reloaded.properties[0].monthlyRent, 1230);
+  assert.equal(typeof reloaded.properties[0].monthlyRent, 'number');
+});
+
+test('mortgage original loan amount 54400 saves as an integer and survives the account storage round-trip', async () => {
+  const userId = 'audit-original-loan-54400';
+  const mortgage = {
+    ...mockMortgages[0],
+    originalLoanAmount: 54400,
+    currentBalance: 54400,
+  };
+
+  await saveUserPortfolio(userId, makePortfolio({ mortgages: [mortgage] }));
+
+  const reloaded = await loadUserPortfolio(userId);
+  assert.equal(reloaded.mortgages[0].originalLoanAmount, 54400);
+  assert.equal(typeof reloaded.mortgages[0].originalLoanAmount, 'number');
 });
 
 test('consecutive property snapshots persist only the complete latest version and do not alter another property', async () => {

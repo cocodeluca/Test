@@ -204,6 +204,7 @@ export interface PropertyFinancials {
   totalAnnualExpenses: number;
   annualNetCashflow: number;
   investedCapital: number;
+  ownCapitalInvested: OwnCapitalInvested;
   appreciationAmount: number;
   appreciationPercentage: number;
   equity: number;
@@ -214,6 +215,20 @@ export interface PropertyFinancials {
   mortgagePercentageOfRent: number;
   operatingExpensesPercentageOfRent: number;
   cashflowPercentageOfRent: number;
+}
+
+export type OwnCapitalInvestedStatus = 'exact' | 'legacy-total' | 'incomplete';
+
+/** Auditable acquisition cash contribution, expressed in the property's operating currency. */
+export interface OwnCapitalInvested {
+  status: OwnCapitalInvestedStatus;
+  purchasePrice: number | null;
+  mortgageFinancing: number | null;
+  acquisitionCosts: number | null;
+  mortgageFinancingCosts: number | null;
+  initialRenovationAndSetup: number | null;
+  otherOwnFundedCosts: number | null;
+  total: number | null;
 }
 
 const getNumericValue = (value: number | undefined | null): number =>
@@ -969,17 +984,7 @@ export const calculatePortfolioTaxPreview = (
   };
 };
 
-const getLeveragedCashInvested = (
-  totalInitialInvestment: number,
-  purchasePrice: number,
-  loanAmount: number
-): number => {
-  const acquisitionAndSetupCosts = Math.max(totalInitialInvestment - purchasePrice, 0);
-  const downPayment = Math.max(purchasePrice - loanAmount, 0);
-  return downPayment + acquisitionAndSetupCosts;
-};
-
-export const calculateInvestedCapital = (
+export const calculateOwnCapitalInvested = (
   property: Pick<
     Property,
     | 'cashInvested'
@@ -988,40 +993,75 @@ export const calculateInvestedCapital = (
     | 'hasMortgage'
     | 'originalLoanAmount'
     | 'totalCashInvestedForPurchase'
-  >
-): number => {
+    | 'transferTaxAmount'
+    | 'notaryCost'
+    | 'registryCost'
+    | 'agencyFees'
+    | 'legalAndGestoriaCosts'
+    | 'renovationConservation'
+    | 'renovationImprovements'
+    | 'furnishingAndOther'
+    | 'otherInitialOwnFundedCosts'
+    | 'acquisitionTaxes'
+    | 'notaryAndRegistryCosts'
+    | 'renovationCosts'
+    | 'furnishingCosts'
+  >,
+  mortgage?: Pick<Mortgage, 'openingFees' | 'valuationFee' | 'brokerFee' | 'initialCostsPaidByOwner'>
+): OwnCapitalInvested => {
   const totalCashInvestedForPurchase = getNumericValue(property.totalCashInvestedForPurchase);
+  const purchasePrice = getNumericValue(property.purchasePrice);
+  const mortgageFinancing = getNumericValue(property.originalLoanAmount);
+  const hasDetailedPrimaryCosts = [
+    property.transferTaxAmount,
+    property.notaryCost,
+    property.registryCost,
+    property.renovationConservation,
+    property.renovationImprovements,
+    property.furnishingAndOther,
+  ].some((value) => getNumericValue(value) > 0);
+  const acquisitionCosts = hasDetailedPrimaryCosts
+    ? getNumericValue(property.transferTaxAmount) + getNumericValue(property.notaryCost) + getNumericValue(property.registryCost) + getNumericValue(property.agencyFees) + getNumericValue(property.legalAndGestoriaCosts)
+    : getNumericValue(property.acquisitionTaxes) + getNumericValue(property.notaryAndRegistryCosts) + getNumericValue(property.agencyFees) + getNumericValue(property.legalAndGestoriaCosts);
+  const initialRenovationAndSetup = hasDetailedPrimaryCosts
+    ? getNumericValue(property.renovationConservation) + getNumericValue(property.renovationImprovements) + getNumericValue(property.furnishingAndOther)
+    : getNumericValue(property.renovationCosts) + getNumericValue(property.furnishingCosts);
+  const hasKnownFinancing = !property.hasMortgage || mortgageFinancing > 0;
+  const mortgageFinancingCosts = mortgage?.initialCostsPaidByOwner
+    ? getNumericValue(mortgage.openingFees) + getNumericValue(mortgage.valuationFee) + getNumericValue(mortgage.brokerFee)
+    : 0;
+
+  if (purchasePrice > 0 && hasKnownFinancing) {
+    return {
+      status: 'exact',
+      purchasePrice,
+      mortgageFinancing,
+      acquisitionCosts,
+      mortgageFinancingCosts,
+      initialRenovationAndSetup,
+      otherOwnFundedCosts: getNumericValue(property.otherInitialOwnFundedCosts),
+      total: Math.max(purchasePrice - mortgageFinancing, 0) + acquisitionCosts + mortgageFinancingCosts + initialRenovationAndSetup + getNumericValue(property.otherInitialOwnFundedCosts),
+    };
+  }
 
   if (totalCashInvestedForPurchase > 0) {
-    return totalCashInvestedForPurchase;
+    return {
+      status: 'legacy-total', purchasePrice: null, mortgageFinancing: null,
+      acquisitionCosts: null, mortgageFinancingCosts: null, initialRenovationAndSetup: null, otherOwnFundedCosts: null,
+      total: totalCashInvestedForPurchase,
+    };
   }
 
-  if (property.hasMortgage && property.originalLoanAmount > 0) {
-    const leveragedCashInvested = getLeveragedCashInvested(
-      property.totalInitialInvestment || 0,
-      property.purchasePrice || 0,
-      property.originalLoanAmount || 0
-    );
-
-    if (property.cashInvested > 0 && property.cashInvested < property.totalInitialInvestment) {
-      return property.cashInvested;
-    }
-
-    if (leveragedCashInvested > 0) {
-      return leveragedCashInvested;
-    }
-  }
-
-  if (property.cashInvested > 0) {
-    return property.cashInvested;
-  }
-
-  if (property.totalInitialInvestment > 0) {
-    return property.totalInitialInvestment;
-  }
-
-  return property.purchasePrice || 0;
+  return {
+    status: 'incomplete', purchasePrice: purchasePrice || null,
+    mortgageFinancing: property.hasMortgage ? null : 0,
+    acquisitionCosts: null, mortgageFinancingCosts: null, initialRenovationAndSetup: null, otherOwnFundedCosts: null, total: null,
+  };
 };
+
+/** @deprecated Use calculateOwnCapitalInvested().total and surface its status to users. */
+export const calculateInvestedCapital = (property: Parameters<typeof calculateOwnCapitalInvested>[0], mortgage?: Parameters<typeof calculateOwnCapitalInvested>[1]): number =>
+  calculateOwnCapitalInvested(property, mortgage).total ?? 0;
 
 export const findMortgageByProperty = (
   propertyId: string,
@@ -1425,7 +1465,7 @@ export const calculatePropertyFinancials = (
   const originalLoanAmount = mortgage?.originalLoanAmount
     ? convertMortgageAmount(mortgage.originalLoanAmount)
     : getNumericValue(property.originalLoanAmount);
-  const investedCapital = calculateInvestedCapital({
+  const ownCapitalInvested = calculateOwnCapitalInvested({
     cashInvested: getNumericValue(property.cashInvested),
     totalInitialInvestment: getNumericValue(property.totalInitialInvestment),
     purchasePrice: convertCurrency(
@@ -1437,7 +1477,28 @@ export const calculatePropertyFinancials = (
     hasMortgage: Boolean(property.hasMortgage || mortgage),
     originalLoanAmount,
     totalCashInvestedForPurchase: getNumericValue(property.totalCashInvestedForPurchase),
-  });
+    transferTaxAmount: getNumericValue(property.transferTaxAmount),
+    notaryCost: getNumericValue(property.notaryCost),
+    registryCost: getNumericValue(property.registryCost),
+    agencyFees: getNumericValue(property.agencyFees),
+    legalAndGestoriaCosts: getNumericValue(property.legalAndGestoriaCosts),
+    renovationConservation: getNumericValue(property.renovationConservation),
+    renovationImprovements: getNumericValue(property.renovationImprovements),
+    furnishingAndOther: getNumericValue(property.furnishingAndOther),
+    otherInitialOwnFundedCosts: getNumericValue(property.otherInitialOwnFundedCosts),
+    acquisitionTaxes: getNumericValue(property.acquisitionTaxes),
+    notaryAndRegistryCosts: getNumericValue(property.notaryAndRegistryCosts),
+    renovationCosts: getNumericValue(property.renovationCosts),
+    furnishingCosts: getNumericValue(property.furnishingCosts),
+  }, mortgage
+    ? {
+        openingFees: convertMortgageAmount(mortgage.openingFees ?? 0),
+        valuationFee: convertMortgageAmount(mortgage.valuationFee ?? 0),
+        brokerFee: convertMortgageAmount(mortgage.brokerFee ?? 0),
+        initialCostsPaidByOwner: mortgage.initialCostsPaidByOwner,
+      }
+    : undefined);
+  const investedCapital = ownCapitalInvested.total ?? 0;
 
   const currentEstimatedValue = convertCurrency(
     getNumericValue(property.currentEstimatedValue),
@@ -1544,6 +1605,7 @@ export const calculatePropertyFinancials = (
     totalAnnualExpenses,
     annualNetCashflow,
     investedCapital,
+    ownCapitalInvested,
     appreciationAmount,
     appreciationPercentage,
     equity,
@@ -2280,6 +2342,13 @@ export const calculatePropertyMetrics = (
     ),
     monthlyExpensesEquivalent: convertCurrency(
       financials.monthlyOperatingExpenses + financials.monthlyInsuranceExpenses,
+      propertyCurrency,
+      operatingDisplayCurrency,
+      rateOverrides
+    ),
+    ownCapitalInvestedStatus: financials.ownCapitalInvested.status,
+    totalMonthlyExpenses: convertCurrency(
+      financials.totalMonthlyExpenses,
       propertyCurrency,
       operatingDisplayCurrency,
       rateOverrides

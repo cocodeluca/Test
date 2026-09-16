@@ -32,13 +32,21 @@ const propertyMetric = (
     currency = 'EUR',
     monthlyRent,
     monthlyExpenses,
+    totalMonthlyExpenses = monthlyExpenses,
+    netMonthlyCashflow = monthlyRent - monthlyExpenses,
     currentEstimatedValue = 100_000,
+    investedCapital = currentEstimatedValue,
+    ownCapitalInvestedStatus,
     grossYield = 12,
   }: {
     currency?: PropertyMetrics['operatingDisplayCurrency'];
     monthlyRent: number;
     monthlyExpenses: number;
+    totalMonthlyExpenses?: number;
+    netMonthlyCashflow?: number;
     currentEstimatedValue?: number;
+    investedCapital?: number;
+    ownCapitalInvestedStatus?: PropertyMetrics['ownCapitalInvestedStatus'];
     grossYield?: number;
   }
 ): PropertyMetrics => ({
@@ -51,14 +59,16 @@ const propertyMetric = (
   currentEstimatedValue,
   mortgageBalance: 0,
   equity: currentEstimatedValue,
-  investedCapital: currentEstimatedValue,
+  investedCapital,
+  ownCapitalInvestedStatus,
   equityPercentage: 100,
   annualRentalIncome: monthlyRent * 12,
   totalAnnualExpenses: monthlyExpenses * 12,
   actualTrailing12MonthsExpenses: monthlyExpenses * 12,
   projectedNext12MonthsExpenses: monthlyExpenses * 12,
   monthlyExpensesEquivalent: monthlyExpenses,
-  netMonthlyCashflow: monthlyRent - monthlyExpenses,
+  totalMonthlyExpenses,
+  netMonthlyCashflow,
   grossYield,
   netYield: grossYield,
   roce: grossYield,
@@ -132,6 +142,79 @@ test('derives operating KPIs and table totals from the exact same converted rows
   assert.notEqual(viewModel.operating.grossRent.value, 1_000.12);
 });
 
+test('derives table cash flow from canonical totals, including mortgage payments and recurring expenses', () => {
+  const viewModel = buildPropertiesOnlyDashboardViewModel({
+    properties: [property('leveraged', 'occupied')],
+    propertyMetrics: [
+      propertyMetric('leveraged', {
+        monthlyRent: 1_000,
+        monthlyExpenses: 175,
+        totalMonthlyExpenses: 475,
+        netMonthlyCashflow: 525,
+      }),
+    ],
+    cashAccounts: [],
+    alerts: [],
+    debtPaydown,
+    valuationDisplayCurrency: 'EUR',
+    operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    monthlyAfterTaxCashflow: 425,
+  });
+
+  assert.equal(viewModel.valuation.value, 100_000);
+  assert.equal(viewModel.operating.grossRent.value, 1_000);
+  assert.equal(viewModel.operating.expenses.value, 175);
+  assert.equal(viewModel.operating.totalMonthlyExpenses.value, 475);
+  assert.equal(viewModel.properties[0].monthlyTotalExpenses, 475);
+  assert.equal(viewModel.operating.netMonthlyCashflow.value, 525);
+  assert.equal(
+    viewModel.operating.netMonthlyCashflow.value,
+    (viewModel.operating.grossRent.value ?? 0) - (viewModel.operating.totalMonthlyExpenses.value ?? 0)
+  );
+  assert.equal(viewModel.operating.afterTaxMonthlyCashflow.value, 425);
+});
+
+test('reconciles table totals with cash-flow KPIs and makes vacant rent zero', () => {
+  const viewModel = buildPropertiesOnlyDashboardViewModel({
+    properties: [property('occupied', 'occupied'), property('vacant', 'vacant')],
+    propertyMetrics: [
+      propertyMetric('occupied', { monthlyRent: 4_905, monthlyExpenses: 836, totalMonthlyExpenses: 3_313, netMonthlyCashflow: 1_592 }),
+      propertyMetric('vacant', { monthlyRent: 0, monthlyExpenses: 0, totalMonthlyExpenses: 0, netMonthlyCashflow: 0 }),
+    ],
+    cashAccounts: [],
+    alerts: [],
+    debtPaydown,
+    valuationDisplayCurrency: 'EUR',
+    operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+  });
+
+  const rows = viewModel.properties;
+  assert.equal(rows[1].monthlyRent, 0);
+  assert.equal(rows.reduce((sum, row) => sum + (row.monthlyRent ?? 0), 0), viewModel.operating.grossRent.value);
+  assert.equal(rows.reduce((sum, row) => sum + (row.monthlyTotalExpenses ?? 0), 0), viewModel.operating.totalMonthlyExpenses.value);
+  assert.equal(rows.reduce((sum, row) => sum + (row.monthlyNetCashflow ?? 0), 0), viewModel.operating.netMonthlyCashflow.value);
+  assert.equal(viewModel.operating.netMonthlyCashflow.value, (viewModel.operating.grossRent.value ?? 0) - (viewModel.operating.totalMonthlyExpenses.value ?? 0));
+});
+
+test('leaves after-tax cash flow as a placeholder when tax assumptions are unavailable', () => {
+  const viewModel = buildPropertiesOnlyDashboardViewModel({
+    properties: [property('no-tax', 'occupied')],
+    propertyMetrics: [propertyMetric('no-tax', { monthlyRent: 1_000, monthlyExpenses: 100 })],
+    cashAccounts: [],
+    alerts: [],
+    debtPaydown,
+    valuationDisplayCurrency: 'EUR',
+    operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    monthlyAfterTaxCashflow: null,
+  });
+
+  assert.equal(viewModel.operating.afterTaxMonthlyCashflow.value, null);
+  assert.equal(viewModel.operating.afterTaxMonthlyCashflow.coverage.status, 'available');
+});
+
 test('leaves operating margin unavailable when gross rent is zero', () => {
   const viewModel = buildPropertiesOnlyDashboardViewModel({
     properties: [property('vacant', 'vacant')],
@@ -186,6 +269,44 @@ test('derives equity and LTV from the same covered valuation and debt', () => {
   assert.equal(viewModel.equity.ltv, 25);
   assert.equal(viewModel.equity.equityShare, 75);
   assert.equal(viewModel.equity.coverage.status, 'available');
+});
+
+test('sums canonical per-property invested capital instead of substituting equity', () => {
+  const viewModel = buildPropertiesOnlyDashboardViewModel({
+    properties: [property('one', 'occupied', 200_000), property('two', 'occupied', 300_000)],
+    propertyMetrics: [
+      propertyMetric('one', {
+        monthlyRent: 1_000,
+        monthlyExpenses: 100,
+        currentEstimatedValue: 200_000,
+        investedCapital: 35_000,
+      }),
+      propertyMetric('two', {
+        monthlyRent: 1_200,
+        monthlyExpenses: 120,
+        currentEstimatedValue: 300_000,
+        investedCapital: 55_000,
+      }),
+    ],
+    cashAccounts: [],
+    alerts: [],
+    debtPaydown: {
+      ...debtPaydown,
+      currentDebt: 125_000,
+      status: 'available',
+      candidateMortgageCount: 2,
+      eligibleMortgageCount: 2,
+      debtCoveredMortgageCount: 2,
+    },
+    valuationDisplayCurrency: 'EUR',
+    operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+  });
+
+  assert.equal(viewModel.ownCapitalInvested.value, 90_000);
+  assert.equal(viewModel.ownCapitalInvested.coverage.status, 'available');
+  assert.equal(viewModel.equity.value, 375_000);
+  assert.notEqual(viewModel.ownCapitalInvested.value, viewModel.equity.value);
 });
 
 test('keeps gross yield based on current value and excludes unavailable yields from ranking', () => {
@@ -335,4 +456,21 @@ test('reconciles occupied, vacant, pending, and unknown states with total proper
       viewModel.occupancy.unknownCount,
     viewModel.occupancy.totalCount
   );
+});
+
+test('dashboard own capital exactly sums visible property contributions after canonical FX conversion', () => {
+  const properties: Property[] = [property('eur', 'occupied'), { ...property('usd', 'occupied'), currency: 'USD', operatingCurrency: 'USD', propertyValueCurrency: 'USD' }];
+  const viewModel = buildPropertiesOnlyDashboardViewModel({
+    properties,
+    propertyMetrics: [
+      propertyMetric('eur', { monthlyRent: 0, monthlyExpenses: 0, investedCapital: 30_000, ownCapitalInvestedStatus: 'exact' }),
+      propertyMetric('usd', { currency: 'USD', monthlyRent: 0, monthlyExpenses: 0, investedCapital: 20_000, ownCapitalInvestedStatus: 'legacy-total' }),
+    ],
+    cashAccounts: [], alerts: [], debtPaydown,
+    valuationDisplayCurrency: 'EUR', operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1, USD: 0.9 },
+  });
+  const visibleTotal = viewModel.properties.reduce((sum, row) => sum + (row.investedCapital ?? 0), 0);
+  assert.equal(visibleTotal, 48_000);
+  assert.equal(viewModel.ownCapitalInvested.value, visibleTotal);
 });

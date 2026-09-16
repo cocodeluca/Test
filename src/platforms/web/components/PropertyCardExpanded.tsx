@@ -75,6 +75,10 @@ import {
   chartTooltipSurfaceClass,
 } from '../styles/dashboardTheme';
 
+import { RentHistory } from './RentHistory';
+import { ExpenseHistory } from './ExpenseHistory';
+import type { ExpenseObligation, ExpensePayment, PropertyExpenseRule, RentPayment, RentReceivable } from '../../../common/types';
+
 interface PropertyCardProps {
   property: Property;
   mortgage?: Mortgage;
@@ -84,6 +88,11 @@ interface PropertyCardProps {
   activeTabOverride?: PropertyTab | null;
   onRequestTabChange?: (tab: PropertyTab) => void;
   tutorialTargetId?: string | null;
+  rentReceivables?: RentReceivable[];
+  rentPayments?: RentPayment[];
+  propertyExpenseRules?: PropertyExpenseRule[];
+  expenseObligations?: ExpenseObligation[];
+  expensePayments?: ExpensePayment[];
 }
 
 export type PropertyTab =
@@ -179,6 +188,11 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
   activeTabOverride = null,
   onRequestTabChange,
   tutorialTargetId = null,
+  rentReceivables = [],
+  rentPayments = [],
+  propertyExpenseRules = [],
+  expenseObligations = [],
+  expensePayments = [],
 }) => {
   const { settings, t } = useSettings();
   const safeProperty = property ?? ({} as Property);
@@ -993,6 +1007,16 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
       emphasize: true,
     },
   ];
+  const ownCapitalRows: Array<{ label: string; value: number; negative?: boolean }> = [];
+  if (details.ownCapitalInvested.status === 'exact') {
+    const ownCapital = details.ownCapitalInvested;
+    if (ownCapital.purchasePrice !== null) ownCapitalRows.push({ label: t('properties.form.purchasePrice'), value: ownCapital.purchasePrice });
+    if (ownCapital.mortgageFinancing !== null) ownCapitalRows.push({ label: t('properties.labels.mortgageFinancing'), value: ownCapital.mortgageFinancing, negative: true });
+    if (ownCapital.acquisitionCosts !== null) ownCapitalRows.push({ label: t('properties.labels.acquisitionCosts'), value: ownCapital.acquisitionCosts });
+    if ((ownCapital.mortgageFinancingCosts ?? 0) > 0) ownCapitalRows.push({ label: t('properties.labels.mortgageFinancingCosts'), value: ownCapital.mortgageFinancingCosts! });
+    if (ownCapital.initialRenovationAndSetup !== null) ownCapitalRows.push({ label: t('properties.labels.initialRenovationSetup'), value: ownCapital.initialRenovationAndSetup });
+    if ((ownCapital.otherOwnFundedCosts ?? 0) > 0) ownCapitalRows.push({ label: t('properties.form.otherInitialOwnFundedCosts'), value: ownCapital.otherOwnFundedCosts! });
+  }
   const returnMetricRows = [
     {
       label: t('properties.labels.grossYield'),
@@ -2278,7 +2302,7 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           </section>
 
           <section className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
-            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('propertiesUi.leaseAndTenancy')}</h3><button type="button" onClick={() => onEdit(property, 'lease-tenancy')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-2">{renderInfoGrid(leaseSummaryItems)}</div></div>
+            <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('propertiesUi.leaseAndTenancy')}</h3><button type="button" onClick={() => onEdit(property, 'lease-tenancy')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-2">{renderInfoGrid(leaseSummaryItems)}</div><RentHistory property={property} receivables={rentReceivables} payments={rentPayments} /><ExpenseHistory property={property} rules={propertyExpenseRules} obligations={expenseObligations} payments={expensePayments} /></div>
             <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('properties.labels.propertyDetails')}</h3><button type="button" onClick={() => onEdit(property, 'property-details')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-3 flex flex-wrap gap-1.5">{propertyMetadataItems.concat(property.floor != null ? [{ key: 'floor', icon: Expand, value: `${property.floor} ${t('properties.form.floor')}` }] : [], property.hasElevator ? [{ key: 'elevator', icon: Expand, value: t('properties.form.hasElevator') }] : []).slice(0, 5).map((item) => <span key={item.key} className={`inline-flex items-center gap-1 rounded-lg bg-[var(--app-panel-inset)] px-2 py-1 text-[11px] ${appTextMutedClass}`}><item.icon className="h-3.5 w-3.5" />{item.value}</span>)}</div><div className="mt-2">{renderInfoGrid(propertyDetailItems.filter((item) => !item.label.includes('/')))}</div></div>
             <div className={`${nestedPanelClass} ${cardPaddingClass}`}><div className="flex items-center justify-between gap-3"><h3 className={sectionTitleClass}>{t('propertiesUi.purchaseAndValuation')}</h3><button type="button" onClick={() => onEdit(property, 'purchase-details')} className={sectionEditButtonClass} title={t('common.edit')}><Edit className="h-3.5 w-3.5" /><span className="sr-only">{t('common.edit')}</span></button></div><div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2"><div><p className={labelClass}>{t('properties.form.purchasePrice')}</p><p className={valueClass}>{formatValuationAmount(property.purchasePrice, purchasePriceCurrency)}</p>{property.purchaseDate ? <p className={`mt-0.5 text-[11px] ${appTextMutedClass}`}>{formatLanguageDate(property.purchaseDate)}</p> : null}</div><TrendingUp className={`h-4 w-4 ${appTextMutedClass}`} /><div><p className={labelClass}>{t('properties.labels.estimatedValue')}</p><p className={valueClass}>{formatValuationAmount(property.currentEstimatedValue, currentEstimatedValueCurrency)}</p></div></div>{valuationIncrease !== null && valuationIncreasePercent !== null ? <div className="mt-3 flex items-center justify-between rounded-xl bg-emerald-500/8 px-3 py-2"><div><p className={`text-[12px] font-semibold ${successValueClass}`}>{valuationIncrease >= 0 ? '+' : ''}{formatValuationAmount(valuationIncrease, currentEstimatedValueCurrency)}</p><p className={`text-[11px] ${appTextMutedClass}`}>{t('properties.labels.estimatedValue')}</p></div><p className={`text-sm font-semibold ${valuationIncrease >= 0 ? successValueClass : dangerValueClass}`}>{valuationIncrease >= 0 ? '+' : ''}{formatPercentage(valuationIncreasePercent, 1)}</p></div> : null}<div className="mt-2">{renderInfoGrid(purchaseDetailItems)}</div></div>
           </section>
@@ -2689,6 +2713,34 @@ export const PropertyCard: React.FC<PropertyCardProps> = ({
           </div>
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.98fr_1.1fr_0.9fr]">
+            <section className="overflow-hidden rounded-[24px] border border-[rgba(226,232,240,0.82)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(252,253,255,0.95))] shadow-[0_14px_32px_-30px_rgba(15,23,42,0.10)]">
+              <div className="border-b border-[rgba(226,232,240,0.72)] px-5 py-4">
+                <h4 className={`text-[1.02rem] font-semibold tracking-[-0.025em] ${appTextStrongClass}`}>{t('properties.labels.ownCapitalInvested')}</h4>
+              </div>
+              <div className="px-5 py-3">
+                {details.ownCapitalInvested.status === 'incomplete' ? (
+                  <p className={`py-3 text-[0.95rem] ${appTextMutedClass}`}>{t('properties.labels.capitalDataIncomplete')}</p>
+                ) : details.ownCapitalInvested.status === 'legacy-total' ? (
+                  <div className="flex items-center justify-between gap-3 py-3">
+                    <span className={`text-[0.98rem] ${appTextMutedClass}`}>{t('properties.labels.legacyTotal')}</span>
+                    <span className={`text-right text-[1.42rem] font-semibold tracking-[-0.04em] ${successValueClass}`}>{formatOperatingAmount(details.ownCapitalInvested.total ?? 0)}</span>
+                  </div>
+                ) : (
+                  <>
+                    {ownCapitalRows.map((row) => (
+                      <div key={row.label} className="flex items-center justify-between gap-3 border-b border-[rgba(226,232,240,0.72)] py-3 last:border-b-0">
+                        <span className={`text-[0.98rem] ${appTextMutedClass}`}>{row.label}</span>
+                        <span className={`text-right text-[1.08rem] font-semibold tracking-[-0.04em] ${appTextStrongClass}`}>{row.negative ? '−' : ''}{formatOperatingAmount(row.value)}</span>
+                      </div>
+                    ))}
+                    <div className={`flex items-center justify-between gap-3 border-t border-[rgba(226,232,240,0.82)] py-3 text-[1.08rem] font-semibold ${successValueClass}`}>
+                      <span>{t('properties.labels.ownCapitalInvested')}</span>
+                      <span>{formatOperatingAmount(details.ownCapitalInvested.total ?? 0)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
             <section className="overflow-hidden rounded-[24px] border border-[rgba(226,232,240,0.82)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(252,253,255,0.95))] shadow-[0_14px_32px_-30px_rgba(15,23,42,0.10)]">
               <div className="border-b border-[rgba(226,232,240,0.72)] px-5 py-4">
                 <h4 className={`text-[1.02rem] font-semibold tracking-[-0.025em] ${appTextStrongClass}`}>

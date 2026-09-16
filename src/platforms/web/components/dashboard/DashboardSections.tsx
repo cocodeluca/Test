@@ -199,6 +199,10 @@ const getAlertTitle = (alert: PortfolioAlert, t: Translate) => {
       return t('dashboardUi.alertsInsuranceEndingTitle');
     case 'missing-lease-end-date':
       return t('dashboardUi.alertsMissingDataTitle');
+    case 'rent-overdue':
+      return t('dashboardUi.alertsRentOverdueTitle');
+    case 'rent-payment-gap':
+      return t('dashboardUi.alertsPaymentGapTitle');
     default:
       return t('dashboardUi.attentionTitle');
   }
@@ -220,7 +224,8 @@ const getAlertTiming = (alert: PortfolioAlert, t: Translate) => {
 export const AttentionStrip: React.FC<{
   attention: DashboardViewModel['attention'];
   t: Translate;
-}> = ({ attention, t }) => (
+  onReviewRentCollection?: () => void;
+}> = ({ attention, t, onReviewRentCollection }) => (
   <DashboardCard className="px-3.5 py-2 md:px-4">
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3">
@@ -248,9 +253,12 @@ export const AttentionStrip: React.FC<{
             const timing = getAlertTiming(alert, t);
             const urgent = alert.severity === 'urgent';
             return (
-              <article
+              <button
+                type="button"
                 key={alert.id}
-                className={`flex min-w-0 items-center gap-2.5 rounded-[13px] border px-3 py-1.5 ${
+                disabled={alert.action !== 'review-rent-collection'}
+                onClick={alert.action === 'review-rent-collection' ? onReviewRentCollection : undefined}
+                className={`flex min-w-0 items-center gap-2.5 rounded-[13px] border px-3 py-1.5 text-left ${
                   urgent
                     ? 'border-rose-200/80 bg-rose-50/80'
                     : 'border-amber-200/75 bg-amber-50/65'
@@ -267,7 +275,7 @@ export const AttentionStrip: React.FC<{
                     {[alert.propertyName, timing].filter(Boolean).join(' · ')}
                   </p>
                 </div>
-              </article>
+              </button>
             );
           })}
         </div>

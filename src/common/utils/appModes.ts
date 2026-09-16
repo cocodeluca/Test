@@ -24,6 +24,8 @@ export const getModulesForTrackingPreference = (
   if (userMode === 'advanced') {
     return [
       'dashboard',
+      'rent-collection',
+      'expenses',
       'cash-accounts',
       'opportunities',
       'properties',
@@ -39,14 +41,14 @@ export const getModulesForTrackingPreference = (
 
   switch (trackingPreference) {
     case 'properties-only':
-      return ['dashboard', 'properties', 'settings'];
+      return ['dashboard', 'rent-collection', 'expenses', 'properties', 'settings'];
     case 'properties-and-rent':
-      return ['dashboard', 'properties', 'settings'];
+      return ['dashboard', 'rent-collection', 'expenses', 'properties', 'settings'];
     case 'properties-and-mortgages':
-      return ['dashboard', 'properties', 'mortgages', 'settings'];
+      return ['dashboard', 'rent-collection', 'expenses', 'properties', 'mortgages', 'settings'];
     case 'full-portfolio':
     default:
-      return ['dashboard', 'properties', 'mortgages', 'cash-accounts', 'settings'];
+      return ['dashboard', 'rent-collection', 'expenses', 'properties', 'mortgages', 'cash-accounts', 'settings'];
   }
 };
 

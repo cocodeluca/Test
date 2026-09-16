@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { AlertTriangle, BarChart3, Briefcase, Building2, FileText, Hammer, Settings, Home, Landmark, LogOut, Monitor, ClipboardList, Receipt, Wallet } from 'lucide-react';
+import { AlertTriangle, BarChart3, Briefcase, Building2, CalendarCheck2, FileText, Hammer, Settings, Home, Landmark, LogOut, Monitor, ClipboardList, Receipt, Wallet } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { useSettings } from '../context/SettingsContext';
 import { workspaceModuleLabels } from '../../../common/utils/workspace';
@@ -54,6 +54,8 @@ export const Layout: React.FC<LayoutProps> = ({
   const isDemoAccount = currentUserEmail.trim().toLowerCase() === DEMO_ACCOUNT_EMAIL;
   const pageTitles: Record<string, string> = {
     dashboard: t('nav.dashboard'),
+    'rent-collection': t('nav.rentCollection'),
+    expenses: t('nav.expenses'),
     'cash-accounts': t('nav.cashAccounts'),
     opportunities: t('nav.opportunities'),
     projects: t('nav.projects'),
@@ -67,6 +69,8 @@ export const Layout: React.FC<LayoutProps> = ({
   };
   const moduleMeta = {
     dashboard: { label: t('nav.dashboard'), icon: BarChart3 },
+    'rent-collection': { label: t('nav.rentCollection'), icon: CalendarCheck2 },
+    expenses: { label: t('nav.expenses'), icon: Receipt },
     'cash-accounts': { label: t('nav.cashAccounts'), icon: Landmark },
     opportunities: { label: t('nav.opportunities'), icon: Briefcase },
     properties: { label: t('nav.properties'), icon: Building2 },

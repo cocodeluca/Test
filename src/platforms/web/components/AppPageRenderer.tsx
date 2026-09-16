@@ -11,12 +11,19 @@ import type {
   Property,
   ReportBrandingConfig,
   RehabProject,
+  RentPayment,
+  RentReceivable,
+  PropertyExpenseRule,
+  ExpenseObligation,
+  ExpensePayment,
 } from '../../../common/types';
 import type { LocalAccountUser, UserAccountBackup } from '../services/localAccountStore';
 import { SectionCrashBoundary } from './SectionCrashBoundary';
 
 type PageType =
   | 'dashboard'
+  | 'rent-collection'
+  | 'expenses'
   | 'cash-accounts'
   | 'properties'
   | 'mortgages'
@@ -37,6 +44,10 @@ const PropertiesOnlyDashboard = lazy(() =>
 const CashAccountsPage = lazy(() =>
   import('../pages/CashAccountsPage').then((module) => ({ default: module.CashAccountsPage }))
 );
+const RentCollectionPage = lazy(() =>
+  import('../pages/RentCollectionPage').then((module) => ({ default: module.RentCollectionPage }))
+);
+const ExpensesPage = lazy(() => import('../pages/ExpensesPage').then((module) => ({ default: module.ExpensesPage })));
 const PropertiesPage = lazy(() =>
   import('../pages/PropertiesPage').then((module) => ({ default: module.PropertiesPage }))
 );
@@ -95,6 +106,11 @@ type AppPageRendererProps = {
   effectiveReports: InvestmentReport[];
   effectiveReportTemplates: InvestmentReportTemplate[];
   effectiveReportBranding: ReportBrandingConfig;
+  effectiveRentReceivables: RentReceivable[];
+  effectiveRentPayments: RentPayment[];
+  effectivePropertyExpenseRules: PropertyExpenseRule[];
+  effectiveExpenseObligations: ExpenseObligation[];
+  effectiveExpensePayments: ExpensePayment[];
   pendingStarterPath: 'manual-property' | 'import-file' | 'explore-demo' | null;
   tutorialTargetId: string | null;
   activeTutorialUiState: {
@@ -127,7 +143,14 @@ type AppPageRendererProps = {
   ) => void;
   onRequestOpenAddProperty: () => void;
   onStartAddProperty: () => void;
-  onOpenProperties: () => void;
+  onOpenProperties: (propertyId?: string, setup?: { propertyIds: string[]; currentIndex: number }) => void;
+  propertiesNavigationTarget: { propertyId: string; section: 'lease-tenancy'; missingPropertyIds: string[]; currentIndex: number } | null;
+  onCompletePropertyNavigation: () => void;
+  onClearPropertyNavigation: () => void;
+  onOpenRentCollection: () => void;
+  onUpdateRentCollection: (receivables: RentReceivable[], payments: RentPayment[]) => void;
+  onUpdatePropertyExpenses: (rules: PropertyExpenseRule[], obligations: ExpenseObligation[], payments: ExpensePayment[]) => void;
+  onOpenExpenses: () => void;
   onRequestPropertyTabChange: (
     tab:
       | 'summary'
@@ -173,6 +196,12 @@ const DashboardBranch = (props: AppPageRendererProps) => {
           cashAccounts={props.effectiveCashAccounts}
           onAddProperty={props.onStartAddProperty}
           onOpenProperties={props.onOpenProperties}
+          rentReceivables={props.effectiveRentReceivables}
+          rentPayments={props.effectiveRentPayments}
+          onOpenRentCollection={props.onOpenRentCollection}
+          expenseObligations={props.effectiveExpenseObligations}
+          expensePayments={props.effectiveExpensePayments}
+          onOpenExpenses={props.onOpenExpenses}
         />
       </SectionCrashBoundary>
     );
@@ -192,6 +221,11 @@ const DashboardBranch = (props: AppPageRendererProps) => {
         onUpdateInvestmentAccounts={props.onUpdateInvestmentAccounts}
         onConnectEtoroAccount={props.onConnectEtoroAccount}
         onSyncInvestmentAccount={props.onSyncInvestmentAccount}
+        rentReceivables={props.effectiveRentReceivables}
+        rentPayments={props.effectiveRentPayments}
+        onOpenRentCollection={props.onOpenRentCollection}
+        expenseObligations={props.effectiveExpenseObligations}
+        expensePayments={props.effectiveExpensePayments}
       />
     </SectionCrashBoundary>
   );
@@ -211,6 +245,20 @@ export const AppPageRenderer = (props: AppPageRendererProps) => {
           onUpdateBankConnections={props.onUpdateBankConnections}
         />
       );
+    case 'rent-collection':
+      return (
+        <SectionCrashBoundary sectionName="rent collection route">
+          <RentCollectionPage
+            properties={props.syncedProperties}
+            receivables={props.effectiveRentReceivables}
+            payments={props.effectiveRentPayments}
+            onUpdate={props.onUpdateRentCollection}
+            onOpenProperties={props.onOpenProperties}
+          />
+        </SectionCrashBoundary>
+      );
+    case 'expenses':
+      return <SectionCrashBoundary sectionName="property expenses route"><ExpensesPage properties={props.syncedProperties} rules={props.effectivePropertyExpenseRules} obligations={props.effectiveExpenseObligations} payments={props.effectiveExpensePayments} onUpdate={props.onUpdatePropertyExpenses} /></SectionCrashBoundary>;
     case 'properties':
       return (
         <SectionCrashBoundary sectionName="properties route">
@@ -218,6 +266,11 @@ export const AppPageRenderer = (props: AppPageRendererProps) => {
           <PropertiesPage
             properties={props.syncedProperties}
             mortgages={props.effectiveMortgages}
+            rentReceivables={props.effectiveRentReceivables}
+            rentPayments={props.effectiveRentPayments}
+            propertyExpenseRules={props.effectivePropertyExpenseRules}
+            expenseObligations={props.effectiveExpenseObligations}
+            expensePayments={props.effectiveExpensePayments}
             onAddProperty={props.onAddProperty}
             onEditProperty={props.onEditProperty}
             onDeleteProperty={props.onDeleteProperty}
@@ -227,7 +280,10 @@ export const AppPageRenderer = (props: AppPageRendererProps) => {
             autoOpenQuickCreate={props.pendingStarterPath === 'manual-property'}
             tutorialQuickCreateState={props.activeTutorialUiState?.quickCreateOpen ?? null}
             tutorialQuickCreateStep={props.activeTutorialUiState?.quickCreateStep ?? null}
-            propertyTabOverride={props.activeTutorialUiState?.propertyTab ?? null}
+            propertyTabOverride={props.propertiesNavigationTarget ? 'overview' : props.activeTutorialUiState?.propertyTab ?? null}
+            propertyNavigationTarget={props.propertiesNavigationTarget}
+            onCompletePropertyNavigation={props.onCompletePropertyNavigation}
+            onClearPropertyNavigation={props.onClearPropertyNavigation}
             onRequestPropertyTabChange={props.onRequestPropertyTabChange}
           />
         </SectionCrashBoundary>

@@ -177,6 +177,12 @@ export interface Lease {
   endDate?: string;
   monthlyRent: number;
   monthlyRentCurrency?: DisplayCurrency;
+  /** Calendar day on which monthly rent is contractually due. Required for receivable generation. */
+  rentDueDay?: number | null;
+  /** First rental period managed by Rent Collection. Stored as the first day of that month. */
+  rentTrackingStartDate?: string | null;
+  /** Additional calendar days after the due date before an outstanding balance is overdue. */
+  rentGracePeriodDays?: number | null;
   securityDeposit?: number | null;
   securityDepositCurrency?: DisplayCurrency;
   lateFeeAmount?: number | null;
@@ -185,6 +191,122 @@ export interface Lease {
   rentUpdateRule: RentUpdateRule;
   adjustmentHistory: RentAdjustmentHistoryEntry[];
   active: boolean;
+}
+
+export type RentReceivableStatus = 'UPCOMING' | 'DUE' | 'PARTIAL' | 'PAID' | 'OVERDUE';
+export type RentPaymentSource = 'manual' | 'bank_import' | 'bank_sync';
+
+export interface RentReceivable {
+  id: string;
+  propertyId: string;
+  leaseId: string;
+  /** Stable calendar month in YYYY-MM form. */
+  period: string;
+  dueDate: string;
+  expectedAmount: number;
+  currency: DisplayCurrency;
+  generatedAt?: string;
+}
+
+export interface RentPaymentAllocation {
+  receivableId: string;
+  amount: number;
+}
+
+export interface RentPayment {
+  id: string;
+  propertyId: string;
+  leaseId: string;
+  receivedDate: string;
+  amount: number;
+  currency: DisplayCurrency;
+  source: RentPaymentSource;
+  reference?: string;
+  note?: string;
+  allocations: RentPaymentAllocation[];
+  createdAt?: string;
+}
+
+export type PropertyExpenseCategory =
+  | 'COMMUNITY'
+  | 'PROPERTY_TAX'
+  | 'HOME_INSURANCE'
+  | 'RENT_DEFAULT_INSURANCE'
+  | 'PROPERTY_MANAGEMENT'
+  | 'MAINTENANCE'
+  | 'UTILITIES'
+  | 'SPECIAL_ASSESSMENT'
+  | 'OTHER';
+export type PropertyExpenseFrequency = 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'ONE_TIME';
+export type ExpenseObligationStatus = 'UPCOMING' | 'DUE' | 'PARTIAL' | 'PAID' | 'OVERDUE';
+export type ExpensePaymentSource = 'manual' | 'bank_import' | 'bank_sync';
+
+export type PropertyExpenseAmountField =
+  | 'communityMonthly'
+  | 'communityAnnual'
+  | 'ibiAndLocalTaxesMonthly'
+  | 'ibiAndLocalTaxesAnnual'
+  | 'homeInsuranceMonthly'
+  | 'homeInsuranceAnnual'
+  | 'annualRentDefaultInsurance'
+  | 'annualNonPaymentInsurance'
+  | 'annualManagementFees'
+  | 'maintenanceMonthly'
+  | 'maintenanceAnnual'
+  | 'annualUtilitiesPaidByOwner'
+  | 'otherOperatingExpensesMonthly'
+  | 'otherOperatingExpensesAnnual'
+  | 'annualOtherExpenses';
+
+export interface PropertyExpenseRule {
+  id: string;
+  propertyId: string;
+  category: PropertyExpenseCategory;
+  label: string;
+  /** Fallback amount. A linked canonical field takes precedence when configured. */
+  amount: number;
+  currency: DisplayCurrency;
+  frequency: PropertyExpenseFrequency;
+  startDate: string;
+  endDate?: string;
+  trackingStartDate: string;
+  dueDay: number;
+  dueMonth?: number;
+  isActive: boolean;
+  notes?: string;
+  amountSource?: { kind: 'property-field'; field: PropertyExpenseAmountField };
+}
+
+export interface ExpenseObligation {
+  id: string;
+  propertyId: string;
+  expenseRuleId?: string;
+  category: PropertyExpenseCategory;
+  label: string;
+  period?: string;
+  dueDate: string;
+  expectedAmount: number;
+  currency: DisplayCurrency;
+  generatedAt?: string;
+  notes?: string;
+}
+
+export interface ExpensePaymentAllocation {
+  obligationId: string;
+  amount: number;
+}
+
+export interface ExpensePayment {
+  id: string;
+  propertyId: string;
+  paidDate: string;
+  amount: number;
+  currency: DisplayCurrency;
+  source: ExpensePaymentSource;
+  reference?: string;
+  note?: string;
+  allocations: ExpensePaymentAllocation[];
+  createdAt?: string;
 }
 
 export interface Property {
@@ -231,12 +353,14 @@ export interface Property {
   notaryCost: number;
   registryCost: number;
   agencyFees: number;
+  legalAndGestoriaCosts?: number;
   totalPurchaseCost: number; // purchase + all acquisition costs
   
   // === RENOVATION / SETUP COSTS ===
   renovationConservation: number;
   renovationImprovements: number;
   furnishingAndOther: number;
+  otherInitialOwnFundedCosts?: number;
   
   // === INVESTMENT TOTALS ===
   totalInitialInvestment: number; // Total of all costs
@@ -399,6 +523,8 @@ export interface Mortgage {
   openingFees?: number | null;
   valuationFee?: number | null;
   brokerFee?: number | null;
+  /** True only when opening, valuation, and broker fees were paid from the owner's funds. */
+  initialCostsPaidByOwner?: boolean;
   insuranceRequirements?: string | null;
   payrollBonificationConditions?: string | null;
   rateNotes: string;
@@ -910,12 +1036,14 @@ export interface PropertyMetrics {
   mortgageBalance: number;
   equity: number;
   investedCapital: number;
+  ownCapitalInvestedStatus?: 'exact' | 'legacy-total' | 'incomplete';
   equityPercentage: number;
   annualRentalIncome: number;
   totalAnnualExpenses: number;
   actualTrailing12MonthsExpenses: number;
   projectedNext12MonthsExpenses: number;
   monthlyExpensesEquivalent: number;
+  totalMonthlyExpenses: number;
   netMonthlyCashflow: number;
   grossYield: number;
   netYield: number;

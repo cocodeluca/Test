@@ -42,6 +42,8 @@ export type WorkspaceInvestorProfile =
   | 'mixed-use-investor';
 export type WorkspaceModule =
   | 'dashboard'
+  | 'rent-collection'
+  | 'expenses'
   | 'cash-accounts'
   | 'opportunities'
   | 'properties'

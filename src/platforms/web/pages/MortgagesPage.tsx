@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { MortgageForm } from '../components/MortgageForm';
 import { MortgageCard } from '../components/MortgageCard';
+import { PortfolioItemSelect } from '../components/PortfolioItemSelect';
 import { useSettings } from '../context/SettingsContext';
 import { Mortgage, OpportunityAttachment, OpportunityFieldExtractionConfidence, Property } from '../../../common/types';
 import {
@@ -34,6 +35,7 @@ import {
   appTextSoftClass,
   appTextStrongClass,
 } from '../styles/dashboardTheme';
+import { getMortgageSelectorLabel, normalizeSelectedMortgageId } from './mortgageSelection';
 
 interface MortgagesPageProps {
   properties: Property[];
@@ -611,27 +613,20 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
     analysis: MortgageDocumentAnalysis;
   } | null>(null);
 
+  const effectiveSelectedMortgageId = normalizeSelectedMortgageId(mortgages, selectedMortgageId);
+
   useEffect(() => {
-    if (mortgages.length === 0) {
-      setSelectedMortgageId(null);
-      return;
+    if (selectedMortgageId !== effectiveSelectedMortgageId) {
+      setSelectedMortgageId(effectiveSelectedMortgageId);
     }
-
-    const selectedStillExists = selectedMortgageId
-      ? mortgages.some((mortgage) => mortgage.id === selectedMortgageId)
-      : false;
-
-    if (!selectedStillExists) {
-      setSelectedMortgageId(mortgages[0].id);
-    }
-  }, [mortgages, selectedMortgageId]);
+  }, [effectiveSelectedMortgageId, selectedMortgageId]);
 
   const getPropertyById = (propertyId: string) =>
     properties.find((property) => property.id === propertyId);
 
   const selectedMortgage = useMemo(
-    () => mortgages.find((mortgage) => mortgage.id === selectedMortgageId) ?? null,
-    [mortgages, selectedMortgageId]
+    () => mortgages.find((mortgage) => mortgage.id === effectiveSelectedMortgageId) ?? null,
+    [effectiveSelectedMortgageId, mortgages]
   );
 
   const selectorItems = useMemo(
@@ -640,12 +635,10 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
         const property = getPropertyById(mortgage.propertyId);
         return {
           id: mortgage.id,
-          title: mortgage.lenderName,
-          subtitle: property ? property.name : t('mortgages.unlinkedProperty'),
-          meta: property ? `${property.city}, ${property.country}` : mortgage.fixedOrVariable,
+          label: getMortgageSelectorLabel(mortgage, property),
         };
       }),
-    [mortgages, properties, t]
+    [mortgages, properties]
   );
 
   const handleOpenEditForm = (mortgage: Mortgage, section: string | null = null) => {
@@ -672,6 +665,17 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
     onEditMortgage(mortgage);
     setSelectedMortgageId(mortgage.id);
     handleCloseForm();
+  };
+
+  const handleDeleteMortgage = (mortgageId: string) => {
+    const remainingMortgages = mortgages.filter((mortgage) => mortgage.id !== mortgageId);
+    setSelectedMortgageId(
+      normalizeSelectedMortgageId(
+        remainingMortgages,
+        mortgageId === effectiveSelectedMortgageId ? null : effectiveSelectedMortgageId
+      )
+    );
+    onDeleteMortgage(mortgageId);
   };
 
   const handleOpenManualFlow = () => {
@@ -780,6 +784,13 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
           onChange={(event) => void handleImportFile(event)}
         />
 
+        <PortfolioItemSelect
+          ariaLabel={t('mortgages.selectMortgage')}
+          options={selectorItems}
+          selectedId={effectiveSelectedMortgageId}
+          onSelect={setSelectedMortgageId}
+        />
+
         {mutationError ? (
           <p className="rounded-xl border border-rose-300/60 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">
             {mutationError}
@@ -808,11 +819,8 @@ export const MortgagesPage: React.FC<MortgagesPageProps> = ({
                 <MortgageCard
                   mortgage={selectedMortgage}
                   property={selectedProperty}
-                  selectorItems={selectorItems}
-                  selectedMortgageId={selectedMortgageId}
-                  onSelectMortgage={setSelectedMortgageId}
                   onEdit={handleOpenEditForm}
-                  onDelete={onDeleteMortgage}
+                  onDelete={handleDeleteMortgage}
                 />
               ) : (
                 <div className={`${appPanelClass} p-12 text-center`}>

@@ -8,10 +8,57 @@ import {
   calculatePortfolioMetrics,
   calculatePropertyFinancials,
   calculateCurrentRate,
+  calculateOwnCapitalInvested,
   calculateTotalDebt,
   classifyMortgage,
   normalizePropertyRecord,
 } from '../src/common/utils/calculations';
+
+const ownCapitalProperty = (overrides: Partial<Property> = {}): Property => ({
+  purchasePrice: 100_000,
+  hasMortgage: false,
+  originalLoanAmount: 0,
+  transferTaxAmount: 0,
+  notaryCost: 0,
+  registryCost: 0,
+  agencyFees: 0,
+  renovationConservation: 0,
+  renovationImprovements: 0,
+  furnishingAndOther: 0,
+  acquisitionTaxes: 0,
+  notaryAndRegistryCosts: 0,
+  renovationCosts: 0,
+  furnishingCosts: 0,
+  totalCashInvestedForPurchase: 0,
+  ...overrides,
+} as Property);
+
+test('own capital is canonical, itemized, and never adds derived totals or down payment twice', () => {
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty()).total, 100_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ hasMortgage: true, originalLoanAmount: 70_000 })).total, 30_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ transferTaxAmount: 8_000, notaryCost: 1_000 })).total, 109_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ renovationConservation: 10_000, furnishingAndOther: 5_000 })).total, 115_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ legalAndGestoriaCosts: 2_000, otherInitialOwnFundedCosts: 3_000 })).total, 105_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ hasMortgage: true, originalLoanAmount: 70_000, cashInvested: 30_000, totalInitialInvestment: 130_000 })).total, 30_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ totalInitialInvestment: 999_999 })).total, 100_000);
+});
+
+test('own capital uses an explicit legacy purchase-cash total only when itemized acquisition data is incomplete', () => {
+  const legacy = calculateOwnCapitalInvested(ownCapitalProperty({ purchasePrice: 0, totalCashInvestedForPurchase: 42_000 }));
+  assert.equal(legacy.status, 'legacy-total');
+  assert.equal(legacy.total, 42_000);
+  assert.equal(calculateOwnCapitalInvested(ownCapitalProperty({ purchasePrice: 0, cashInvested: 42_000 })).status, 'incomplete');
+});
+
+test('own capital includes confirmed owner-paid mortgage financing costs exactly once', () => {
+  const financed = ownCapitalProperty({ hasMortgage: true, originalLoanAmount: 70_000 });
+  const ownerPaidMortgage = createMortgage({ originalLoanAmount: 70_000, brokerFee: 1_500, openingFees: 0, valuationFee: 0, initialCostsPaidByOwner: true });
+  const included = calculateOwnCapitalInvested(financed, ownerPaidMortgage);
+  assert.equal(included.mortgageFinancingCosts, 1_500);
+  assert.equal(included.total, 31_500);
+  assert.equal(calculateOwnCapitalInvested(financed, createMortgage({ originalLoanAmount: 70_000, brokerFee: 1_500 })).total, 30_000);
+  assert.equal(calculateOwnCapitalInvested({ ...financed, purchasePrice: 0, totalCashInvestedForPurchase: 31_500 }, ownerPaidMortgage).total, 31_500);
+});
 import { calculateRecurringExpensePortfolioSummary } from '../src/common/utils/recurringExpenses';
 import { getLowMortgageInterestRateWarning, getMortgageFinancialValidationIssues } from '../src/common/utils/financialValidation';
 import {
@@ -140,6 +187,20 @@ test('preserves gross yield as active annual rent divided by current estimated v
   assert.equal(financials.annualRent, 12_000);
   assert.equal(financials.grossYield, 10);
   assert.notEqual(financials.grossYield, 15);
+});
+
+test('counts configured rent as income only while the property is occupied', () => {
+  const configuredRent = 1_300;
+
+  const pendingFinancials = calculatePropertyFinancials(
+    createProperty({ monthlyRent: configuredRent, occupancyStatus: 'tenant-to-be-confirmed' })
+  );
+  const occupiedFinancials = calculatePropertyFinancials(
+    createProperty({ monthlyRent: configuredRent, occupancyStatus: 'occupied' })
+  );
+
+  assert.equal(pendingFinancials.monthlyRent, 0);
+  assert.equal(occupiedFinancials.monthlyRent, configuredRent);
 });
 
 const createExpense = (

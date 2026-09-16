@@ -15,14 +15,6 @@ import { appButtonMutedClass, appPanelClass, appTextMutedClass, appTextSoftClass
 interface MortgageCardProps {
   mortgage: Mortgage;
   property: Property | undefined;
-  selectorItems: Array<{
-    id: string;
-    title: string;
-    subtitle?: string;
-    meta?: string;
-  }>;
-  selectedMortgageId: string | null;
-  onSelectMortgage: (id: string) => void;
   onEdit: (mortgage: Mortgage, section?: string | null) => void;
   onDelete: (id: string) => void;
 }

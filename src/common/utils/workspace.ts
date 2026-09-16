@@ -47,6 +47,8 @@ export const workspaceGoals: Array<{ id: WorkspaceGoal; label: string }> = [
 
 export const workspaceModuleLabels: Record<WorkspaceModule, string> = {
   dashboard: 'Dashboard',
+  'rent-collection': 'Rent Collection',
+  expenses: 'Expenses',
   'cash-accounts': 'Cash Accounts',
   opportunities: 'Opportunities',
   properties: 'Properties',
@@ -62,6 +64,8 @@ export const workspaceModuleLabels: Record<WorkspaceModule, string> = {
 const workspaceModuleIds = Object.keys(workspaceModuleLabels) as WorkspaceModule[];
 export const workspaceNavigationOrder: WorkspaceModule[] = [
   'dashboard',
+  'rent-collection',
+  'expenses',
   'cash-accounts',
   'opportunities',
   'properties',
@@ -182,6 +186,8 @@ export const getVisibleWorkspaceModules = (settings: AppSettings): WorkspaceModu
     new Set<WorkspaceModule>([
       ...trackingModules,
       ...workspaceEnabledModules,
+      ...(workspaceEnabledModules.includes('properties') ? ['rent-collection' as const] : []),
+      ...(workspaceEnabledModules.includes('properties') ? ['expenses' as const] : []),
       'settings',
     ])
   );
@@ -191,12 +197,20 @@ export const getVisibleWorkspaceModules = (settings: AppSettings): WorkspaceModu
   const fallbackOrderedModules = workspaceNavigationOrder.filter((moduleId) =>
     enabledModules.includes(moduleId)
   );
-  const orderedModules = Array.from(
+  const configuredOrder = Array.from(
     new Set<WorkspaceModule>([
       ...orderedConfiguredModules,
       ...fallbackOrderedModules,
     ])
   );
+
+  const orderedModules = enabledModules.includes('rent-collection')
+    ? [
+        ...configuredOrder.slice(0, configuredOrder.indexOf('dashboard') + 1),
+        'rent-collection' as const,
+        ...configuredOrder.slice(configuredOrder.indexOf('dashboard') + 1).filter((moduleId) => moduleId !== 'rent-collection'),
+      ]
+    : configuredOrder;
 
   return orderedModules;
 };
@@ -308,8 +322,8 @@ export const defaultWorkspaceConfig: WorkspaceConfig = {
   secondaryStrategies: [],
   detectedProfile: 'mixed-use-investor',
   detectedProfileConfidence: 52,
-  enabledModules: ['dashboard', 'cash-accounts', 'opportunities', 'properties', 'projects', 'mortgages', 'reports', 'settings'],
-  sidebarOrder: ['dashboard', 'cash-accounts', 'opportunities', 'properties', 'projects', 'mortgages', 'reports', 'settings'],
+  enabledModules: ['dashboard', 'rent-collection', 'expenses', 'cash-accounts', 'opportunities', 'properties', 'projects', 'mortgages', 'reports', 'settings'],
+  sidebarOrder: ['dashboard', 'rent-collection', 'expenses', 'cash-accounts', 'opportunities', 'properties', 'projects', 'mortgages', 'reports', 'settings'],
   hiddenModules: ['budgets', 'documents', 'tasks'],
   defaultLandingModule: 'dashboard',
   pinnedKpis: ['total-portfolio-value', 'total-debt', 'total-equity', 'net-monthly-cashflow'],
@@ -938,8 +952,8 @@ export const createMinimalWorkspaceConfig = (
 
 export const createDemoPropertiesOnlyWorkspaceConfig = (userId = ''): WorkspaceConfig => ({
   ...createMinimalWorkspaceConfig(userId, 'portfolio-tracking'),
-  enabledModules: ['dashboard', 'properties', 'settings'],
-  sidebarOrder: ['dashboard', 'properties', 'settings'],
+  enabledModules: ['dashboard', 'rent-collection', 'properties', 'settings'],
+  sidebarOrder: ['dashboard', 'rent-collection', 'properties', 'settings'],
   hiddenModules: ['cash-accounts', 'opportunities', 'projects', 'budgets', 'mortgages', 'documents', 'reports', 'tasks'],
   defaultLandingModule: 'dashboard',
   pinnedKpis: ['total-portfolio-value', 'monthly-rent', 'total-monthly-expenses', 'net-monthly-cashflow'],

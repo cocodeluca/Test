@@ -9,6 +9,7 @@ import type {
   RentUpdateRuleType,
 } from '../types';
 import type { DisplayCurrency } from '../types/settings';
+import { toCivilDate } from './civilDate';
 
 export const rentUpdateRuleTypes: Array<{ value: RentUpdateRuleType; label: string }> = [
   { value: 'official-index', label: 'Official index' },
@@ -66,6 +67,11 @@ const getPropertyLateFeeCurrency = (property: Partial<Property>): DisplayCurrenc
   property.lateFeeCurrency ?? getPropertyRentCurrency(property);
 
 const formatIsoDate = (date: Date) => date.toISOString().slice(0, 10);
+
+const currentRentTrackingStartDate = () => {
+  const { year, month } = toCivilDate(new Date());
+  return `${year}-${String(month).padStart(2, '0')}-01`;
+};
 
 const addMonths = (isoDate: string, months: number) => {
   if (!isoDate) {
@@ -173,6 +179,9 @@ export const createDefaultLease = (
     endDate: overrides.endDate ?? property.leaseEndDate ?? '',
     monthlyRent: overrides.monthlyRent ?? baseRent,
     monthlyRentCurrency: overrides.monthlyRentCurrency ?? getPropertyRentCurrency(property),
+    rentDueDay: overrides.rentDueDay ?? null,
+    rentTrackingStartDate: overrides.rentTrackingStartDate ?? currentRentTrackingStartDate(),
+    rentGracePeriodDays: overrides.rentGracePeriodDays ?? 0,
     securityDeposit: overrides.securityDeposit ?? property.rentalDeposit ?? null,
     securityDepositCurrency:
       overrides.securityDepositCurrency ?? getPropertyDepositCurrency(property),

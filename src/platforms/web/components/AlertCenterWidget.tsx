@@ -14,6 +14,7 @@ import {
 interface AlertCenterWidgetProps {
   alerts: PortfolioAlert[];
   onOpenProperties: () => void;
+  onOpenExpenses?: () => void;
 }
 
 const severityClasses: Record<PortfolioAlert['severity'], string> = {
@@ -25,6 +26,7 @@ const severityClasses: Record<PortfolioAlert['severity'], string> = {
 export const AlertCenterWidget: React.FC<AlertCenterWidgetProps> = ({
   alerts,
   onOpenProperties,
+  onOpenExpenses,
 }) => {
   const { settings, t } = useSettings();
   const languageDateLocale =
@@ -81,6 +83,8 @@ export const AlertCenterWidget: React.FC<AlertCenterWidgetProps> = ({
         return t('dashboardUi.alertsActionReviewInsurance');
       case 'complete-data':
         return t('dashboardUi.alertsActionCompleteData');
+      case 'review-expenses':
+        return settings.language === 'es' ? 'Revisar gastos' : settings.language === 'pt' ? 'Rever despesas' : 'Review expenses';
       default:
         return t('common.edit');
     }
@@ -98,6 +102,8 @@ export const AlertCenterWidget: React.FC<AlertCenterWidgetProps> = ({
         return t('dashboardUi.alertsInsuranceEndingTitle');
       case 'missing-lease-end-date':
         return t('dashboardUi.alertsMissingDataTitle');
+      case 'expense-overdue':
+        return settings.language === 'es' ? 'Gasto vencido' : settings.language === 'pt' ? 'Despesa vencida' : 'Expense overdue';
       default:
         return t('dashboardUi.alertsTitle');
     }
@@ -115,6 +121,8 @@ export const AlertCenterWidget: React.FC<AlertCenterWidgetProps> = ({
         return t('dashboardUi.alertsInsuranceEndingBody');
       case 'missing-lease-end-date':
         return t('dashboardUi.alertsMissingLeaseEndDateBody');
+      case 'expense-overdue':
+        return `${alert.outstandingAmount ?? 0} ${settings.currency}`;
       default:
         return '';
     }
@@ -196,7 +204,7 @@ export const AlertCenterWidget: React.FC<AlertCenterWidgetProps> = ({
 
                 <button
                   type="button"
-                  onClick={onOpenProperties}
+                  onClick={alert.action === 'review-expenses' && onOpenExpenses ? onOpenExpenses : onOpenProperties}
                   className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium ${appButtonMutedClass} ${dashboardLightValueClass}`}
                 >
                   {alert.severity === 'urgent' ? <AlertCircle className="h-4 w-4" /> : alert.severity === 'upcoming' ? <CalendarClock className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}

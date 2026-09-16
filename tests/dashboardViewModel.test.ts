@@ -103,6 +103,7 @@ const makePropertyMetrics = (
   actualTrailing12MonthsExpenses: 24,
   projectedNext12MonthsExpenses: 24,
   monthlyExpensesEquivalent: 2,
+  totalMonthlyExpenses: 2,
   netMonthlyCashflow: 8,
   grossYield: 5,
   netYield: 4,

@@ -11,6 +11,11 @@ import {
   InvestmentReport,
   InvestmentReportTemplate,
   ReportBrandingConfig,
+  RentPayment,
+  RentReceivable,
+  PropertyExpenseRule,
+  ExpenseObligation,
+  ExpensePayment,
 } from '../../../common/types';
 import { DEFAULT_SETTINGS } from '../../../common/utils/settingsStore';
 import { defaultReportBranding, defaultReportTemplates } from '../../../common/utils/reports';
@@ -18,6 +23,7 @@ import { normalizeTrackingPreference } from '../../../common/utils/appModes';
 import { createDemoPropertiesOnlyWorkspaceConfig } from '../../../common/utils/workspace';
 import { setStoredSelectedUseCaseId, setStoredUseCaseSelection } from '../../../common/utils/settingsStore';
 import { normalizeBankConnection, normalizeCashAccount } from '../../../common/utils/cashAccounts';
+import { initializeRentTrackingStartDates } from '../../../common/utils/rentCollection';
 import {
   mockCashAccounts,
   mockInvestmentAccounts,
@@ -102,6 +108,11 @@ export interface UserPortfolioData {
   reports: InvestmentReport[];
   reportTemplates: InvestmentReportTemplate[];
   reportBranding: ReportBrandingConfig;
+  rentReceivables?: RentReceivable[];
+  rentPayments?: RentPayment[];
+  propertyExpenseRules?: PropertyExpenseRule[];
+  expenseObligations?: ExpenseObligation[];
+  expensePayments?: ExpensePayment[];
 }
 
 export type UserPortfolioStorageState = 'missing' | 'empty' | 'meaningful' | 'invalid';
@@ -191,6 +202,11 @@ export const emptyPortfolioData: UserPortfolioData = {
   reports: [],
   reportTemplates: defaultReportTemplates,
   reportBranding: defaultReportBranding,
+  rentReceivables: [],
+  rentPayments: [],
+  propertyExpenseRules: [],
+  expenseObligations: [],
+  expensePayments: [],
 };
 
 const toPersistedUserPortfolio = (data: UserPortfolioData): UserPortfolioData => ({
@@ -204,6 +220,11 @@ const toPersistedUserPortfolio = (data: UserPortfolioData): UserPortfolioData =>
   reports: data.reports,
   reportTemplates: data.reportTemplates,
   reportBranding: data.reportBranding,
+  rentReceivables: data.rentReceivables ?? [],
+  rentPayments: data.rentPayments ?? [],
+  propertyExpenseRules: data.propertyExpenseRules ?? [],
+  expenseObligations: data.expenseObligations ?? [],
+  expensePayments: data.expensePayments ?? [],
 });
 
 const canonicalizeJsonValue = (value: unknown): unknown => {
@@ -500,7 +521,12 @@ const isPortfolioEmpty = (data: UserPortfolioData): boolean =>
   data.investmentAccounts.length === 0 &&
   data.opportunities.length === 0 &&
   data.rehabProjects.length === 0 &&
-  data.reports.length === 0;
+  data.reports.length === 0 &&
+  (data.rentReceivables?.length ?? 0) === 0 &&
+  (data.rentPayments?.length ?? 0) === 0 &&
+  (data.propertyExpenseRules?.length ?? 0) === 0 &&
+  (data.expenseObligations?.length ?? 0) === 0 &&
+  (data.expensePayments?.length ?? 0) === 0;
 
 export const hasMeaningfulPortfolioData = (data: UserPortfolioData): boolean => !isPortfolioEmpty(data);
 
@@ -864,7 +890,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const hasRecognizedPortfolioShape = (value: unknown): value is Partial<UserPortfolioData> =>
   isRecord(value) &&
-  ['properties', 'mortgages', 'cashAccounts', 'bankConnections', 'investmentAccounts', 'opportunities', 'rehabProjects', 'reports', 'reportTemplates'].every(key => value[key] === undefined || (Array.isArray(value[key]) && (value[key] as unknown[]).every(isRecord))) &&
+  ['properties', 'mortgages', 'cashAccounts', 'bankConnections', 'investmentAccounts', 'opportunities', 'rehabProjects', 'reports', 'reportTemplates', 'rentReceivables', 'rentPayments', 'propertyExpenseRules', 'expenseObligations', 'expensePayments'].every(key => value[key] === undefined || (Array.isArray(value[key]) && (value[key] as unknown[]).every(isRecord))) &&
   ['properties', 'mortgages', 'cashAccounts', 'investmentAccounts'].some((key) =>
     Array.isArray(value[key])
   );
@@ -887,8 +913,11 @@ const unwrapStoredPortfolio = (value: unknown): Partial<UserPortfolioData> | nul
 
 const normalizeLoadedPortfolio = (
   storedValue: Partial<UserPortfolioData> = emptyPortfolioData
-): UserPortfolioData => ({
-    properties: storedValue.properties ?? [],
+): UserPortfolioData => {
+  const rentReceivables = storedValue.rentReceivables ?? [];
+  const rentPayments = storedValue.rentPayments ?? [];
+  return {
+    properties: initializeRentTrackingStartDates(storedValue.properties ?? [], rentReceivables, rentPayments),
     mortgages: storedValue.mortgages ?? [],
     cashAccounts: (storedValue.cashAccounts ?? []).map((account) => normalizeCashAccount(account)),
     bankConnections: (storedValue.bankConnections ?? []).map((connection) => normalizeBankConnection(connection)),
@@ -898,7 +927,18 @@ const normalizeLoadedPortfolio = (
     reports: storedValue.reports ?? [],
     reportTemplates: storedValue.reportTemplates ?? defaultReportTemplates,
     reportBranding: storedValue.reportBranding ?? defaultReportBranding,
-  });
+    rentReceivables,
+    rentPayments,
+    propertyExpenseRules: storedValue.propertyExpenseRules ?? [],
+    expenseObligations: storedValue.expenseObligations ?? [],
+    expensePayments: storedValue.expensePayments ?? [],
+  };
+};
+
+const needsRentTrackingMigration = (storedValue: Partial<UserPortfolioData>): boolean =>
+  (storedValue.properties ?? []).some((property) =>
+    (property.leases ?? []).some((lease) => lease.active && Number.isInteger(lease.rentDueDay) && !lease.rentTrackingStartDate)
+  );
 
 const readUserPortfolioStorage = async (userId: string): Promise<{ portfolio: UserPortfolioData; storageState: UserPortfolioStorageState }> => {
   const record = await accountSnapshotTransaction('portfolios', userId);
@@ -944,6 +984,9 @@ const readUserPortfolioStorage = async (userId: string): Promise<{ portfolio: Us
     return { portfolio, storageState: hasMeaningfulPortfolioData(portfolio) ? 'meaningful' : 'empty' };
   }
   const portfolio = normalizeLoadedPortfolio(stored);
+  if (needsRentTrackingMigration(stored)) {
+    await accountSnapshotTransaction('portfolios', userId, portfolio);
+  }
   tracePortfolioPersistence('load:raw', getPortfolioSnapshotTraceMetadata(userId, portfolio, {
     accountId: userId,
     indexedDbKey: userId,
@@ -1207,6 +1250,11 @@ export const recoverLegacyPortfolioForUser = async (
     reports: [],
     reportTemplates: defaultReportTemplates,
     reportBranding: defaultReportBranding,
+    rentReceivables: [],
+    rentPayments: [],
+    propertyExpenseRules: [],
+    expenseObligations: [],
+    expensePayments: [],
   });
 
   saveUserSettings(user, legacySettings ?? undefined);
@@ -1236,6 +1284,11 @@ export const seedLegacyPortfolioForUserIfEmpty = async (
     reports: [],
     reportTemplates: defaultReportTemplates,
     reportBranding: defaultReportBranding,
+    rentReceivables: [],
+    rentPayments: [],
+    propertyExpenseRules: [],
+    expenseObligations: [],
+    expensePayments: [],
   });
 
   const currentSettings = loadUserSettings(user);

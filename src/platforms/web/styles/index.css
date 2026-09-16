@@ -437,10 +437,33 @@ html.dark {
     color: #9a681f !important;
   }
 
+  [data-dashboard-variant='properties-only'] .properties-only-expenses-card {
+    border-color: #f3ddd8;
+    background: #fff9f8;
+  }
+
+  [data-dashboard-variant='properties-only'] .properties-only-expenses-value {
+    color: #b84a3a !important;
+  }
+
+  [data-dashboard-variant='properties-only'] .properties-only-icon-expenses {
+    border-color: #f3ddd8;
+    background: #fcedea;
+    color: #b84a3a !important;
+  }
+
   [data-dashboard-variant='properties-only'] .properties-only-icon-neutral {
     border-color: rgba(71, 85, 105, 0.12);
     background: rgba(100, 116, 139, 0.07);
     color: #52677f !important;
+  }
+
+  [data-dashboard-variant='properties-only'] .properties-only-own-capital-card {
+    border-color: rgba(37, 99, 235, 0.11);
+  }
+
+  [data-dashboard-variant='properties-only'] .properties-only-equity-card > dl > div:nth-child(3) {
+    display: none;
   }
 
   html.dark [data-dashboard-variant='properties-only'] .dashboard-card {
@@ -449,9 +472,15 @@ html.dark {
     box-shadow: var(--dashboard-shadow);
   }
 
+  html.dark [data-dashboard-variant='properties-only'] .properties-only-expenses-card {
+    border-color: var(--dashboard-border);
+    background: var(--dashboard-card-surface);
+  }
+
   html.dark [data-dashboard-variant='properties-only'] .properties-only-icon-primary,
   html.dark [data-dashboard-variant='properties-only'] .properties-only-icon-success,
   html.dark [data-dashboard-variant='properties-only'] .properties-only-icon-warning,
+  html.dark [data-dashboard-variant='properties-only'] .properties-only-icon-expenses,
   html.dark [data-dashboard-variant='properties-only'] .properties-only-icon-neutral {
     border-color: var(--dashboard-border-strong);
     background: var(--dashboard-icon-bg);

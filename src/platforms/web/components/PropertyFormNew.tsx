@@ -125,8 +125,10 @@ interface PropertyFormData {
   acquisitionTaxes: number;
   notaryAndRegistryCosts: number;
   agencyFees: number;
+  legalAndGestoriaCosts: number;
   renovationCosts: number;
   furnishingCosts: number;
+  otherInitialOwnFundedCosts: number;
   totalInitialInvestment: number;
   currentEstimatedValue: number;
   monthlyRent: number;
@@ -151,6 +153,15 @@ interface PropertyFormData {
   spainEstimatedMarginalTaxRate: number;
   spainMonthsRentedInTaxYear: number;
 }
+
+/**
+ * The lease rule base is the persisted source used to resolve the current rent.
+ * Keep it in sync when Income is edited so normalization cannot restore the prior rent.
+ */
+export const synchronizeIncomeEditWithRentRule = (monthlyRent: number) => ({
+  monthlyRent,
+  rentRuleBaseRent: monthlyRent,
+});
 
 type PropertyEditorSection =
   | 'basic-info'
@@ -197,8 +208,10 @@ const propertyEditorSectionFields: Record<PropertyEditorSection, Array<keyof Pro
     'acquisitionTaxes',
     'notaryAndRegistryCosts',
     'agencyFees',
+    'legalAndGestoriaCosts',
     'renovationCosts',
     'furnishingCosts',
+    'otherInitialOwnFundedCosts',
     'totalInitialInvestment',
     'currentEstimatedValue',
     'currentEstimatedValueCurrency',
@@ -373,15 +386,19 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
     acquisitionTaxes: number;
     notaryAndRegistryCosts: number;
     agencyFees: number;
+    legalAndGestoriaCosts: number;
     renovationCosts: number;
     furnishingCosts: number;
+    otherInitialOwnFundedCosts: number;
   }) =>
     convertCurrency(data.purchasePrice, data.purchasePriceCurrency, data.operatingCurrency) +
     data.acquisitionTaxes +
     data.notaryAndRegistryCosts +
     data.agencyFees +
+    data.legalAndGestoriaCosts +
     data.renovationCosts +
-    data.furnishingCosts;
+    data.furnishingCosts +
+    data.otherInitialOwnFundedCosts;
 
   const [formData, setFormData] = useState<PropertyFormData>({
     operatingCurrency: 'EUR',
@@ -440,8 +457,10 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
     acquisitionTaxes: 0,
     notaryAndRegistryCosts: 0,
     agencyFees: 0,
+    legalAndGestoriaCosts: 0,
     renovationCosts: 0,
     furnishingCosts: 0,
+    otherInitialOwnFundedCosts: 0,
     totalInitialInvestment: 0,
     currentEstimatedValue: 0,
     monthlyRent: 0,
@@ -551,8 +570,10 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
       editingProperty.acquisitionTaxes ?? 0,
       editingProperty.notaryAndRegistryCosts ?? 0,
       editingProperty.agencyFees ?? 0,
+      editingProperty.legalAndGestoriaCosts ?? 0,
       editingProperty.renovationCosts ?? 0,
       editingProperty.furnishingCosts ?? 0,
+      editingProperty.otherInitialOwnFundedCosts ?? 0,
       editingProperty.totalInitialInvestment ?? 0,
       editingProperty.currentEstimatedValue ?? 0,
       editingProperty.monthlyRent ?? 0,
@@ -681,8 +702,10 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
         acquisitionTaxes: editingProperty.acquisitionTaxes,
         notaryAndRegistryCosts: editingProperty.notaryAndRegistryCosts,
         agencyFees: editingProperty.agencyFees,
+        legalAndGestoriaCosts: editingProperty.legalAndGestoriaCosts ?? 0,
         renovationCosts: editingProperty.renovationCosts,
         furnishingCosts: editingProperty.furnishingCosts,
+        otherInitialOwnFundedCosts: editingProperty.otherInitialOwnFundedCosts ?? 0,
         totalInitialInvestment: editingProperty.totalInitialInvestment,
         currentEstimatedValue: editingProperty.currentEstimatedValue,
         monthlyRent: editingProperty.monthlyRent,
@@ -783,6 +806,9 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
           : parsedNumber ?? value;
       const nextFormData = {
         ...currentFormData,
+        ...(name === 'monthlyRent' && typeof parsedValue === 'number'
+          ? synchronizeIncomeEditWithRentRule(parsedValue)
+          : {}),
         ...(name === 'operatingCurrency'
           ? {
               operatingCurrency: value as DisplayCurrency,
@@ -1074,10 +1100,13 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
         purchasePriceInOperatingCurrency +
         data.acquisitionTaxes +
         data.notaryAndRegistryCosts +
-        data.agencyFees,
+        data.agencyFees +
+        data.legalAndGestoriaCosts,
       renovationConservation: data.renovationCosts,
       renovationImprovements: 0,
       furnishingAndOther: data.furnishingCosts,
+      legalAndGestoriaCosts: data.legalAndGestoriaCosts,
+      otherInitialOwnFundedCosts: data.otherInitialOwnFundedCosts,
       cashInvested: 0,
       annualRent: data.monthlyRent * 12,
       monthlyRentCurrency: data.monthlyRentCurrency,
@@ -1578,7 +1607,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
           onChange={handleChange}
           min="0"
           required={amountName === 'purchasePrice' || amountName === 'currentEstimatedValue'}
-          step={options?.step ?? '1000'}
+          step={options?.step ?? '1'}
           className={`${inputClass} ${options?.tutorialId && tutorialTargetId === options.tutorialId ? 'app-tutorial-target' : ''}`}
         />
         <select
@@ -2076,11 +2105,13 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                   hint: 'This value can use a different currency from rent, expenses, or the mortgage.',
                 }
               )}
-              <div><label className={labelClass}>{t('properties.form.acquisitionTaxes')}</label><input type="number" name="acquisitionTaxes" value={formData.acquisitionTaxes} onChange={handleChange} step="100" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.notaryAndRegistryCosts')}</label><input type="number" name="notaryAndRegistryCosts" value={formData.notaryAndRegistryCosts} onChange={handleChange} step="100" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.agencyFees')}</label><input type="number" name="agencyFees" value={formData.agencyFees} onChange={handleChange} step="100" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.renovationCosts')}</label><input type="number" name="renovationCosts" value={formData.renovationCosts} onChange={handleChange} step="100" className={inputClass} /></div>
-              <div className="md:col-span-2"><label className={labelClass}>{t('properties.form.furnishingCosts')}</label><input type="number" name="furnishingCosts" value={formData.furnishingCosts} onChange={handleChange} step="100" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.acquisitionTaxes')}</label><input type="number" name="acquisitionTaxes" value={formData.acquisitionTaxes} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.notaryAndRegistryCosts')}</label><input type="number" name="notaryAndRegistryCosts" value={formData.notaryAndRegistryCosts} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.agencyFees')}</label><input type="number" name="agencyFees" value={formData.agencyFees} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.legalAndGestoriaCosts')}</label><input type="number" name="legalAndGestoriaCosts" value={formData.legalAndGestoriaCosts} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.renovationCosts')}</label><input type="number" name="renovationCosts" value={formData.renovationCosts} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div className="md:col-span-2"><label className={labelClass}>{t('properties.form.furnishingCosts')}</label><input type="number" name="furnishingCosts" value={formData.furnishingCosts} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div className="md:col-span-2"><label className={labelClass}>{t('properties.form.otherInitialOwnFundedCosts')}</label><input type="number" name="otherInitialOwnFundedCosts" value={formData.otherInitialOwnFundedCosts} onChange={handleChange} step="1" className={inputClass} /></div>
               <div className={`rounded-xl p-4 md:col-span-2 ${appPanelInsetClass}`}>
                 <label className={labelClass}>{t('properties.form.totalInitialInvestment')}</label>
                 <input type="number" value={derivedTotalInitialInvestment} readOnly className={`${inputClass} ${appTextMutedClass}`} />
@@ -2098,7 +2129,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                 'monthlyRentCurrency',
                 t('properties.form.monthlyRent'),
                 {
-                  step: '50',
+                  step: '1',
                   tutorialId: 'form-monthly-rent',
                   hint: 'Rent can use a different currency from the property value or mortgage.',
                 }
@@ -2116,7 +2147,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                         annualOtherExpenses: (parseFloat(event.target.value) || 0) * 12,
                       }))
                     }
-                    step="10"
+                    step="1"
                     className={`${inputClass} ${tutorialTargetId === 'form-monthly-expenses' ? 'app-tutorial-target' : ''}`}
                   />
                 </div>
@@ -2129,14 +2160,14 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
           <div>
             {renderSectionTitle('operating-expenses', isGarageParking ? t('properties.form.operatingCosts') : t('properties.form.annualExpenses'), 'border-orange-200')}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div><label className={labelClass}>{t('properties.form.annualIBI')}</label><input type="number" name="annualIBI" value={formData.annualIBI} onChange={handleChange} step="50" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.annualHomeInsurance')}</label><input type="number" name="annualHomeInsurance" value={formData.annualHomeInsurance} onChange={handleChange} step="50" className={inputClass} /></div>
-              {!isGarageParking ? <div><label className={labelClass}>{t('properties.form.annualNonPaymentInsurance')}</label><input type="number" name="annualNonPaymentInsurance" value={formData.annualNonPaymentInsurance} onChange={handleChange} step="50" className={inputClass} /></div> : null}
-              <div><label className={labelClass}>{t('properties.form.annualCommunityFees')}</label><input type="number" name="annualCommunityFees" value={formData.annualCommunityFees} onChange={handleChange} step="50" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.annualManagementFees')}</label><input type="number" name="annualManagementFees" value={formData.annualManagementFees} onChange={handleChange} step="50" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.annualMaintenance')}</label><input type="number" name="annualMaintenance" value={formData.annualMaintenance} onChange={handleChange} step="50" className={inputClass} /></div>
-              <div><label className={labelClass}>{t('properties.form.annualUtilitiesPaidByOwner')}</label><input type="number" name="annualUtilitiesPaidByOwner" value={formData.annualUtilitiesPaidByOwner} onChange={handleChange} step="50" className={inputClass} /></div>
-              {!isGarageParking ? <div><label className={labelClass}>{t('properties.form.annualOtherExpenses')}</label><input data-tutorial-id="form-monthly-expenses" type="number" name="annualOtherExpenses" value={formData.annualOtherExpenses} onChange={handleChange} step="50" className={`${inputClass} ${tutorialTargetId === 'form-monthly-expenses' ? 'app-tutorial-target' : ''}`} /></div> : null}
+              <div><label className={labelClass}>{t('properties.form.annualIBI')}</label><input type="number" name="annualIBI" value={formData.annualIBI} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.annualHomeInsurance')}</label><input type="number" name="annualHomeInsurance" value={formData.annualHomeInsurance} onChange={handleChange} step="1" className={inputClass} /></div>
+              {!isGarageParking ? <div><label className={labelClass}>{t('properties.form.annualNonPaymentInsurance')}</label><input type="number" name="annualNonPaymentInsurance" value={formData.annualNonPaymentInsurance} onChange={handleChange} step="1" className={inputClass} /></div> : null}
+              <div><label className={labelClass}>{t('properties.form.annualCommunityFees')}</label><input type="number" name="annualCommunityFees" value={formData.annualCommunityFees} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.annualManagementFees')}</label><input type="number" name="annualManagementFees" value={formData.annualManagementFees} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.annualMaintenance')}</label><input type="number" name="annualMaintenance" value={formData.annualMaintenance} onChange={handleChange} step="1" className={inputClass} /></div>
+              <div><label className={labelClass}>{t('properties.form.annualUtilitiesPaidByOwner')}</label><input type="number" name="annualUtilitiesPaidByOwner" value={formData.annualUtilitiesPaidByOwner} onChange={handleChange} step="1" className={inputClass} /></div>
+              {!isGarageParking ? <div><label className={labelClass}>{t('properties.form.annualOtherExpenses')}</label><input data-tutorial-id="form-monthly-expenses" type="number" name="annualOtherExpenses" value={formData.annualOtherExpenses} onChange={handleChange} step="1" className={`${inputClass} ${tutorialTargetId === 'form-monthly-expenses' ? 'app-tutorial-target' : ''}`} /></div> : null}
             </div>
             {!isBasicMode ? (
             <details className={`mt-5 rounded-2xl border p-4 ${appBorderClass} ${appPanelInsetClass}`}>
@@ -2178,7 +2209,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                       </div>
                       <div>
                         <label className={labelClass}>Last known amount</label>
-                        <input type="number" value={expense.lastKnownAmount} onChange={(event) => updateRecurringExpense(expense.id, { lastKnownAmount: parseFloat(event.target.value) || 0 })} step="10" className={inputClass} />
+                        <input type="number" value={expense.lastKnownAmount} onChange={(event) => updateRecurringExpense(expense.id, { lastKnownAmount: parseFloat(event.target.value) || 0 })} step="1" className={inputClass} />
                       </div>
                       <div>
                         <label className={labelClass}>Last payment date</label>
@@ -2206,7 +2237,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                       </div>
                       <div>
                         <label className={labelClass}>Manual annual estimate</label>
-                        <input type="number" value={expense.manualAnnualEstimate ?? 0} onChange={(event) => updateRecurringExpense(expense.id, { manualAnnualEstimate: parseFloat(event.target.value) || 0 })} step="10" className={inputClass} />
+                        <input type="number" value={expense.manualAnnualEstimate ?? 0} onChange={(event) => updateRecurringExpense(expense.id, { manualAnnualEstimate: parseFloat(event.target.value) || 0 })} step="1" className={inputClass} />
                       </div>
                       <div>
                         <label className={labelClass}>Next expected update date</label>
@@ -2229,7 +2260,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                       {(expense.paymentHistory ?? []).map((payment) => (
                         <div key={payment.id} className="grid grid-cols-1 gap-3 md:grid-cols-4">
                           <input type="date" value={payment.paymentDate} onChange={(event) => updateExpensePaymentHistory(expense.id, payment.id, { paymentDate: event.target.value })} className={inputClass} />
-                          <input type="number" value={payment.amount} onChange={(event) => updateExpensePaymentHistory(expense.id, payment.id, { amount: parseFloat(event.target.value) || 0 })} step="10" className={inputClass} />
+                          <input type="number" value={payment.amount} onChange={(event) => updateExpensePaymentHistory(expense.id, payment.id, { amount: parseFloat(event.target.value) || 0 })} step="1" className={inputClass} />
                           <input value={payment.coveredPeriod} onChange={(event) => updateExpensePaymentHistory(expense.id, payment.id, { coveredPeriod: event.target.value })} placeholder="Covered period" className={inputClass} />
                           <input value={payment.attachedDocumentUrl || ''} onChange={(event) => updateExpensePaymentHistory(expense.id, payment.id, { attachedDocumentUrl: event.target.value })} placeholder="Receipt/document" className={inputClass} />
                         </div>
@@ -2244,7 +2275,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                         {(expense.customSchedule ?? []).map((entry) => (
                           <div key={entry.id} className="grid grid-cols-1 gap-3 md:grid-cols-3">
                             <input type="date" value={entry.effectiveDate} onChange={(event) => updateExpenseScheduleEntry(expense.id, entry.id, { effectiveDate: event.target.value })} className={inputClass} />
-                            <input type="number" value={entry.amount} onChange={(event) => updateExpenseScheduleEntry(expense.id, entry.id, { amount: parseFloat(event.target.value) || 0 })} step="10" className={inputClass} />
+                            <input type="number" value={entry.amount} onChange={(event) => updateExpenseScheduleEntry(expense.id, entry.id, { amount: parseFloat(event.target.value) || 0 })} step="1" className={inputClass} />
                             <input value={entry.notes || ''} onChange={(event) => updateExpenseScheduleEntry(expense.id, entry.id, { notes: event.target.value })} placeholder="Notes" className={inputClass} />
                           </div>
                         ))}
@@ -2300,20 +2331,20 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                 <input type="date" name="leaseEndDate" value={formData.leaseEndDate} onChange={handleChange} className={inputClass} />
               </div>
               {renderAmountWithCurrency('rentRuleBaseRent', 'monthlyRentCurrency', 'Base rent', {
-                step: '10',
+                step: '1',
                 hint: 'Use the same rent currency throughout the lease rule and rent history.',
               })}
               {renderAmountWithCurrency(
                 'securityDeposit',
                 'securityDepositCurrency',
                 'Deposit',
-                { step: '50' }
+                { step: '1' }
               )}
               {renderAmountWithCurrency(
                 'lateFeeAmount',
                 'lateFeeCurrency',
                 'Late fee',
-                { step: '10', hint: 'Leave this at 0 if the lease does not use late fees.' }
+                { step: '1', hint: 'Leave this at 0 if the lease does not use late fees.' }
               )}
               <div>
                 <label className={labelClass}>Rule type</label>
@@ -2393,7 +2424,7 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
                     <div key={entry.id} className={`grid grid-cols-1 gap-3 rounded-xl border p-3 md:grid-cols-4 ${appBorderClass} ${appPanelInsetClass}`}>
                       <input type="date" value={entry.effectiveDate} onChange={(event) => updateManualScheduleEntry(entry.id, { effectiveDate: event.target.value })} className={inputClass} />
                       <input type="number" value={entry.percentageApplied ?? 0} onChange={(event) => updateManualScheduleEntry(entry.id, { percentageApplied: parseFloat(event.target.value) || 0 })} placeholder="Percentage" step="0.1" className={inputClass} />
-                      <input type="number" value={entry.newRent ?? 0} onChange={(event) => updateManualScheduleEntry(entry.id, { newRent: parseFloat(event.target.value) || 0 })} placeholder="New rent" step="10" className={inputClass} />
+                      <input type="number" value={entry.newRent ?? 0} onChange={(event) => updateManualScheduleEntry(entry.id, { newRent: parseFloat(event.target.value) || 0 })} placeholder="New rent" step="1" className={inputClass} />
                       <div className="flex gap-2">
                         <input value={entry.notes ?? ''} onChange={(event) => updateManualScheduleEntry(entry.id, { notes: event.target.value })} placeholder="Notes" className={inputClass} />
                         <button type="button" onClick={() => removeManualScheduleEntry(entry.id)} className={`rounded-xl px-3 ${appButtonMutedClass}`}>{t('common.delete')}</button>
@@ -2511,14 +2542,14 @@ export const PropertyFormNew: React.FC<PropertyFormProps> = ({
               {renderSectionTitle('deductible-expenses', t('properties.labels.spainDeductibleExpenses'), 'border-amber-100')}
               <p className={`mb-4 text-sm ${appTextMutedClass}`}>{t('properties.form.deductibleExpensesHelp')}</p>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div><label className={labelClass}>{t('properties.form.annualCommunityFees')}</label><input type="number" name="annualCommunityFees" value={formData.annualCommunityFees} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualIBI')}</label><input type="number" name="annualIBI" value={formData.annualIBI} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualHomeInsurance')}</label><input type="number" name="annualHomeInsurance" value={formData.annualHomeInsurance} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualRentDefaultInsurance')}</label><input type="number" name="annualNonPaymentInsurance" value={formData.annualNonPaymentInsurance} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualManagementFees')}</label><input type="number" name="annualManagementFees" value={formData.annualManagementFees} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualMaintenance')}</label><input type="number" name="annualMaintenance" value={formData.annualMaintenance} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.mortgageInterestDeductible')}</label><input type="number" name="annualMortgageInterestTax" value={formData.annualMortgageInterestTax} onChange={handleChange} step="50" className={inputClass} /></div>
-                <div><label className={labelClass}>{t('properties.form.annualOtherExpenses')}</label><input data-tutorial-id="form-monthly-expenses" type="number" name="annualOtherExpenses" value={formData.annualOtherExpenses} onChange={handleChange} step="50" className={`${inputClass} ${tutorialTargetId === 'form-monthly-expenses' ? 'app-tutorial-target' : ''}`} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualCommunityFees')}</label><input type="number" name="annualCommunityFees" value={formData.annualCommunityFees} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualIBI')}</label><input type="number" name="annualIBI" value={formData.annualIBI} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualHomeInsurance')}</label><input type="number" name="annualHomeInsurance" value={formData.annualHomeInsurance} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualRentDefaultInsurance')}</label><input type="number" name="annualNonPaymentInsurance" value={formData.annualNonPaymentInsurance} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualManagementFees')}</label><input type="number" name="annualManagementFees" value={formData.annualManagementFees} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualMaintenance')}</label><input type="number" name="annualMaintenance" value={formData.annualMaintenance} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.mortgageInterestDeductible')}</label><input type="number" name="annualMortgageInterestTax" value={formData.annualMortgageInterestTax} onChange={handleChange} step="1" className={inputClass} /></div>
+                <div><label className={labelClass}>{t('properties.form.annualOtherExpenses')}</label><input data-tutorial-id="form-monthly-expenses" type="number" name="annualOtherExpenses" value={formData.annualOtherExpenses} onChange={handleChange} step="1" className={`${inputClass} ${tutorialTargetId === 'form-monthly-expenses' ? 'app-tutorial-target' : ''}`} /></div>
               </div>
             </div>
           ) : null}

@@ -12,6 +12,7 @@ import {
   LogOut,
   Monitor,
   Receipt,
+  CalendarCheck2,
   Settings,
   Wallet,
   UserCircle2,
@@ -51,6 +52,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const workspaceModeState = deriveWorkspaceModeState(settings);
   const moduleMeta = {
     dashboard: { label: t('nav.dashboard'), icon: BarChart3 },
+    'rent-collection': { label: t('nav.rentCollection'), icon: CalendarCheck2 },
+    expenses: { label: t('nav.expenses'), icon: Receipt },
     'cash-accounts': { label: t('nav.cashAccounts'), icon: Landmark },
     opportunities: { label: t('nav.opportunities'), icon: Briefcase },
     properties: { label: t('nav.properties'), icon: Building2 },
@@ -73,7 +76,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       label: 'Portfolio',
       items: menuItems.filter((item) =>
-        ['dashboard', 'opportunities', 'properties', 'mortgages'].includes(item.id)
+        ['dashboard', 'rent-collection', 'expenses', 'opportunities', 'properties', 'mortgages'].includes(item.id)
       ),
     },
     {

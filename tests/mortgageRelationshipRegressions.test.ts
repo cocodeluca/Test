@@ -75,7 +75,8 @@ test('bug #7: the Mortgages page exposes deletion on the selected mortgage card'
   );
 
   assert.doesNotMatch(pageSource, /void onDeleteMortgage/);
-  assert.match(pageSource, /onDelete=\{[^}]*onDeleteMortgage/);
+  assert.match(pageSource, /onDelete=\{handleDeleteMortgage\}/);
+  assert.match(pageSource, /onDeleteMortgage\(mortgageId\)/);
   assert.match(cardSource, /Delete Mortgage/);
   assert.match(cardSource, /onDelete\(mortgage\.id\)/);
 });

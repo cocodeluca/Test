@@ -5,6 +5,11 @@ import {
   mergeChangedPropertyFields,
   replacePropertyRecord,
 } from '../src/common/utils/propertyEdits';
+import {
+  calculatePropertyDetails,
+  normalizePropertyRecord,
+} from '../src/common/utils/calculations';
+import { synchronizeIncomeEditWithRentRule } from '../src/platforms/web/components/PropertyFormNew';
 
 const originalProp1 = {
   id: 'prop1',
@@ -98,4 +103,67 @@ test('editing only prop1 valuation preserves every other persisted field and pro
     originalProp1
   );
   assert.strictEqual(afterProperties[1], originalProp2);
+});
+
+test('monthly rent 1000 to 1300 keeps every Properties financial calculation current without reload', () => {
+  const property = {
+    id: 'income-edit-property',
+    name: 'Synthetic occupied property',
+    currency: 'EUR',
+    operatingCurrency: 'EUR',
+    monthlyRentCurrency: 'EUR',
+    occupancyStatus: 'occupied',
+    purchasePrice: 100000,
+    currentEstimatedValue: 120000,
+    totalInitialInvestment: 100000,
+    annualCommunityFees: 1200,
+    monthlyRent: 1000,
+    leases: [
+      {
+        id: 'active-lease',
+        name: 'Current lease',
+        active: true,
+        startDate: '2026-01-01',
+        monthlyRent: 1000,
+        monthlyRentCurrency: 'EUR',
+        rentUpdateRule: {
+          type: 'no-automatic-update',
+          frequency: 'yearly',
+          baseRent: 1000,
+        },
+        adjustmentHistory: [],
+      },
+    ],
+    activeLeaseId: 'active-lease',
+  } as unknown as Property;
+
+  const incomeEdit = synchronizeIncomeEditWithRentRule(1300);
+  const formPayload = {
+    ...property,
+    ...incomeEdit,
+    annualRent: incomeEdit.monthlyRent * 12,
+    leases: property.leases?.map((lease) => ({
+      ...lease,
+      monthlyRent: incomeEdit.monthlyRent,
+      rentUpdateRule: {
+        ...lease.rentUpdateRule,
+        baseRent: incomeEdit.rentRuleBaseRent,
+      },
+    })),
+  } as Property;
+
+  // This follows the same changed-field merge used by PropertyFormNew and App.
+  const renderedProperty = normalizePropertyRecord(
+    mergeChangedPropertyFields(property, property, formPayload)
+  );
+  const financials = calculatePropertyDetails(renderedProperty);
+
+  assert.equal(renderedProperty.monthlyRent, 1300);
+  assert.equal(renderedProperty.leases?.[0]?.monthlyRent, 1300);
+  assert.equal(financials.monthlyRent, 1300);
+  assert.equal(financials.annualRent, 15600);
+  assert.equal(financials.totalMonthlyExpenses, 100);
+  assert.equal(financials.netMonthlyCashflow, 1200);
+  assert.equal(financials.grossYield, 13);
+  assert.equal(financials.netYield, 12);
 });

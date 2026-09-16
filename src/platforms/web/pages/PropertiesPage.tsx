@@ -5,10 +5,11 @@ import { PropertySectionEditModal, type PropertySectionEditorKey } from '../comp
 import { TaxAssumptionsEditModal } from '../components/TaxAssumptionsEditModal';
 import { QuickPropertyCreateModal } from '../components/QuickPropertyCreateModal';
 import { PropertyCard } from '../components/PropertyCardExpanded';
+import { PortfolioItemSelect } from '../components/PortfolioItemSelect';
 import type { PropertyTab } from '../components/PropertyCardExpanded';
 import { useSettings } from '../context/SettingsContext';
 import { SectionCrashBoundary } from '../components/SectionCrashBoundary';
-import { Mortgage, Property } from '../../../common/types';
+import { ExpenseObligation, ExpensePayment, Mortgage, Property, PropertyExpenseRule, RentPayment, RentReceivable } from '../../../common/types';
 import { findMortgageByProperty } from '../../../common/utils/calculations';
 import {
   appButtonPrimaryClass,
@@ -38,7 +39,15 @@ interface PropertiesPageProps {
   tutorialQuickCreateState?: boolean | null;
   tutorialQuickCreateStep?: number | null;
   propertyTabOverride?: PropertyTab | 'summary' | 'tax' | null;
+  propertyNavigationTarget?: { propertyId: string; section: 'lease-tenancy'; missingPropertyIds: string[]; currentIndex: number } | null;
+  onCompletePropertyNavigation?: () => void;
+  onClearPropertyNavigation?: () => void;
   onRequestPropertyTabChange?: (tab: PropertyTab) => void;
+  rentReceivables?: RentReceivable[];
+  rentPayments?: RentPayment[];
+  propertyExpenseRules?: PropertyExpenseRule[];
+  expenseObligations?: ExpenseObligation[];
+  expensePayments?: ExpensePayment[];
 }
 
 const PROPERTY_TAB_QUERY_KEY = 'propertyTab';
@@ -95,7 +104,15 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   tutorialQuickCreateState = null,
   tutorialQuickCreateStep = null,
   propertyTabOverride = null,
+  propertyNavigationTarget = null,
+  onCompletePropertyNavigation,
+  onClearPropertyNavigation,
   onRequestPropertyTabChange,
+  rentReceivables = [],
+  rentPayments = [],
+  propertyExpenseRules = [],
+  expenseObligations = [],
+  expensePayments = [],
 }) => {
   const { settings, t } = useSettings();
   const safeProperties = Array.isArray(properties) ? properties : [];
@@ -110,8 +127,9 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   const [sectionEditingSection, setSectionEditingSection] = useState<PropertySectionEditorKey | null>(null);
   const [taxEditingProperty, setTaxEditingProperty] = useState<Property | null>(null);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(
-    safeProperties[0]?.id ?? null
+    propertyNavigationTarget?.propertyId ?? safeProperties[0]?.id ?? null
   );
+  const [dueDaySetupIndex, setDueDaySetupIndex] = useState(propertyNavigationTarget?.currentIndex ?? 0);
   const [urlPropertyTab, setUrlPropertyTab] = useState<PropertyTab>(() => readPropertyTabFromUrl() ?? 'overview');
 
   useEffect(() => {
@@ -150,6 +168,17 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   }, [safeProperties, selectedPropertyId]);
 
   useEffect(() => {
+    if (!propertyNavigationTarget || !safeProperties.some((property) => property.id === propertyNavigationTarget.propertyId)) {
+      return;
+    }
+
+    setSelectedPropertyId(propertyNavigationTarget.propertyId);
+    setDueDaySetupIndex(propertyNavigationTarget.currentIndex);
+    setUrlPropertyTab('overview');
+    writePropertyTabToUrl('overview');
+  }, [propertyNavigationTarget, safeProperties]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return undefined;
     }
@@ -167,6 +196,15 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
     () => safeProperties.find((property) => property.id === selectedPropertyId) ?? null,
     [safeProperties, selectedPropertyId]
   );
+
+  useEffect(() => {
+    if (propertyNavigationTarget?.section !== 'lease-tenancy' || !selectedProperty || selectedProperty.id !== propertyNavigationTarget.propertyId) {
+      return;
+    }
+
+    setSectionEditingProperty(selectedProperty);
+    setSectionEditingSection('lease-tenancy');
+  }, [propertyNavigationTarget, selectedProperty]);
 
   const selectorItems = useMemo(
     () =>
@@ -249,6 +287,9 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   const handleCloseSectionEditor = () => {
     setSectionEditingProperty(null);
     setSectionEditingSection(null);
+    if (propertyNavigationTarget) {
+      onClearPropertyNavigation?.();
+    }
   };
 
   const handleCloseTaxEditor = () => {
@@ -272,6 +313,34 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
     onEditProperty(updatedProperty);
     setSelectedPropertyId(updatedProperty.id);
     handleCloseSectionEditor();
+  };
+
+  const handleSectionPropertySaveAndNext = (updatedProperty: Property) => {
+    onEditProperty(updatedProperty);
+    if (!propertyNavigationTarget) {
+      handleCloseSectionEditor();
+      return;
+    }
+
+    const nextIndex = propertyNavigationTarget.currentIndex + 1;
+    const nextPropertyId = propertyNavigationTarget.missingPropertyIds[nextIndex];
+    if (!nextPropertyId) {
+      handleCloseSectionEditor();
+      onCompletePropertyNavigation?.();
+      return;
+    }
+
+    const nextProperty = safeProperties.find((property) => property.id === nextPropertyId);
+    if (!nextProperty) {
+      handleCloseSectionEditor();
+      onCompletePropertyNavigation?.();
+      return;
+    }
+
+    setSelectedPropertyId(nextPropertyId);
+    setDueDaySetupIndex(nextIndex);
+    setSectionEditingProperty(nextProperty);
+    setSectionEditingSection('lease-tenancy');
   };
 
   const handleTaxPropertySave = (updatedProperty: Property) => {
@@ -312,25 +381,12 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
           </p>
         </div>
         <div className="flex min-w-0 flex-1 justify-start md:justify-start">
-          {safeProperties.length > 1 ? (
-            <label className={`inline-flex w-full max-w-[320px] items-center gap-2 rounded-2xl border px-3.5 py-2 shadow-[0_10px_22px_-26px_rgba(15,23,42,0.16)] ${appPanelClass} ${appTextStrongClass}`}>
-              <span className="sr-only">{t('properties.selectorTitle')}</span>
-              <div className="min-w-0 flex-1">
-                <select
-                  value={selectedPropertyId ?? safeProperties[0]?.id ?? ''}
-                  onChange={(event) => setSelectedPropertyId(event.target.value)}
-                  className={`w-full appearance-none border-0 bg-transparent p-0 pr-6 text-[13px] font-medium leading-5 outline-none ring-0 ${appTextStrongClass}`}
-                >
-                  {selectorItems.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <ChevronDown className={`h-4 w-4 shrink-0 ${appTextMutedClass}`} />
-            </label>
-          ) : null}
+          <PortfolioItemSelect
+            ariaLabel={t('properties.selectorTitle')}
+            options={selectorItems.map((option) => ({ id: option.id, label: option.title }))}
+            selectedId={selectedPropertyId}
+            onSelect={setSelectedPropertyId}
+          />
         </div>
         <div className="relative flex shrink-0 md:justify-end">
           <details className="group relative">
@@ -403,6 +459,11 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
               <PropertyExpandedMountLogger />
               <PropertyCard
                 property={selectedProperty}
+                rentReceivables={rentReceivables}
+                rentPayments={rentPayments}
+                propertyExpenseRules={propertyExpenseRules}
+                expenseObligations={expenseObligations}
+                expensePayments={expensePayments}
                 mortgage={selectedMortgage}
                 onDelete={handleDeletePropertySubmit}
                 onEdit={handleOpenEditForm}
@@ -445,6 +506,10 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             section={sectionEditingSection}
             onClose={handleCloseSectionEditor}
             onSave={handleSectionPropertySave}
+            rentReceivables={rentReceivables}
+            rentPayments={rentPayments}
+            dueDaySetupContext={propertyNavigationTarget ? { position: dueDaySetupIndex + 1, total: propertyNavigationTarget.missingPropertyIds.length } : undefined}
+            onSaveAndNext={propertyNavigationTarget ? handleSectionPropertySaveAndNext : undefined}
           />
         </SectionCrashBoundary>
       ) : null}

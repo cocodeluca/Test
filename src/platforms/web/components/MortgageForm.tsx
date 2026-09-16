@@ -103,6 +103,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
     openingFees: null,
     valuationFee: null,
     brokerFee: null,
+    initialCostsPaidByOwner: false,
     insuranceRequirements: null,
     payrollBonificationConditions: null,
     rateNotes: '',
@@ -148,6 +149,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
         openingFees: editingMortgage.openingFees ?? null,
         valuationFee: editingMortgage.valuationFee ?? null,
         brokerFee: editingMortgage.brokerFee ?? null,
+        initialCostsPaidByOwner: editingMortgage.initialCostsPaidByOwner ?? false,
         insuranceRequirements: editingMortgage.insuranceRequirements ?? null,
         payrollBonificationConditions: editingMortgage.payrollBonificationConditions ?? null,
         rateNotes: editingMortgage.rateNotes,
@@ -179,6 +181,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
       openingFees: null,
       valuationFee: null,
       brokerFee: null,
+      initialCostsPaidByOwner: false,
       insuranceRequirements: null,
       payrollBonificationConditions: null,
       rateNotes: '',
@@ -580,8 +583,8 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="originalLoanAmount"
                     value={formData.originalLoanAmount}
                     onChange={(event) => handleNumberChange(event)}
-                    min="0.01"
-                    step="0.01"
+                    min="0"
+                    step="1"
                     required
                     className={inputClass}
                   />
@@ -597,7 +600,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     value={formData.currentBalance}
                     onChange={(event) => handleNumberChange(event)}
                     min="0"
-                    step="0.01"
+                    step="1"
                     required
                     className={inputClass}
                   />
@@ -747,7 +750,7 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     value={formData.monthlyMortgagePayment}
                     onChange={(event) => handleNumberChange(event)}
                     min="0"
-                    step="0.01"
+                    step="1"
                     className={inputClass}
                   />
                 </div>
@@ -894,7 +897,8 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="openingFees"
                     value={formData.openingFees ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
-                    step="0.01"
+                    min="0"
+                    step="1"
                     className={inputClass}
                   />
                 </div>
@@ -906,7 +910,8 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="valuationFee"
                     value={formData.valuationFee ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
-                    step="0.01"
+                    min="0"
+                    step="1"
                     className={inputClass}
                   />
                 </div>
@@ -918,7 +923,8 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                     name="brokerFee"
                     value={formData.brokerFee ?? ''}
                     onChange={(event) => handleNumberChange(event, true)}
-                    step="0.01"
+                    min="0"
+                    step="1"
                     className={inputClass}
                   />
                 </div>
@@ -945,6 +951,14 @@ export const MortgageForm: React.FC<MortgageFormProps> = ({
                   />
                 </div>
               </div>
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={formData.initialCostsPaidByOwner ?? false}
+                  onChange={(event) => setFormData((current) => ({ ...current, initialCostsPaidByOwner: event.target.checked }))}
+                />
+                Include these initial financing costs as paid from my own funds
+              </label>
               <textarea
                 id="notes"
                 name="notes"

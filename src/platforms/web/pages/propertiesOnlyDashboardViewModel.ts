@@ -30,7 +30,10 @@ export interface PropertiesOnlyPropertyRow {
   monthlyRent: number | null;
   monthlyOperatingExpenses: number | null;
   monthlyOperatingResult: number | null;
+  monthlyTotalExpenses: number | null;
+  monthlyNetCashflow: number | null;
   currentEstimatedValue: number | null;
+  investedCapital: number | null;
   grossYield: number | null;
 }
 
@@ -42,9 +45,13 @@ export interface PropertiesOnlyDashboardViewModel {
     grossRent: DashboardCoveredAmount;
     expenses: DashboardCoveredAmount;
     noi: DashboardCoveredAmount;
+    totalMonthlyExpenses: DashboardCoveredAmount;
+    netMonthlyCashflow: DashboardCoveredAmount;
+    afterTaxMonthlyCashflow: DashboardCoveredAmount;
     margin: number | null;
   };
   liquidity: DashboardCoveredAmount;
+  ownCapitalInvested: DashboardCoveredAmount;
   debt: {
     current: DashboardCoveredAmount;
     nextPaymentPrincipal: number | null;
@@ -85,6 +92,7 @@ interface BuildPropertiesOnlyDashboardViewModelArgs {
   valuationDisplayCurrency: DisplayCurrency;
   operatingDisplayCurrency: DisplayCurrency;
   fxRates: Readonly<Partial<CurrencyRates>>;
+  monthlyAfterTaxCashflow?: number | null;
 }
 
 const coverageFromCounts = (
@@ -154,6 +162,7 @@ export const buildPropertiesOnlyDashboardViewModel = ({
   valuationDisplayCurrency,
   operatingDisplayCurrency,
   fxRates,
+  monthlyAfterTaxCashflow = null,
 }: BuildPropertiesOnlyDashboardViewModelArgs): PropertiesOnlyDashboardViewModel => {
   const metricsById = new Map(propertyMetrics.map((metric) => [metric.id, metric]));
   const rows = properties.map<PropertiesOnlyPropertyRow>((property) => {
@@ -162,6 +171,9 @@ export const buildPropertiesOnlyDashboardViewModel = ({
     const sourceValuationCurrency = metric?.valuationDisplayCurrency ?? property.currentEstimatedValueCurrency ?? property.propertyValueCurrency ?? property.currency;
     const nativeMonthlyRent = metric ? metric.annualRentalIncome / 12 : Number.NaN;
     const nativeMonthlyExpenses = metric?.monthlyExpensesEquivalent ?? Number.NaN;
+    const nativeMonthlyTotalExpenses = metric?.totalMonthlyExpenses ?? Number.NaN;
+    const nativeNetMonthlyCashflow = metric?.netMonthlyCashflow ?? Number.NaN;
+    const nativeInvestedCapital = metric?.investedCapital ?? Number.NaN;
     const convertedRent = convertCurrencyWithCoverage(
       nativeMonthlyRent,
       sourceOperatingCurrency,
@@ -174,6 +186,26 @@ export const buildPropertiesOnlyDashboardViewModel = ({
       operatingDisplayCurrency,
       fxRates
     );
+    const convertedNetMonthlyCashflow = convertCurrencyWithCoverage(
+      nativeNetMonthlyCashflow,
+      sourceOperatingCurrency,
+      operatingDisplayCurrency,
+      fxRates
+    );
+    const convertedTotalExpenses = convertCurrencyWithCoverage(
+      nativeMonthlyTotalExpenses,
+      sourceOperatingCurrency,
+      operatingDisplayCurrency,
+      fxRates
+    );
+    const convertedInvestedCapital = metric?.ownCapitalInvestedStatus === 'incomplete'
+      ? { value: null, available: false }
+      : convertCurrencyWithCoverage(
+          nativeInvestedCapital,
+          sourceValuationCurrency,
+          valuationDisplayCurrency,
+          fxRates
+        );
     const hasValidCurrentValue =
       typeof property.currentEstimatedValue === 'number' &&
       Number.isFinite(property.currentEstimatedValue) &&
@@ -193,6 +225,12 @@ export const buildPropertiesOnlyDashboardViewModel = ({
     const monthlyOperatingExpenses = convertedExpenses.available
       ? convertedExpenses.value
       : null;
+    const monthlyNetCashflow = convertedNetMonthlyCashflow.available
+      ? convertedNetMonthlyCashflow.value
+      : null;
+    const monthlyTotalExpenses = convertedTotalExpenses.available
+      ? convertedTotalExpenses.value
+      : null;
     const grossYield =
       hasValidCurrentValue && typeof metric?.grossYield === 'number' && Number.isFinite(metric.grossYield)
         ? metric.grossYield
@@ -211,15 +249,23 @@ export const buildPropertiesOnlyDashboardViewModel = ({
         monthlyRent !== null && monthlyOperatingExpenses !== null
           ? monthlyRent - monthlyOperatingExpenses
           : null,
+      monthlyTotalExpenses,
+      monthlyNetCashflow,
       currentEstimatedValue: convertedValue.available ? convertedValue.value : null,
       grossYield,
+      investedCapital: convertedInvestedCapital.available ? convertedInvestedCapital.value : null,
     };
   });
 
   const grossRent = aggregateCoveredAmounts(rows.map((row) => row.monthlyRent));
   const expenses = aggregateCoveredAmounts(rows.map((row) => row.monthlyOperatingExpenses));
   const noi = aggregateCoveredAmounts(rows.map((row) => row.monthlyOperatingResult));
+  const netMonthlyCashflow = aggregateCoveredAmounts(rows.map((row) => row.monthlyNetCashflow));
+  const totalMonthlyExpenses = aggregateCoveredAmounts(
+    rows.map((row) => row.monthlyTotalExpenses)
+  );
   const valuation = aggregateCoveredAmounts(rows.map((row) => row.currentEstimatedValue));
+  const ownCapitalInvested = aggregateCoveredAmounts(rows.map((row) => row.investedCapital));
   const activeCashAccounts = cashAccounts.filter((account) => account.status === 'active');
   const liquidity = aggregateCoveredAmounts(
     activeCashAccounts.map((account) => {
@@ -304,12 +350,25 @@ export const buildPropertiesOnlyDashboardViewModel = ({
       grossRent,
       expenses,
       noi,
+      totalMonthlyExpenses,
+      netMonthlyCashflow,
+      afterTaxMonthlyCashflow: {
+        value:
+          monthlyAfterTaxCashflow !== null && netMonthlyCashflow.coverage.status === 'available'
+            ? monthlyAfterTaxCashflow
+            : null,
+        coverage:
+          monthlyAfterTaxCashflow === null
+            ? coverageFromCounts(0, 0)
+            : netMonthlyCashflow.coverage,
+      },
       margin:
         grossRent.value !== null && grossRent.value !== 0 && noi.value !== null
           ? (noi.value / grossRent.value) * 100
           : null,
     },
     liquidity,
+    ownCapitalInvested,
     debt: {
       current: {
         value: currentDebt,

@@ -200,8 +200,8 @@ test('demo account normalization rewrites stale full-portfolio state back to pro
 
   assert.equal(normalizedSettings.userMode, 'basic');
   assert.equal(normalizedSettings.onboarding.trackingPreference, 'properties-only');
-  assert.deepEqual(normalizedSettings.workspaceConfig.enabledModules, ['dashboard', 'properties', 'settings']);
-  assert.deepEqual(normalizedSettings.workspaceConfig.sidebarOrder, ['dashboard', 'properties', 'settings']);
+  assert.deepEqual(normalizedSettings.workspaceConfig.enabledModules, ['dashboard', 'rent-collection', 'properties', 'settings']);
+  assert.deepEqual(normalizedSettings.workspaceConfig.sidebarOrder, ['dashboard', 'rent-collection', 'properties', 'settings']);
   assert.equal(normalizedPortfolio.properties.length, 0);
   assert.equal(window.localStorage.getItem(makeSelectedUseCaseIdStorageKey(settingsKey)), null);
 });

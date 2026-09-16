@@ -26,7 +26,12 @@ import type {
   Opportunity,
   Property,
   RehabProject,
+  RentPayment,
+  RentReceivable,
+  ExpenseObligation,
+  ExpensePayment,
 } from '../../../common/types';
+import { generateRentReceivables } from '../../../common/utils/rentCollection';
 import type { DisplayCurrency } from '../../../common/types/settings';
 import {
   buildDashboardViewModel,
@@ -44,6 +49,11 @@ interface DashboardProps {
   onUpdateInvestmentAccounts: (accounts: InvestmentAccount[]) => void;
   onConnectEtoroAccount: () => Promise<void>;
   onSyncInvestmentAccount: (accountId: string) => Promise<void>;
+  rentReceivables: RentReceivable[];
+  rentPayments: RentPayment[];
+  onOpenRentCollection: () => void;
+  expenseObligations: ExpenseObligation[];
+  expensePayments: ExpensePayment[];
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -55,6 +65,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onUpdateInvestmentAccounts,
   onConnectEtoroAccount,
   onSyncInvestmentAccount,
+  rentReceivables,
+  rentPayments,
+  onOpenRentCollection,
+  expenseObligations,
+  expensePayments,
 }) => {
   const { settings, t } = useSettings();
   const activeFxSnapshot = getActiveFxSnapshot(settings);
@@ -79,7 +94,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
     [properties, mortgages, settings.currency, fxRates]
   );
 
-  const alerts = useMemo(() => generatePortfolioAlerts(properties), [properties]);
+  const generatedRentReceivables = useMemo(
+    () => generateRentReceivables(properties, rentReceivables, { payments: rentPayments }),
+    [properties, rentPayments, rentReceivables]
+  );
+  const alerts = useMemo(
+    () => generatePortfolioAlerts(properties, new Date(), generatedRentReceivables, rentPayments, expenseObligations, expensePayments),
+    [expenseObligations, expensePayments, generatedRentReceivables, properties, rentPayments]
+  );
 
   const debtPaydown = useMemo(
     () =>
@@ -182,7 +204,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         t={t}
       />
 
-      <AttentionStrip attention={viewModel.attention} t={t} />
+      <AttentionStrip attention={viewModel.attention} t={t} onReviewRentCollection={onOpenRentCollection} />
 
       <DashboardOverviewGrid
         viewModel={viewModel}

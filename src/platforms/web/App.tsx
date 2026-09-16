@@ -20,6 +20,11 @@ import {
   Opportunity,
   Property,
   ReportBrandingConfig,
+  RentPayment,
+  RentReceivable,
+  PropertyExpenseRule,
+  ExpenseObligation,
+  ExpensePayment,
   RehabProject,
 } from '../../common/types';
 import type {
@@ -116,6 +121,8 @@ const BasicModeSetupWizard = lazy(() =>
 
 type PageType =
   | 'dashboard'
+  | 'rent-collection'
+  | 'expenses'
   | 'cash-accounts'
   | 'properties'
   | 'mortgages'
@@ -718,6 +725,11 @@ const createDemoPortfolioForUseCase = (
     reports,
     reportTemplates,
     reportBranding,
+    rentReceivables: [],
+    rentPayments: [],
+    propertyExpenseRules: [],
+    expenseObligations: [],
+    expensePayments: [],
   };
 };
 
@@ -760,6 +772,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const { settings, hasExplicitLanguageSelection, updateSettings, t } = useSettings();
   const initialPortfolioData = portfolioHydration.portfolio;
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard');
+  const [propertiesNavigationTarget, setPropertiesNavigationTarget] = useState<{ propertyId: string; section: 'lease-tenancy'; missingPropertyIds: string[]; currentIndex: number } | null>(null);
   const [pendingStarterPath, setPendingStarterPath] = useState<StarterPath | null>(null);
   const [demoPreviewState, setDemoPreviewState] = useState<DemoPreviewState | null>(null);
   const [activeTutorialStepId, setActiveTutorialStepId] = useState<string | null>(null);
@@ -792,6 +805,15 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const [reportBranding, setReportBranding] = useState<ReportBrandingConfig>(
     initialPortfolioData.reportBranding ?? defaultReportBranding
   );
+  const [rentReceivables, setRentReceivables] = useState<RentReceivable[]>(
+    initialPortfolioData.rentReceivables ?? []
+  );
+  const [rentPayments, setRentPayments] = useState<RentPayment[]>(
+    initialPortfolioData.rentPayments ?? []
+  );
+  const [propertyExpenseRules, setPropertyExpenseRules] = useState<PropertyExpenseRule[]>(initialPortfolioData.propertyExpenseRules ?? []);
+  const [expenseObligations, setExpenseObligations] = useState<ExpenseObligation[]>(initialPortfolioData.expenseObligations ?? []);
+  const [expensePayments, setExpensePayments] = useState<ExpensePayment[]>(initialPortfolioData.expensePayments ?? []);
   useEffect(() => {
     console.info(`${BOOT_LOG_PREFIX} router mounted`);
   }, []);
@@ -1078,6 +1100,11 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const effectiveReports = effectivePortfolio?.reports ?? reports;
   const effectiveReportTemplates = effectivePortfolio?.reportTemplates ?? reportTemplates;
   const effectiveReportBranding = effectivePortfolio?.reportBranding ?? reportBranding;
+  const effectiveRentReceivables = effectivePortfolio?.rentReceivables ?? rentReceivables;
+  const effectiveRentPayments = effectivePortfolio?.rentPayments ?? rentPayments;
+  const effectivePropertyExpenseRules = effectivePortfolio?.propertyExpenseRules ?? propertyExpenseRules;
+  const effectiveExpenseObligations = effectivePortfolio?.expenseObligations ?? expenseObligations;
+  const effectiveExpensePayments = effectivePortfolio?.expensePayments ?? expensePayments;
   const syncedProperties = useMemo(
     () =>
       normalizeProperties(
@@ -1127,6 +1154,11 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       reports,
       reportTemplates,
       reportBranding,
+      rentReceivables,
+      rentPayments,
+      propertyExpenseRules,
+      expenseObligations,
+      expensePayments,
     }),
     [
       bankConnections,
@@ -1139,6 +1171,11 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       reportBranding,
       reportTemplates,
       reports,
+      rentPayments,
+      rentReceivables,
+      propertyExpenseRules,
+      expenseObligations,
+      expensePayments,
     ]
   );
   const currentPortfolioSignature = useMemo(
@@ -1261,6 +1298,15 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                 mortgages: currentPreview.portfolio.mortgages.filter(
                   (mortgage) => mortgage.propertyId !== propertyId
                 ),
+                rentReceivables: (currentPreview.portfolio.rentReceivables ?? []).filter(
+                  (receivable) => receivable.propertyId !== propertyId
+                ),
+                rentPayments: (currentPreview.portfolio.rentPayments ?? []).filter(
+                  (payment) => payment.propertyId !== propertyId
+                ),
+                propertyExpenseRules: (currentPreview.portfolio.propertyExpenseRules ?? []).filter((rule) => rule.propertyId !== propertyId),
+                expenseObligations: (currentPreview.portfolio.expenseObligations ?? []).filter((obligation) => obligation.propertyId !== propertyId),
+                expensePayments: (currentPreview.portfolio.expensePayments ?? []).filter((payment) => payment.propertyId !== propertyId),
               },
             }
           : currentPreview
@@ -1274,6 +1320,15 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     setMortgages((currentMortgages) =>
       currentMortgages.filter((mortgage) => mortgage.propertyId !== propertyId)
     );
+    setRentReceivables((currentReceivables) =>
+      currentReceivables.filter((receivable) => receivable.propertyId !== propertyId)
+    );
+    setRentPayments((currentPayments) =>
+      currentPayments.filter((payment) => payment.propertyId !== propertyId)
+    );
+    setPropertyExpenseRules((current) => current.filter((rule) => rule.propertyId !== propertyId));
+    setExpenseObligations((current) => current.filter((obligation) => obligation.propertyId !== propertyId));
+    setExpensePayments((current) => current.filter((payment) => payment.propertyId !== propertyId));
   };
 
   const handleAddMortgage = (mortgage: Mortgage) => {
@@ -1575,6 +1630,37 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     setCashAccounts(accounts);
   };
 
+  const handleUpdateRentCollection = (
+    nextRentReceivables: RentReceivable[],
+    nextRentPayments: RentPayment[]
+  ) => {
+    if (isDemoPreviewActive) {
+      setDemoPreviewState((currentPreview) => currentPreview ? {
+        ...currentPreview,
+        portfolio: {
+          ...currentPreview.portfolio,
+          rentReceivables: nextRentReceivables,
+          rentPayments: nextRentPayments,
+        },
+      } : currentPreview);
+      return;
+    }
+    setRentReceivables(nextRentReceivables);
+    setRentPayments(nextRentPayments);
+  };
+
+  const handleUpdatePropertyExpenses = (
+    nextRules: PropertyExpenseRule[], nextObligations: ExpenseObligation[], nextPayments: ExpensePayment[]
+  ) => {
+    if (isDemoPreviewActive) {
+      setDemoPreviewState((current) => current ? { ...current, portfolio: { ...current.portfolio, propertyExpenseRules: nextRules, expenseObligations: nextObligations, expensePayments: nextPayments } } : current);
+      return;
+    }
+    setPropertyExpenseRules(nextRules);
+    setExpenseObligations(nextObligations);
+    setExpensePayments(nextPayments);
+  };
+
   const handleUpdateInvestmentAccounts = (accounts: InvestmentAccount[]) => {
     if (isDemoPreviewActive) {
       setDemoPreviewState((currentPreview) =>
@@ -1726,6 +1812,11 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       reports: [],
       reportTemplates: cloneDemoValue(defaultReportTemplates),
       reportBranding: cloneDemoValue(defaultReportBranding),
+      rentReceivables: [],
+      rentPayments: [],
+      propertyExpenseRules: [],
+      expenseObligations: [],
+      expensePayments: [],
     });
 
     if (result.reset) {
@@ -2753,7 +2844,10 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                 <RouterMountLogger />
                 <Layout
                   currentPage={currentPage}
-                  onNavigate={(page) => handleTutorialNavigate(page as PageType)}
+                  onNavigate={(page) => {
+                    setPropertiesNavigationTarget(null);
+                    handleTutorialNavigate(page as PageType);
+                  }}
                   currentUserName={user.name}
                   currentUserEmail={user.email}
                   onLogout={handleLogoutWithDebug}
@@ -2792,6 +2886,11 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     effectiveReports={effectiveReports}
                     effectiveReportTemplates={effectiveReportTemplates}
                     effectiveReportBranding={effectiveReportBranding}
+                    effectiveRentReceivables={effectiveRentReceivables}
+                    effectiveRentPayments={effectiveRentPayments}
+                    effectivePropertyExpenseRules={effectivePropertyExpenseRules}
+                    effectiveExpenseObligations={effectiveExpenseObligations}
+                    effectiveExpensePayments={effectiveExpensePayments}
                     pendingStarterPath={pendingStarterPath}
                     tutorialTargetId={tutorialTargetId}
                     activeTutorialUiState={activeTutorialUiState}
@@ -2806,7 +2905,20 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     onGenerateReportFromSource={handleGenerateReportFromSource}
                     onRequestOpenAddProperty={handleTutorialOpenAddProperty}
                     onStartAddProperty={() => handleChooseStarterPath('manual-property')}
-                    onOpenProperties={() => setCurrentPage('properties')}
+                    propertiesNavigationTarget={propertiesNavigationTarget}
+                    onOpenProperties={(propertyId, setup) => {
+                      setPropertiesNavigationTarget(propertyId && setup ? { propertyId, section: 'lease-tenancy', missingPropertyIds: setup.propertyIds, currentIndex: setup.currentIndex } : null);
+                      setCurrentPage('properties');
+                    }}
+                    onCompletePropertyNavigation={() => {
+                      setPropertiesNavigationTarget(null);
+                      setCurrentPage('rent-collection');
+                    }}
+                    onClearPropertyNavigation={() => setPropertiesNavigationTarget(null)}
+                    onUpdateRentCollection={handleUpdateRentCollection}
+                    onOpenRentCollection={() => setCurrentPage('rent-collection')}
+                    onUpdatePropertyExpenses={handleUpdatePropertyExpenses}
+                    onOpenExpenses={() => setCurrentPage('expenses')}
                     onRequestPropertyTabChange={handleTutorialPropertyTabChange}
                     onAddOpportunity={handleAddOpportunity}
                     onUpdateOpportunity={handleUpdateOpportunity}

@@ -6,6 +6,7 @@ import {
   CalendarDays,
   CheckCircle2,
   CircleDollarSign,
+  Coins,
   Droplets,
   Info,
   Landmark,
@@ -14,13 +15,15 @@ import {
   WalletCards,
 } from 'lucide-react';
 import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts';
-import type { CashAccount, Mortgage, Property } from '../../../common/types';
+import type { CashAccount, ExpenseObligation, ExpensePayment, Mortgage, Property, RentPayment, RentReceivable } from '../../../common/types';
 import type { DisplayCurrency } from '../../../common/types/settings';
 import type { PortfolioAlert } from '../../../common/utils/alerts';
 import { generatePortfolioAlerts } from '../../../common/utils/alerts';
+import { generateRentReceivables } from '../../../common/utils/rentCollection';
 import {
   calculateAllPropertyMetrics,
   calculateMortgageDebtPaydown,
+  calculatePortfolioTaxPreview,
 } from '../../../common/utils/calculations';
 import { getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { formatCurrencyValue, formatPercentage } from '../../../common/utils/formatting';
@@ -50,6 +53,12 @@ interface PropertiesOnlyDashboardProps {
   cashAccounts: CashAccount[];
   onAddProperty: () => void;
   onOpenProperties: () => void;
+  rentReceivables: RentReceivable[];
+  rentPayments: RentPayment[];
+  onOpenRentCollection: () => void;
+  expenseObligations: ExpenseObligation[];
+  expensePayments: ExpensePayment[];
+  onOpenExpenses: () => void;
 }
 
 const panelClassName = 'p-[1.125rem] md:p-5 2xl:p-6';
@@ -57,6 +66,7 @@ const clampPercentage = (value: number) => Math.max(0, Math.min(100, value));
 const primaryIconClassName = 'properties-only-icon-primary';
 const successIconClassName = 'properties-only-icon-success';
 const warningIconClassName = 'properties-only-icon-warning';
+const expensesIconClassName = 'properties-only-icon-expenses';
 const neutralIconClassName = 'properties-only-icon-neutral';
 
 const getMostCommonCurrency = (
@@ -116,7 +126,8 @@ const CoveredAmount: React.FC<{
   t: Translate;
   className?: string;
   metricId?: string;
-}> = ({ amount, currency, t, className = '', metricId }) => (
+  showUnavailableCurrency?: boolean;
+}> = ({ amount, currency, t, className = '', metricId, showUnavailableCurrency = true }) => (
   <div
     data-dashboard-metric={metricId}
     data-raw-value={amount.value ?? 'unavailable'}
@@ -127,7 +138,7 @@ const CoveredAmount: React.FC<{
   >
     <p className={className} data-formatted-value>
       {formatAmount(amount.value, currency)}
-      {amount.value === null ? (
+      {amount.value === null && showUnavailableCurrency ? (
         <span
           className={`ml-2 text-[12px] font-semibold ${dashboardLightMutedTextClass}`}
           title={t('dashboardUi.propertiesOnly.fxUnavailableCurrency', { currency })}
@@ -152,8 +163,10 @@ const MetricCard: React.FC<{
   tooltip?: string;
   metricId: string;
   iconClassName?: string;
-}> = ({ title, description, amount, currency, icon, toneClassName, t, badge, tooltip, metricId, iconClassName = primaryIconClassName }) => (
-  <DashboardCard className={panelClassName}>
+  cardClassName?: string;
+  showUnavailableCurrency?: boolean;
+}> = ({ title, description, amount, currency, icon, toneClassName, t, badge, tooltip, metricId, iconClassName = primaryIconClassName, cardClassName = '', showUnavailableCurrency }) => (
+  <DashboardCard className={`${panelClassName} ${cardClassName}`}>
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -165,6 +178,7 @@ const MetricCard: React.FC<{
           currency={currency}
           t={t}
           metricId={metricId}
+          showUnavailableCurrency={showUnavailableCurrency}
           className={`mt-4 text-[2.25rem] font-bold leading-none tracking-[-0.045em] 2xl:text-[2.5rem] ${
             toneClassName ?? dashboardLightValueClass
           }`}
@@ -212,31 +226,22 @@ export const PropertiesOnlyMortgageDebtCard: React.FC<PropertiesOnlyMortgageDebt
   const debtReduction = debt.current.value !== null && debt.projectedAfter12Months !== null
     ? debt.current.value - debt.projectedAfter12Months
     : null;
-  const debtRemainingPercentage = debt.current.value !== null
-    && debt.current.value > 0
-    && debt.projectedAfter12Months !== null
-      ? clampPercentage((debt.projectedAfter12Months / debt.current.value) * 100)
-      : null;
-
-  const detailRows: Array<[string, number | null]> = [
-    [t('dashboardUi.propertiesOnly.nextPaymentPrincipal'), debt.nextPaymentPrincipal],
-    [t('dashboardUi.propertiesOnly.next12Principal'), debt.next12MonthsPrincipal],
-    [t('dashboardUi.propertiesOnly.next12Interest'), debt.next12MonthsInterest],
-    [t('dashboardUi.propertiesOnly.projectedDebt'), debt.projectedAfter12Months],
-  ];
+  const debtReductionPercentage = debt.current.value !== null && debt.current.value > 0 && debtReduction !== null
+    ? (debtReduction / debt.current.value) * 100
+    : null;
 
   return (
-    <DashboardCard className={panelClassName}>
+    <DashboardCard className={`${panelClassName} properties-only-mortgage-debt-card`}>
       <div className="flex flex-col" data-dashboard-card="mortgage-debt">
         <CardHeading
           title={t('dashboardUi.propertiesOnly.mortgageDebtTitle')}
           icon={<Landmark className="h-4 w-4" />}
           iconClassName={neutralIconClassName}
         />
-        <p className={`mt-4 text-[2.25rem] font-bold leading-none tracking-[-0.04em] 2xl:text-[2.375rem] ${dashboardLightValueClass}`}>
+        <p className={`mt-3.5 text-[2.5rem] font-bold leading-none tracking-[-0.05em] 2xl:text-[2.75rem] ${dashboardLightValueClass}`}>
           {formatAmount(debt.current.value, currency)}
         </p>
-        <p className={`mt-1.5 text-[12px] font-medium 2xl:text-[12.5px] ${dashboardLightMutedTextClass}`}>
+        <p className={`mt-1 text-[14px] font-medium 2xl:text-[14.5px] ${dashboardLightMutedTextClass}`}>
           {t('dashboardUi.propertiesOnly.outstandingBalance')}
         </p>
         <CoverageNote coverage={debt.current.coverage} t={t} />
@@ -257,54 +262,151 @@ export const PropertiesOnlyMortgageDebtCard: React.FC<PropertiesOnlyMortgageDebt
           </p>
         ) : null}
 
-        <dl className="mt-4 space-y-2.5 border-t border-[var(--dashboard-border)] pt-3.5 text-[12.5px] 2xl:text-[13px]">
-          {detailRows.map(([label, value]) => (
-            <div key={label} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-3">
-              <dt className={`leading-[1.125rem] ${dashboardLightMutedTextClass}`}>{label}</dt>
-              <dd className={`whitespace-nowrap text-right font-semibold tabular-nums ${dashboardLightValueClass}`}>
-                {formatAmount(value, currency)}
-              </dd>
+        <div className="mt-4 grid gap-2.5 sm:grid-cols-2">
+          <div className="rounded-[16px] border border-[#e5eaf0] bg-[#f8fafc] p-3 dark:border-[#e5eaf0] dark:bg-[#f8fafc]">
+            <div className="flex items-center gap-2.5">
+              <span className={`flex h-9 w-9 items-center justify-center rounded-full ${dashboardLightIconChipClass} ${primaryIconClassName}`}>
+                <CalendarDays className="h-4 w-4" />
+              </span>
+              <p className={`text-[13px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.nextPaymentTitle')}</p>
             </div>
-          ))}
-        </dl>
-
-        {debtRemainingPercentage !== null && debt.current.value !== null && debt.projectedAfter12Months !== null ? (
-          <div className="mt-4 border-t border-[var(--dashboard-border)] pt-3.5">
-            <div className="flex items-end justify-between gap-3 text-[11.5px] 2xl:text-[12px]">
+            <p className={`mt-3 text-[1.75rem] font-bold leading-none tracking-[-0.04em] ${dashboardLightValueClass}`}>
+              {formatAmount(debt.nextPaymentPrincipal, currency)}
+            </p>
+            <p className={`mt-1.5 text-[12px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.principalLabel')}</p>
+          </div>
+          <div className="rounded-[16px] border border-[#e5eaf0] bg-[#f8fafc] p-3 dark:border-[#e5eaf0] dark:bg-[#f8fafc]">
+            <div className="flex items-center gap-2.5">
+              <span className={`flex h-9 w-9 items-center justify-center rounded-full ${dashboardLightIconChipClass} ${primaryIconClassName}`}>
+                <TrendingUp className="h-4 w-4" />
+              </span>
+              <p className={`text-[13px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.next12MonthsTitle')}</p>
+            </div>
+            <div className="mt-3 space-y-2.5">
               <div>
-                <p className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.debtToday')}</p>
-                <p className={`mt-0.5 font-semibold tabular-nums ${dashboardLightValueClass}`}>
-                  {formatAmount(debt.current.value, currency)}
-                </p>
+                <p className={`text-[1.65rem] font-bold leading-none tracking-[-0.04em] ${dashboardLightValueClass}`}>{formatAmount(debt.next12MonthsPrincipal, currency)}</p>
+                <p className={`mt-1.5 text-[12px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.principalAmortizedLabel')}</p>
+              </div>
+              <div className="border-t border-slate-200/70 pt-2.5 dark:border-slate-700/50">
+                <p className={`text-[1.65rem] font-bold leading-none tracking-[-0.04em] ${dashboardLightValueClass}`}>{formatAmount(debt.next12MonthsInterest, currency)}</p>
+                <p className={`mt-1.5 text-[12px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.interestLabel')}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {debt.current.value !== null && debt.projectedAfter12Months !== null ? (
+          <div className="mt-3 rounded-[16px] border border-[#e5eaf0] p-3 dark:border-[#e5eaf0]">
+            <div className="flex items-center gap-2.5">
+              <span className={`flex h-9 w-9 items-center justify-center rounded-full ${dashboardLightIconChipClass} ${primaryIconClassName}`}>
+                <TrendingUp className="h-4 w-4" />
+              </span>
+              <h3 className={`text-[13px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.projectionTitle')}</h3>
+            </div>
+            <div className="mt-3 grid grid-cols-[auto_minmax(2.5rem,1fr)_auto] items-center gap-2.5">
+              <div>
+                <p className={`text-[1.25rem] font-bold leading-none tracking-[-0.03em] ${dashboardLightValueClass}`}>{formatAmount(debt.current.value, currency)}</p>
+                <p className={`mt-1 text-[11.5px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.debtToday')}</p>
+              </div>
+              <div className="flex items-center px-1 text-blue-300 dark:text-blue-700" aria-hidden="true">
+                <span className="h-px flex-1 bg-blue-200/80 dark:bg-blue-800/70" />
+                <ArrowRight className="h-5 w-5 shrink-0" />
               </div>
               <div className="text-right">
-                <p className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.debtIn12Months')}</p>
-                <p className={`mt-0.5 font-semibold tabular-nums ${dashboardLightValueClass}`}>
-                  {formatAmount(debt.projectedAfter12Months, currency)}
-                </p>
+                <p className={`text-[1.25rem] font-bold leading-none tracking-[-0.03em] ${dashboardLightValueClass}`}>{formatAmount(debt.projectedAfter12Months, currency)}</p>
+                <p className={`mt-1 text-[11.5px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.debtIn12Months')}</p>
               </div>
             </div>
-            <div
-              className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
-              role="progressbar"
-              aria-label={t('dashboardUi.propertiesOnly.debtRemaining')}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Number(debtRemainingPercentage.toFixed(1))}
-              aria-valuetext={`${formatAmount(debt.projectedAfter12Months, currency)} / ${formatAmount(debt.current.value, currency)}`}
-            >
-              <div className="h-full rounded-full bg-blue-600" style={{ width: `${debtRemainingPercentage}%` }} />
-            </div>
-            {debtReduction !== null && debtReduction > 0 ? (
+            {debtReduction !== null && debtReduction > 0 && debtReductionPercentage !== null ? (
+              <div className="mx-auto mt-3 flex w-fit items-center gap-2.5 rounded-full bg-[#ecfdf5] px-3.5 py-1.5 text-[12px] font-semibold text-[#168a54] dark:bg-[#064e3b] dark:text-[#a7f3d0]">
+                <span>↓ {t('dashboardUi.propertiesOnly.amortizationBadge', { amount: formatAmount(debtReduction, currency) })}</span>
+                <span className="h-4 w-px bg-emerald-200 dark:bg-emerald-800" />
+                <span>-{formatPercentage(debtReductionPercentage)}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* Legacy progress-bar markup retained below for reference only. */}
+        {/*
+        {false && debtRemainingPercentage !== null && debt.current.value !== null && debt.projectedAfter12Months !== null ? (
+            {(debtReduction ?? 0) > 0 ? (
               <p className="mt-2 text-right text-[12px] font-bold text-emerald-700 dark:text-emerald-300">
                 ↓ {t('dashboardUi.propertiesOnly.principalRepaid', {
-                  amount: formatAmount(debtReduction, currency),
+                  amount: formatAmount(debtReduction ?? 0, currency),
                 })}
               </p>
             ) : null}
           </div>
         ) : null}
+        */}
         <CoverageNote coverage={debt.projectionCoverage} t={t} />
+      </div>
+    </DashboardCard>
+  );
+};
+
+export const PropertiesOnlyOwnCapitalCard: React.FC<{
+  amount: DashboardCoveredAmount;
+  currency: DisplayCurrency;
+  t: Translate;
+  properties?: PropertiesOnlyPropertyRow[];
+  onOpenProperties?: () => void;
+}> = ({ amount, currency, t, properties = [], onOpenProperties = () => undefined }) => {
+  const allRows = properties
+    .filter((property) => property.investedCapital !== null && property.investedCapital > 0)
+    .sort((a, b) => (b.investedCapital ?? 0) - (a.investedCapital ?? 0));
+  const rows = allRows.slice(0, 5);
+  const total = amount.value ?? allRows.reduce((sum, property) => sum + (property.investedCapital ?? 0), 0);
+
+  return (
+    <DashboardCard className={`${panelClassName} properties-only-own-capital-card`}>
+      <CardHeading
+        title={t('dashboardUi.propertiesOnly.ownCapitalInvestedTitle')}
+        icon={<Coins className="h-4 w-4" />}
+        iconClassName={primaryIconClassName}
+      />
+      <CoveredAmount
+        amount={amount}
+        currency={currency}
+        t={t}
+        metricId="own-capital-invested"
+        className={`mt-4 text-[2.55rem] font-bold leading-none tracking-[-0.055em] 2xl:text-[2.85rem] ${dashboardLightValueClass}`}
+      />
+      {rows.length > 0 ? (
+        <div className="mt-6" data-dashboard-breakdown="own-capital-by-property">
+          <h3 className={`text-[12.5px] font-semibold ${dashboardLightMutedTextClass}`}>
+            {t('dashboardUi.propertiesOnly.propertyBreakdownTitle')}
+          </h3>
+          <div className="mt-3 space-y-0">
+            {rows.map((property) => {
+              const value = property.investedCapital ?? 0;
+              const percentage = total > 0 ? (value / total) * 100 : 0;
+              const propertyLabel = ((property.city || property.name).split(',')[0] || property.name).trim();
+              return (
+                <div key={property.id} className="grid grid-cols-[minmax(4.5rem,0.8fr)_minmax(3.5rem,1fr)_auto_auto] items-center gap-2 border-b border-slate-100/35 py-[0.6875rem] last:border-b-0 dark:border-slate-800/35" data-property-name={property.name} data-property-percentage={Math.round(percentage)}>
+                  <span className={`min-w-0 truncate text-[12px] font-medium ${dashboardLightValueClass}`}>{propertyLabel}</span>
+                  <div className="h-1 overflow-hidden rounded-full bg-slate-100/40 dark:bg-slate-800/30" role="progressbar" aria-label={`${propertyLabel}: ${Math.round(percentage)}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percentage)}>
+                    <div className="h-full rounded-full bg-blue-400/80" style={{ width: `${clampPercentage(percentage)}%` }} />
+                  </div>
+                  <span className={`whitespace-nowrap text-right text-[11.5px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, currency)}</span>
+                  <span className="w-8 text-right text-[11.5px] font-normal tabular-nums text-slate-400 dark:text-slate-500">{Math.round(percentage)}%</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {properties.length > 5 ? (
+        <button type="button" onClick={onOpenProperties} className={`mt-3 inline-flex items-center gap-1 self-start text-[11.5px] font-semibold ${primaryIconClassName}`}>
+          {t('dashboardUi.propertiesOnly.viewAllPropertiesCount', { count: properties.length })}
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+      <div className={`mt-6 border-t border-slate-200/70 pt-3.5 text-[11.5px] leading-[1.15rem] 2xl:text-[12px] dark:border-slate-800/70 ${dashboardLightMutedTextClass}`}>
+        <p>{t('dashboardUi.propertiesOnly.ownCapitalInvestedDescription')}</p>
+        <p className="mt-0.5">{t('dashboardUi.propertiesOnly.ownCapitalInvestedIncludes')}</p>
+        <CoverageNote coverage={amount.coverage} t={t} />
       </div>
     </DashboardCard>
   );
@@ -331,6 +433,9 @@ const getAlertTitle = (alert: PortfolioAlert, t: Translate) => {
     'lease-expired': 'dashboardUi.alertsLeaseExpiredTitle',
     'insurance-ending': 'dashboardUi.alertsInsuranceEndingTitle',
     'missing-lease-end-date': 'dashboardUi.alertsMissingDataTitle',
+    'rent-overdue': 'dashboardUi.alertsRentOverdueTitle',
+    'rent-payment-gap': 'dashboardUi.alertsPaymentGapTitle',
+    'expense-overdue': 'nav.expenses',
   };
 
   return t(keyByKind[alert.kind]);
@@ -351,6 +456,12 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
   cashAccounts,
   onAddProperty,
   onOpenProperties,
+  rentReceivables,
+  rentPayments,
+  onOpenRentCollection,
+  expenseObligations,
+  expensePayments,
+  onOpenExpenses,
 }) => {
   const { settings, t } = useSettings();
   const fxSnapshot = useMemo(
@@ -361,6 +472,35 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
     () => calculateAllPropertyMetrics(properties, mortgages, settings.currency, fxSnapshot),
     [fxSnapshot, mortgages, properties, settings.currency]
   );
+  const hasTaxAssumptions = properties.length > 0 && properties.every((property) => {
+    if (property.country === 'Spain') {
+      return (property.spainEstimatedMarginalTaxRate ?? 0) > 0
+        || (property.marginalTaxRate ?? 0) > 0
+        || settings.taxProfile.estimatedMarginalTaxRate > 0;
+    }
+
+    return (property.estimatedAnnualTax ?? 0) > 0;
+  });
+  const taxProperties = useMemo(
+    () => properties.map((property) =>
+      property.country === 'Spain'
+      && (property.spainEstimatedMarginalTaxRate ?? 0) <= 0
+      && (property.marginalTaxRate ?? 0) <= 0
+        ? {
+            ...property,
+            spainEstimatedMarginalTaxRate: settings.taxProfile.estimatedMarginalTaxRate,
+          }
+        : property
+    ),
+    [properties, settings.taxProfile.estimatedMarginalTaxRate]
+  );
+  const monthlyAfterTaxCashflow = useMemo(
+    () => hasTaxAssumptions
+      ? calculatePortfolioTaxPreview(taxProperties, mortgages, settings.currency, fxSnapshot)
+        .estimatedMonthlyAfterTaxCashflow
+      : null,
+    [fxSnapshot, hasTaxAssumptions, mortgages, settings.currency, taxProperties]
+  );
   const valuationDisplayCurrency = useMemo(
     () => getMostCommonCurrency(
       propertyMetrics.map((metric) => metric.valuationDisplayCurrency),
@@ -369,7 +509,14 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
     [propertyMetrics, settings.currency]
   );
   const operatingDisplayCurrency = settings.currency;
-  const alerts = useMemo(() => generatePortfolioAlerts(properties), [properties]);
+  const generatedRentReceivables = useMemo(
+    () => generateRentReceivables(properties, rentReceivables, { payments: rentPayments }),
+    [properties, rentPayments, rentReceivables]
+  );
+  const alerts = useMemo(
+    () => generatePortfolioAlerts(properties, new Date(), generatedRentReceivables, rentPayments, expenseObligations, expensePayments),
+    [expenseObligations, expensePayments, generatedRentReceivables, properties, rentPayments]
+  );
   const debtPaydown = useMemo(
     () => calculateMortgageDebtPaydown({
       mortgages,
@@ -389,12 +536,14 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
       valuationDisplayCurrency,
       operatingDisplayCurrency,
       fxRates: fxSnapshot,
+      monthlyAfterTaxCashflow,
     }),
     [
       alerts,
       cashAccounts,
       debtPaydown,
       fxSnapshot,
+      monthlyAfterTaxCashflow,
       operatingDisplayCurrency,
       properties,
       propertyMetrics,
@@ -410,6 +559,11 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
   ].filter((slice) => slice.key === 'occupied' || slice.key === 'vacant' || slice.value > 0);
   const occupancySlices = occupancyLegendSlices.filter((slice) => slice.value > 0);
   const occupancyHealthy = viewModel.occupancy.totalCount > 0 && viewModel.occupancy.rate >= 80 && viewModel.occupancy.pendingCount === 0 && viewModel.occupancy.unknownCount === 0;
+  const equityPropertyRows = viewModel.properties
+    .filter((property) => property.currentEstimatedValue !== null && property.currentEstimatedValue > 0)
+    .sort((a, b) => (b.currentEstimatedValue ?? 0) - (a.currentEstimatedValue ?? 0));
+  const equityVisiblePropertyRows = equityPropertyRows.slice(0, 5);
+  const equityPropertyTotal = viewModel.valuation.value ?? equityPropertyRows.reduce((sum, property) => sum + (property.currentEstimatedValue ?? 0), 0);
 
   return (
     <div data-dashboard-variant="properties-only" className="w-full space-y-3.5 pb-5">
@@ -440,7 +594,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
         </div>
       </header>
 
-      <section className="grid items-stretch gap-4 xl:grid-cols-4 2xl:gap-5">
+      <section className="grid items-stretch gap-4 xl:grid-cols-5 2xl:gap-5">
         <MetricCard
           title={t('dashboardUi.propertiesOnly.totalValueTitle')}
           description={t('dashboardUi.propertiesOnly.totalValueDescription')}
@@ -462,31 +616,43 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
           t={t}
         />
         <MetricCard
-          title={t('dashboardUi.propertiesOnly.operatingExpensesTitle')}
-          description={t('dashboardUi.propertiesOnly.operatingExpensesDescription')}
-          amount={viewModel.operating.expenses}
+          title={t('dashboardUi.propertiesOnly.totalMonthlyExpensesTitle')}
+          description={t('dashboardUi.propertiesOnly.totalMonthlyExpensesDescription')}
+          amount={viewModel.operating.totalMonthlyExpenses}
           currency={viewModel.operatingDisplayCurrency}
           icon={<WalletCards className="h-5 w-5" />}
-          metricId="operating-expenses"
-          toneClassName={dashboardMetricToneClass.warning}
-          iconClassName={warningIconClassName}
+          metricId="total-monthly-expenses"
+          toneClassName="properties-only-expenses-value"
+          iconClassName={expensesIconClassName}
+          cardClassName="properties-only-expenses-card"
           t={t}
         />
         <MetricCard
-          title={t('dashboardUi.propertiesOnly.noiTitle')}
-          description={t('dashboardUi.propertiesOnly.noiDescription')}
-          amount={viewModel.operating.noi}
+          title={t('dashboardUi.propertiesOnly.netMonthlyCashflowTitle')}
+          description={t('dashboardUi.propertiesOnly.netMonthlyCashflowDescription')}
+          amount={viewModel.operating.netMonthlyCashflow}
           currency={viewModel.operatingDisplayCurrency}
           icon={<TrendingUp className="h-5 w-5" />}
-          metricId="noi"
-          toneClassName={(viewModel.operating.noi.value ?? 0) >= 0 ? dashboardMetricToneClass.success : dashboardMetricToneClass.danger}
-          iconClassName={(viewModel.operating.noi.value ?? 0) >= 0 ? successIconClassName : warningIconClassName}
-          tooltip={t('dashboardUi.propertiesOnly.noiTooltip')}
-          badge={viewModel.operating.margin === null ? null : (
+          metricId="net-monthly-cashflow"
+          toneClassName={(viewModel.operating.netMonthlyCashflow.value ?? 0) >= 0 ? dashboardMetricToneClass.success : dashboardMetricToneClass.danger}
+          iconClassName={(viewModel.operating.netMonthlyCashflow.value ?? 0) >= 0 ? successIconClassName : warningIconClassName}
+          badge={viewModel.operating.netMonthlyCashflow.value === null || viewModel.operating.grossRent.value === null || viewModel.operating.grossRent.value === 0 ? null : (
             <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10.5px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
-              {t('dashboardUi.propertiesOnly.operatingMargin', { value: formatPercentage(viewModel.operating.margin) })}
+              {t('dashboardUi.propertiesOnly.cashflowMargin', { value: formatPercentage((viewModel.operating.netMonthlyCashflow.value / viewModel.operating.grossRent.value) * 100) })}
             </span>
           )}
+          t={t}
+        />
+        <MetricCard
+          title={t('dashboardUi.propertiesOnly.afterTaxCashflowTitle')}
+          description={t(hasTaxAssumptions ? 'dashboardUi.propertiesOnly.afterTaxCashflowDescription' : 'dashboardUi.propertiesOnly.setTaxAssumptions')}
+          amount={viewModel.operating.afterTaxMonthlyCashflow}
+          currency={viewModel.operatingDisplayCurrency}
+          icon={<Landmark className="h-5 w-5" />}
+          metricId="after-tax-monthly-cashflow"
+          toneClassName={(viewModel.operating.afterTaxMonthlyCashflow.value ?? 0) >= 0 ? dashboardMetricToneClass.success : dashboardMetricToneClass.danger}
+          iconClassName={primaryIconClassName}
+          showUnavailableCurrency={hasTaxAssumptions}
           t={t}
         />
       </section>
@@ -512,13 +678,21 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
           </p>
         </DashboardCard>
 
+        <PropertiesOnlyOwnCapitalCard
+          amount={viewModel.ownCapitalInvested}
+          currency={viewModel.valuationDisplayCurrency}
+          properties={viewModel.properties}
+          onOpenProperties={onOpenProperties}
+          t={t}
+        />
+
         <PropertiesOnlyMortgageDebtCard
           debt={viewModel.debt}
           currency={viewModel.valuationDisplayCurrency}
           t={t}
         />
 
-        <DashboardCard className={panelClassName}>
+        <DashboardCard className={`${panelClassName} properties-only-equity-card`}>
           <CardHeading
             title={t('dashboardUi.propertiesOnly.equityTitle')}
             icon={<Building2 className="h-4 w-4" />}
@@ -534,52 +708,51 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-[var(--dashboard-border)] pt-2"><dt className={`font-medium ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</dt><dd className={`whitespace-nowrap font-bold tabular-nums ${dashboardLightValueClass}`}>{viewModel.equity.ltv === null ? '—' : formatPercentage(viewModel.equity.ltv)}</dd></div>
           </dl>
           {viewModel.equity.ltv !== null ? (
-            <div className="mt-3">
-              <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700" aria-label={t('dashboardUi.propertiesOnly.portfolioLtv')}>
-                <div className="h-full bg-blue-600" style={{ width: `${clampPercentage(viewModel.equity.equityShare ?? 0)}%` }} />
+            <div className="mt-3 border-t border-[var(--dashboard-border)] pt-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className={`font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</p>
+                <p className={`font-bold tabular-nums ${dashboardLightValueClass}`}>{formatPercentage(viewModel.equity.ltv)}</p>
               </div>
-              <div className={`mt-1.5 flex justify-between text-[10.5px] 2xl:text-[11px] ${dashboardLightMutedTextClass}`}>
+              <div className="mt-2 flex h-2 overflow-hidden rounded-full bg-slate-700 dark:bg-slate-600" aria-label={t('dashboardUi.propertiesOnly.portfolioLtv')}>
+                <div className="h-full bg-blue-500" style={{ width: `${clampPercentage(viewModel.equity.equityShare ?? 0)}%` }} />
+                <div className="h-full flex-1 bg-slate-700 dark:bg-slate-600" />
+              </div>
+              <div className={`mt-1 flex justify-between text-[10.5px] 2xl:text-[11px] ${dashboardLightMutedTextClass}`}>
                 <span>{formatPercentage(viewModel.equity.equityShare ?? 0)} {t('dashboardUi.propertiesOnly.equityShare')}</span>
                 <span>{formatPercentage(viewModel.equity.ltv)} {t('dashboardUi.propertiesOnly.debtShare')}</span>
               </div>
             </div>
           ) : null}
+          {equityPropertyRows.length > 0 ? (
+            <div className="mt-3 border-t border-[var(--dashboard-border)] pt-3" data-dashboard-breakdown="property-values">
+              <h3 className={`text-[13px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.propertyValuesTitle')}</h3>
+              <div className="mt-2 space-y-0.5">
+                {equityVisiblePropertyRows.map((property) => {
+                  const value = property.currentEstimatedValue ?? 0;
+                  const percentage = equityPropertyTotal > 0 ? (value / equityPropertyTotal) * 100 : 0;
+                  const propertyLabel = property.name;
+                  return (
+                    <div key={property.id} className="grid grid-cols-[minmax(4.5rem,0.8fr)_minmax(3.5rem,1fr)_auto_auto] items-center gap-2 border-b border-slate-100/60 py-1.5 last:border-b-0 dark:border-slate-800/50" data-property-name={property.name} data-property-percentage={percentage.toFixed(1)}>
+                      <span className={`min-w-0 truncate text-[11.5px] font-medium ${dashboardLightValueClass}`}>{propertyLabel}</span>
+                      <div className="h-1 overflow-hidden rounded-full bg-slate-100/70 dark:bg-slate-800/50" role="progressbar" aria-label={`${propertyLabel}: ${formatPercentage(percentage)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(percentage.toFixed(1))}>
+                        <div className="h-full rounded-full bg-blue-400/80" style={{ width: `${clampPercentage(percentage)}%` }} />
+                      </div>
+                      <span className={`whitespace-nowrap text-right text-[11px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, viewModel.valuationDisplayCurrency)}</span>
+                      <span className="w-8 text-right text-[11px] font-normal tabular-nums text-slate-400 dark:text-slate-500">{formatPercentage(percentage)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          {viewModel.properties.length > 5 ? (
+            <button type="button" onClick={onOpenProperties} className={`mt-3 inline-flex items-center gap-1 text-[11.5px] font-semibold ${primaryIconClassName}`}>
+              {t('dashboardUi.propertiesOnly.viewAllPropertiesCount', { count: viewModel.properties.length })}
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </DashboardCard>
 
-        <DashboardCard className={panelClassName}>
-          <CardHeading
-            title={t('dashboardUi.propertiesOnly.eventsTitle')}
-            icon={<BellRing className="h-4 w-4" />}
-            iconClassName={primaryIconClassName}
-          />
-          {viewModel.events.length === 0 ? (
-            <div className="mt-4 rounded-[14px] bg-slate-50 px-4 py-4 text-center dark:bg-slate-800/60">
-              <p className={`text-[12.5px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.eventsEmptyTitle')}</p>
-              <p className={`mt-1 text-[11.5px] leading-5 ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.eventsEmptyBody')}</p>
-            </div>
-          ) : (
-            <div className="mt-3.5 space-y-2">
-              {viewModel.events.map((alert) => {
-                const date = alert.dueDate ? new Date(alert.dueDate) : null;
-                const validDate = date && !Number.isNaN(date.getTime()) ? date : null;
-                return (
-                  <div key={alert.id} data-dashboard-event className="flex items-center gap-3 rounded-[13px] border border-[var(--dashboard-border)] px-3.5 py-3">
-                    <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-[10px] bg-slate-50 text-center dark:bg-slate-800">
-                      {validDate ? <><span className="text-[8px] font-bold uppercase text-slate-500 dark:text-slate-400">{new Intl.DateTimeFormat(locale, { month: 'short' }).format(validDate)}</span><span className="text-[13px] font-bold text-slate-800 dark:text-slate-100">{new Intl.DateTimeFormat(locale, { day: '2-digit' }).format(validDate)}</span></> : <CalendarDays className="h-4 w-4 text-slate-500" />}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className={`text-[12.5px] font-semibold leading-4 2xl:text-[13px] ${dashboardLightValueClass}`}>{getAlertTitle(alert, t)}</p>
-                      <p className={`mt-0.5 text-[11.5px] leading-4 ${dashboardLightMutedTextClass}`}>{alert.propertyName}</p>
-                    </div>
-                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${alert.severity === 'urgent' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300' : alert.severity === 'upcoming' ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
-                      {getAlertTiming(alert, t)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </DashboardCard>
       </section>
 
       <section className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_minmax(0,1.05fr)] 2xl:gap-5">
@@ -602,14 +775,14 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
                   <col className="w-[18%]" />
                 </colgroup>
                 <thead className={`border-b border-[var(--dashboard-border)] ${dashboardLightMutedTextClass}`}>
-                  <tr><th className="pb-2 font-medium">{t('dashboardUi.propertiesOnly.property')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.rent')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.expenses')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.result')}</th></tr>
+                  <tr><th className="pb-2 font-medium">{t('dashboardUi.propertiesOnly.property')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.rent')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.totalExpenses')}</th><th className="pb-2 pl-1 text-right font-medium">{t('dashboardUi.propertiesOnly.netCashflow')}</th></tr>
                 </thead>
                 <tbody>
                   {viewModel.properties.map((row) => (
                     <tr key={row.id} className="border-b border-[var(--dashboard-border)] last:border-0">
                       <td className="py-3 2xl:py-3.5"><div className="flex min-w-0 items-center gap-3"><PropertyThumbnail row={row} /><div className="min-w-0"><p className={`truncate font-semibold ${dashboardLightValueClass}`}>{row.name}</p><p className={`mt-0.5 truncate text-[11.5px] ${dashboardLightMutedTextClass}`}>{row.city}</p></div></div></td>
-                      {[row.monthlyRent, row.monthlyOperatingExpenses, row.monthlyOperatingResult].map((value, index) => (
-                        <td key={index} className={`whitespace-nowrap py-3 pl-1.5 text-right font-semibold tabular-nums 2xl:py-3.5 ${index === 2 && value !== null && value >= 0 ? 'text-emerald-700 dark:text-emerald-300' : dashboardLightValueClass}`} title={value === null ? t('dashboardUi.propertiesOnly.fxUnavailableCurrency', { currency: row.sourceOperatingCurrency }) : undefined}>
+                      {[row.monthlyRent, row.monthlyTotalExpenses, row.monthlyNetCashflow].map((value, index) => (
+                        <td key={index} className={`whitespace-nowrap py-3 pl-1.5 text-right font-semibold tabular-nums 2xl:py-3.5 ${index === 2 && value !== null ? (value > 0 ? 'text-emerald-700 dark:text-emerald-300' : value < 0 ? 'text-rose-700 dark:text-rose-300' : dashboardLightValueClass) : dashboardLightValueClass}`} title={value === null ? t('dashboardUi.propertiesOnly.fxUnavailableCurrency', { currency: row.sourceOperatingCurrency }) : undefined}>
                           {value === null ? `— ${row.sourceOperatingCurrency}` : formatAmount(value, viewModel.operatingDisplayCurrency)}
                         </td>
                       ))}
@@ -617,10 +790,10 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
                   ))}
                 </tbody>
                 <tfoot className="border-t-2 border-[var(--dashboard-border)]">
-                  <tr className={`font-bold ${dashboardLightValueClass}`}><td className="pt-3">{t('dashboardUi.propertiesOnly.portfolioTotal')}</td><td data-table-total="gross-rent" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.grossRent.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="operating-expenses" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.expenses.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="noi" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums text-emerald-700 dark:text-emerald-300">{formatAmount(viewModel.operating.noi.value, viewModel.operatingDisplayCurrency)}</td></tr>
+                  <tr className={`font-bold ${dashboardLightValueClass}`}><td className="pt-3">{t('dashboardUi.propertiesOnly.portfolioTotal')}</td><td data-table-total="gross-rent" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.grossRent.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="total-monthly-expenses" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.totalMonthlyExpenses.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="net-monthly-cashflow" className={`whitespace-nowrap pt-3 pl-1 text-right tabular-nums ${(viewModel.operating.netMonthlyCashflow.value ?? 0) > 0 ? 'text-emerald-700 dark:text-emerald-300' : (viewModel.operating.netMonthlyCashflow.value ?? 0) < 0 ? 'text-rose-700 dark:text-rose-300' : ''}`}>{formatAmount(viewModel.operating.netMonthlyCashflow.value, viewModel.operatingDisplayCurrency)}</td></tr>
                 </tfoot>
               </table>
-              <CoverageNote coverage={viewModel.operating.noi.coverage} t={t} />
+              <CoverageNote coverage={viewModel.operating.netMonthlyCashflow.coverage} t={t} />
             </div>
           )}
         </DashboardCard>
@@ -646,7 +819,8 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
           </button>
         </DashboardCard>
 
-        <DashboardCard className={panelClassName}>
+        <div className="flex h-full flex-col gap-4 2xl:gap-5">
+        <DashboardCard className={`${panelClassName} flex-1`}>
           <CardHeading title={t('dashboardUi.propertiesOnly.occupancyTitle')} icon={<Building2 className="h-4 w-4" />} iconClassName={successIconClassName} />
           <div className="mt-3.5 grid grid-cols-[minmax(148px,1fr)_minmax(116px,0.95fr)] items-center gap-4">
             <div className="relative h-[178px] 2xl:h-[198px]">
@@ -666,6 +840,41 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
             <p className="text-[12px] font-semibold leading-4">{t(`dashboardUi.propertiesOnly.${occupancyHealthy ? 'occupancyExcellentTitle' : 'occupancyReviewTitle'}`)}</p>
           </div>
         </DashboardCard>
+        <DashboardCard className={`${panelClassName} flex-1`}>
+          <CardHeading
+            title={t('dashboardUi.propertiesOnly.eventsTitle')}
+            icon={<BellRing className="h-4 w-4" />}
+            iconClassName={primaryIconClassName}
+          />
+          {viewModel.events.length === 0 ? (
+            <div className="mt-4 rounded-[14px] bg-slate-50 px-4 py-4 text-center dark:bg-slate-800/60">
+              <p className={`text-[12.5px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.eventsEmptyTitle')}</p>
+              <p className={`mt-1 text-[11.5px] leading-5 ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.eventsEmptyBody')}</p>
+            </div>
+          ) : (
+            <div className="mt-3.5 space-y-2">
+              {viewModel.events.map((alert) => {
+                const date = alert.dueDate ? new Date(`${alert.dueDate}T12:00:00`) : null;
+                const validDate = date && !Number.isNaN(date.getTime()) ? date : null;
+                return (
+                  <button type="button" key={alert.id} data-dashboard-event disabled={!['review-rent-collection', 'review-expenses'].includes(alert.action)} onClick={alert.action === 'review-rent-collection' ? onOpenRentCollection : alert.action === 'review-expenses' ? onOpenExpenses : undefined} className="flex w-full items-center gap-3 rounded-[13px] border border-[var(--dashboard-border)] px-3.5 py-3 text-left disabled:cursor-default">
+                    <span className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-[10px] bg-slate-50 text-center dark:bg-slate-800">
+                      {validDate ? <><span className="text-[8px] font-bold uppercase text-slate-500 dark:text-slate-400">{new Intl.DateTimeFormat(locale, { month: 'short' }).format(validDate)}</span><span className="text-[13px] font-bold text-slate-800 dark:text-slate-100">{new Intl.DateTimeFormat(locale, { day: '2-digit' }).format(validDate)}</span></> : <CalendarDays className="h-4 w-4 text-slate-500" />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-[12.5px] font-semibold leading-4 2xl:text-[13px] ${dashboardLightValueClass}`}>{getAlertTitle(alert, t)}</p>
+                      <p className={`mt-0.5 text-[11.5px] leading-4 ${dashboardLightMutedTextClass}`}>{alert.propertyName}</p>
+                    </div>
+                    <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${alert.severity === 'urgent' ? 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300' : alert.severity === 'upcoming' ? 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+                      {getAlertTiming(alert, t)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </DashboardCard>
+        </div>
       </section>
     </div>
   );
