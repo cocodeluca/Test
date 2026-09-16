@@ -105,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className={`hidden h-screen w-[224px] shrink-0 flex-col border-r lg:fixed lg:inset-y-0 lg:left-0 lg:flex ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}
+      className={`app-desktop-sidebar hidden h-screen shrink-0 flex-col border-r lg:fixed lg:inset-y-0 lg:left-0 lg:flex ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}
     >
       <div className={`border-b px-4 py-3 ${appBorderClass}`}>
         <div className="flex items-center gap-2.5">

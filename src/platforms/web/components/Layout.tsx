@@ -124,7 +124,7 @@ export const Layout: React.FC<LayoutProps> = ({
         onLogout={onLogout}
         tutorialTargetId={tutorialTargetId}
       />
-      <main className="flex-1 overflow-auto lg:pl-[224px]">
+      <main className="app-desktop-main min-w-0 flex-1 overflow-auto">
         <div className={`sticky top-0 z-20 border-b px-4 py-4 md:hidden ${appBorderClass} ${appPanelClass} ${appSidebarSurfaceClass} rounded-none shadow-none`}>
           <div className="flex items-center justify-between gap-2.5">
             <div className="flex items-center gap-2.5">
@@ -159,7 +159,7 @@ export const Layout: React.FC<LayoutProps> = ({
             isDashboardPage
               ? settings.density === 'compact'
                 ? 'px-3 pb-24 pt-2 md:px-5 md:pb-3'
-                : 'px-3 pb-24 pt-2 md:px-6 md:pb-3 xl:px-8'
+                : 'dashboard-page-content pb-24 pt-2 md:pb-3'
               : settings.density === 'compact'
                 ? 'px-4 pb-24 pt-4 md:px-8 md:pb-8 md:pt-7'
                 : 'px-4 pb-24 pt-5 md:px-10 md:pb-10 md:pt-8 xl:px-12'
