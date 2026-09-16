@@ -47,7 +47,7 @@ test('properties-only dashboard receives real data and keeps its presentation is
 
   const lowerRowStart = propertiesOnlySource.indexOf('properties-only-lower-grid');
   const lowerRow = propertiesOnlySource.slice(lowerRowStart);
-  assert.ok(lowerRow.indexOf('occupancyTitle') < lowerRow.indexOf('eventsTitle'));
+  assert.ok(lowerRow.indexOf('PropertiesOnlyOccupancyCard') < lowerRow.indexOf('eventsTitle'));
   assert.match(lowerRow, /properties-only-lower-stack/);
 
   assert.match(webStyles, /container-type:\s*inline-size/);
@@ -57,6 +57,8 @@ test('properties-only dashboard receives real data and keeps its presentation is
   assert.match(webStyles, /properties-only-lower-grid[\s\S]*?repeat\(auto-fit, minmax\(min\(100%, 19rem\), 1fr\)\)/);
   assert.match(webStyles, /properties-only-kpi-value[\s\S]*?font-size:\s*clamp\(/);
   assert.match(webStyles, /properties-only-occupancy-chart[\s\S]*?height:\s*clamp\(/);
+  assert.match(webStyles, /properties-only-money-value[\s\S]*?overflow-wrap:\s*anywhere/);
+  assert.match(propertiesOnlySource, /properties-only-table-value/);
   assert.match(webStyles, /@media \(min-width: 1024px\) and \(max-height: 900px\)/);
   assert.match(webStyles, /properties-only-kpi-card,[\s\S]*?properties-only-summary-grid \.properties-only-panel[\s\S]*?padding-block:\s*0\.75rem/);
   assert.match(webStyles, /properties-only-debt-projection[\s\S]*?padding-block:\s*0\.5rem/);

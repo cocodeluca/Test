@@ -271,6 +271,43 @@ test('derives equity and LTV from the same covered valuation and debt', () => {
   assert.equal(viewModel.equity.coverage.status, 'available');
 });
 
+test('keeps equity mathematics correct at and above the property valuation boundary', () => {
+  const buildAtDebt = (currentDebt: number) => buildPropertiesOnlyDashboardViewModel({
+    properties: [property('boundary', 'occupied', 200_000)],
+    propertyMetrics: [
+      propertyMetric('boundary', {
+        monthlyRent: 1_000,
+        monthlyExpenses: 100,
+        currentEstimatedValue: 200_000,
+      }),
+    ],
+    cashAccounts: [],
+    alerts: [],
+    debtPaydown: {
+      ...debtPaydown,
+      currentDebt,
+      projectedDebtAfter12Months: currentDebt,
+      status: 'available',
+      candidateMortgageCount: 1,
+      eligibleMortgageCount: 1,
+      debtCoveredMortgageCount: 1,
+    },
+    valuationDisplayCurrency: 'EUR',
+    operatingDisplayCurrency: 'EUR',
+    fxRates: { EUR: 1, USD: 0.9, ARS: 0.001, GBP: 1.2 },
+  });
+
+  const fullyLeveraged = buildAtDebt(200_000);
+  assert.equal(fullyLeveraged.equity.value, 0);
+  assert.equal(fullyLeveraged.equity.ltv, 100);
+  assert.equal(fullyLeveraged.equity.equityShare, 0);
+
+  const underwater = buildAtDebt(240_000);
+  assert.equal(underwater.equity.value, -40_000);
+  assert.equal(underwater.equity.ltv, 120);
+  assert.equal(underwater.equity.equityShare, -20);
+});
+
 test('sums canonical per-property invested capital instead of substituting equity', () => {
   const viewModel = buildPropertiesOnlyDashboardViewModel({
     properties: [property('one', 'occupied', 200_000), property('two', 'occupied', 300_000)],

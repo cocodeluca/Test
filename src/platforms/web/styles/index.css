@@ -504,6 +504,16 @@ html.dark {
     font-size: clamp(2rem, calc(1.2rem + 1.15cqw), 2.75rem);
   }
 
+  [data-dashboard-variant='properties-only'] .properties-only-money-value,
+  [data-dashboard-variant='properties-only'] .properties-only-summary-value,
+  [data-dashboard-variant='properties-only'] .properties-only-own-capital-value,
+  [data-dashboard-variant='properties-only'] .properties-only-compact-money,
+  [data-dashboard-variant='properties-only'] .properties-only-table-value {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
   [data-dashboard-variant='properties-only'] .properties-only-debt-detail-grid {
     gap: clamp(0.5rem, 0.75cqw, 0.625rem);
   }

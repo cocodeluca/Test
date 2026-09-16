@@ -129,6 +129,7 @@ const CoveredAmount: React.FC<{
   showUnavailableCurrency?: boolean;
 }> = ({ amount, currency, t, className = '', metricId, showUnavailableCurrency = true }) => (
   <div
+    className="min-w-0"
     data-dashboard-metric={metricId}
     data-raw-value={amount.value ?? 'unavailable'}
     data-currency={currency}
@@ -136,7 +137,7 @@ const CoveredAmount: React.FC<{
     data-covered-count={amount.coverage.coveredCount}
     data-total-count={amount.coverage.totalCount}
   >
-    <p className={className} data-formatted-value>
+    <p className={`${className} properties-only-money-value min-w-0`} data-formatted-value>
       {formatAmount(amount.value, currency)}
       {amount.value === null && showUnavailableCurrency ? (
         <span
@@ -398,7 +399,7 @@ export const PropertiesOnlyOwnCapitalCard: React.FC<{
                   <div className="h-1 overflow-hidden rounded-full bg-slate-100/40 dark:bg-slate-800/30" role="progressbar" aria-label={`${propertyLabel}: ${Math.round(percentage)}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percentage)}>
                     <div className="h-full rounded-full bg-blue-400/80" style={{ width: `${clampPercentage(percentage)}%` }} />
                   </div>
-                  <span className={`whitespace-nowrap text-right text-[11.5px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, currency)}</span>
+                  <span className={`properties-only-compact-money min-w-0 text-right text-[11.5px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, currency)}</span>
                   <span className="w-8 text-right text-[11.5px] font-normal tabular-nums text-slate-400 dark:text-slate-500">{Math.round(percentage)}%</span>
                 </div>
               );
@@ -417,6 +418,127 @@ export const PropertiesOnlyOwnCapitalCard: React.FC<{
         <p className="mt-0.5">{t('dashboardUi.propertiesOnly.ownCapitalInvestedIncludes')}</p>
         <CoverageNote coverage={amount.coverage} t={t} />
       </div>
+    </DashboardCard>
+  );
+};
+
+export const PropertiesOnlyCashflowMarginBadge: React.FC<{
+  netMonthlyCashflow: number | null;
+  grossRent: number | null;
+  t: Translate;
+}> = ({ netMonthlyCashflow, grossRent, t }) => {
+  if (netMonthlyCashflow === null || grossRent === null || grossRent === 0) {
+    return null;
+  }
+
+  const margin = (netMonthlyCashflow / grossRent) * 100;
+  const isNegative = netMonthlyCashflow < 0 || margin < 0;
+
+  return (
+    <span
+      className={`inline-flex rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${
+        isNegative
+          ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'
+          : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+      }`}
+      data-cashflow-margin-tone={isNegative ? 'negative' : 'positive'}
+    >
+      {t('dashboardUi.propertiesOnly.cashflowMargin', { value: formatPercentage(margin) })}
+    </span>
+  );
+};
+
+export const PropertiesOnlyEquityPosition: React.FC<{
+  equity: PropertiesOnlyDashboardViewModel['equity'];
+  currency: DisplayCurrency;
+  t: Translate;
+}> = ({ equity, currency, t }) => {
+  if (equity.ltv === null) {
+    return null;
+  }
+
+  const isUnderwater = equity.value !== null && equity.value < 0 && equity.ltv > 100;
+  const displayEquityShare = clampPercentage(equity.equityShare ?? 0);
+  const displayDebtShare = clampPercentage(equity.ltv);
+
+  return (
+    <div className="properties-only-equity-ltv mt-2.5 border-t border-[var(--dashboard-border)] pt-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <p className={`font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</p>
+        <p className={`font-bold tabular-nums ${isUnderwater ? dashboardMetricToneClass.danger : dashboardLightValueClass}`}>{formatPercentage(equity.ltv)}</p>
+      </div>
+      {isUnderwater ? (
+        <div
+          className="mt-2 rounded-[12px] bg-rose-50 px-3 py-2 text-[11px] font-semibold leading-4 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300"
+          data-equity-position="underwater"
+        >
+          {t('dashboardUi.propertiesOnly.equityUnderwater', {
+            amount: formatAmount(Math.abs(equity.value ?? 0), currency),
+          })}
+        </div>
+      ) : (
+        <div data-equity-position="standard">
+          <div
+            className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-slate-700 dark:bg-slate-600"
+            role="progressbar"
+            aria-label={t('dashboardUi.propertiesOnly.portfolioLtv')}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={displayDebtShare}
+          >
+            <div className="h-full bg-blue-500" style={{ width: `${displayEquityShare}%` }} />
+            <div className="h-full flex-1 bg-slate-700 dark:bg-slate-600" />
+          </div>
+          <div className={`mt-0.5 flex justify-between text-[10.5px] 2xl:text-[11px] ${dashboardLightMutedTextClass}`}>
+            <span data-equity-share>{formatPercentage(displayEquityShare)} {t('dashboardUi.propertiesOnly.equityShare')}</span>
+            <span data-debt-share>{formatPercentage(displayDebtShare)} {t('dashboardUi.propertiesOnly.debtShare')}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const PropertiesOnlyOccupancyCard: React.FC<{
+  occupancy: PropertiesOnlyDashboardViewModel['occupancy'];
+  t: Translate;
+}> = ({ occupancy, t }) => {
+  const legendSlices = [
+    { key: 'occupied', label: t('dashboardUi.propertiesOnly.occupied'), value: occupancy.occupiedCount, color: '#16a34a' },
+    { key: 'vacant', label: t('dashboardUi.propertiesOnly.vacant'), value: occupancy.vacantCount, color: '#94a3b8' },
+    { key: 'pending', label: t('dashboardUi.propertiesOnly.pending'), value: occupancy.pendingCount, color: '#f59e0b' },
+    { key: 'unknown', label: t('dashboardUi.propertiesOnly.unknown'), value: occupancy.unknownCount, color: '#e11d48' },
+  ].filter((slice) => slice.key === 'occupied' || slice.key === 'vacant' || slice.value > 0);
+  const chartSlices = legendSlices.filter((slice) => slice.value > 0);
+  const occupancyHealthy = occupancy.rate >= 80 && occupancy.pendingCount === 0 && occupancy.unknownCount === 0;
+
+  return (
+    <DashboardCard className={`${panelClassName} flex-1`}>
+      <CardHeading title={t('dashboardUi.propertiesOnly.occupancyTitle')} icon={<Building2 className="h-4 w-4" />} iconClassName={successIconClassName} />
+      {occupancy.totalCount === 0 ? (
+        <div className="mt-4 rounded-[14px] bg-slate-50 px-4 py-4 text-center dark:bg-slate-800/60" data-dashboard-empty-state="occupancy">
+          <p className={`text-[12.5px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.occupancyEmptyTitle')}</p>
+          <p className={`mt-1 text-[11.5px] leading-5 ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.occupancyEmptyBody')}</p>
+        </div>
+      ) : (
+        <>
+          <div className="properties-only-occupancy-layout mt-3.5 grid items-center">
+            <div className="properties-only-occupancy-chart relative">
+              <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chartSlices} dataKey="value" innerRadius={54} outerRadius={76} paddingAngle={2} stroke="white" strokeWidth={3}>{chartSlices.map((slice) => <Cell key={slice.key} fill={slice.color} />)}</Pie></PieChart></ResponsiveContainer>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center"><span className={`text-[1.625rem] font-bold ${dashboardLightValueClass}`}>{formatPercentage(occupancy.rate, 0)}</span><span className={`text-[11px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.occupancy')}</span></div>
+            </div>
+            <div className="space-y-3">
+              {legendSlices.map((slice) => (
+                <div key={slice.key} className="flex items-center justify-between gap-2 text-[12px] 2xl:text-[12.5px]"><span className={`flex min-w-0 items-center gap-2 ${dashboardLightMutedTextClass}`}><span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} /><span className="leading-4">{slice.label}</span></span><span className={`shrink-0 font-bold tabular-nums ${dashboardLightValueClass}`}>{slice.value}</span></div>
+              ))}
+            </div>
+          </div>
+          <div className={`mt-3 flex items-center gap-2 rounded-[12px] px-3.5 py-2.5 ${occupancyHealthy ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+            {occupancyHealthy ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <Info className="h-4 w-4 shrink-0" />}
+            <p className="text-[12px] font-semibold leading-4">{t(`dashboardUi.propertiesOnly.${occupancyHealthy ? 'occupancyExcellentTitle' : 'occupancyReviewTitle'}`)}</p>
+          </div>
+        </>
+      )}
     </DashboardCard>
   );
 };
@@ -560,14 +682,6 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
     ]
   );
   const locale = settings.language === 'es' ? 'es-ES' : settings.language === 'pt' ? 'pt-PT' : 'en-US';
-  const occupancyLegendSlices = [
-    { key: 'occupied', label: t('dashboardUi.propertiesOnly.occupied'), value: viewModel.occupancy.occupiedCount, color: '#16a34a' },
-    { key: 'vacant', label: t('dashboardUi.propertiesOnly.vacant'), value: viewModel.occupancy.vacantCount, color: '#94a3b8' },
-    { key: 'pending', label: t('dashboardUi.propertiesOnly.pending'), value: viewModel.occupancy.pendingCount, color: '#f59e0b' },
-    { key: 'unknown', label: t('dashboardUi.propertiesOnly.unknown'), value: viewModel.occupancy.unknownCount, color: '#e11d48' },
-  ].filter((slice) => slice.key === 'occupied' || slice.key === 'vacant' || slice.value > 0);
-  const occupancySlices = occupancyLegendSlices.filter((slice) => slice.value > 0);
-  const occupancyHealthy = viewModel.occupancy.totalCount > 0 && viewModel.occupancy.rate >= 80 && viewModel.occupancy.pendingCount === 0 && viewModel.occupancy.unknownCount === 0;
   const equityPropertyRows = viewModel.properties
     .filter((property) => property.currentEstimatedValue !== null && property.currentEstimatedValue > 0)
     .sort((a, b) => (b.currentEstimatedValue ?? 0) - (a.currentEstimatedValue ?? 0));
@@ -645,11 +759,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
           metricId="net-monthly-cashflow"
           toneClassName={(viewModel.operating.netMonthlyCashflow.value ?? 0) >= 0 ? dashboardMetricToneClass.success : dashboardMetricToneClass.danger}
           iconClassName={(viewModel.operating.netMonthlyCashflow.value ?? 0) >= 0 ? successIconClassName : warningIconClassName}
-          badge={viewModel.operating.netMonthlyCashflow.value === null || viewModel.operating.grossRent.value === null || viewModel.operating.grossRent.value === 0 ? null : (
-            <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10.5px] font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
-              {t('dashboardUi.propertiesOnly.cashflowMargin', { value: formatPercentage((viewModel.operating.netMonthlyCashflow.value / viewModel.operating.grossRent.value) * 100) })}
-            </span>
-          )}
+          badge={<PropertiesOnlyCashflowMarginBadge netMonthlyCashflow={viewModel.operating.netMonthlyCashflow.value} grossRent={viewModel.operating.grossRent.value} t={t} />}
           t={t}
         />
         <MetricCard
@@ -707,31 +817,16 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
             icon={<Building2 className="h-4 w-4" />}
             iconClassName={primaryIconClassName}
           />
-          <p className={`properties-only-summary-value mt-4 font-bold leading-none tracking-[-0.04em] ${dashboardLightValueClass}`}>
+          <p className={`properties-only-summary-value properties-only-money-value min-w-0 mt-4 font-bold leading-none tracking-[-0.04em] ${dashboardLightValueClass}`}>
             {formatAmount(viewModel.equity.value, viewModel.valuationDisplayCurrency)}
           </p>
           <CoverageNote coverage={viewModel.equity.coverage} t={t} />
           <dl className="properties-only-equity-summary mt-3 space-y-2 border-t border-[var(--dashboard-border)] pt-2.5 text-[12.5px] 2xl:text-[13px]">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><dt className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.propertyValue')}</dt><dd className={`whitespace-nowrap font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(viewModel.valuation.value, viewModel.valuationDisplayCurrency)}</dd></div>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3"><dt className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.mortgageDebt')}</dt><dd className={`whitespace-nowrap font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatBalanceSheetDebt(viewModel.debt.current.value, viewModel.valuationDisplayCurrency)}</dd></div>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-t border-[var(--dashboard-border)] pt-2"><dt className={`font-medium ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</dt><dd className={`whitespace-nowrap font-bold tabular-nums ${dashboardLightValueClass}`}>{viewModel.equity.ltv === null ? '—' : formatPercentage(viewModel.equity.ltv)}</dd></div>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,auto)] gap-3"><dt className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.propertyValue')}</dt><dd className={`properties-only-compact-money min-w-0 text-right font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(viewModel.valuation.value, viewModel.valuationDisplayCurrency)}</dd></div>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,auto)] gap-3"><dt className={dashboardLightMutedTextClass}>{t('dashboardUi.propertiesOnly.mortgageDebt')}</dt><dd className={`properties-only-compact-money min-w-0 text-right font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatBalanceSheetDebt(viewModel.debt.current.value, viewModel.valuationDisplayCurrency)}</dd></div>
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,auto)] gap-3 border-t border-[var(--dashboard-border)] pt-2"><dt className={`font-medium ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</dt><dd className={`properties-only-compact-money min-w-0 text-right font-bold tabular-nums ${dashboardLightValueClass}`}>{viewModel.equity.ltv === null ? '—' : formatPercentage(viewModel.equity.ltv)}</dd></div>
           </dl>
-          {viewModel.equity.ltv !== null ? (
-              <div className="properties-only-equity-ltv mt-2.5 border-t border-[var(--dashboard-border)] pt-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <p className={`font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.portfolioLtv')}</p>
-                <p className={`font-bold tabular-nums ${dashboardLightValueClass}`}>{formatPercentage(viewModel.equity.ltv)}</p>
-              </div>
-              <div className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-slate-700 dark:bg-slate-600" aria-label={t('dashboardUi.propertiesOnly.portfolioLtv')}>
-                <div className="h-full bg-blue-500" style={{ width: `${clampPercentage(viewModel.equity.equityShare ?? 0)}%` }} />
-                <div className="h-full flex-1 bg-slate-700 dark:bg-slate-600" />
-              </div>
-              <div className={`mt-0.5 flex justify-between text-[10.5px] 2xl:text-[11px] ${dashboardLightMutedTextClass}`}>
-                <span>{formatPercentage(viewModel.equity.equityShare ?? 0)} {t('dashboardUi.propertiesOnly.equityShare')}</span>
-                <span>{formatPercentage(viewModel.equity.ltv)} {t('dashboardUi.propertiesOnly.debtShare')}</span>
-              </div>
-            </div>
-          ) : null}
+          <PropertiesOnlyEquityPosition equity={viewModel.equity} currency={viewModel.valuationDisplayCurrency} t={t} />
           {equityPropertyRows.length > 0 ? (
             <div className="mt-2.5 border-t border-[var(--dashboard-border)] pt-2.5" data-dashboard-breakdown="property-values">
               <h3 className={`text-[13px] font-semibold ${dashboardLightValueClass}`}>{t('dashboardUi.propertiesOnly.propertyValuesTitle')}</h3>
@@ -746,7 +841,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
                       <div className="h-1 overflow-hidden rounded-full bg-slate-100/70 dark:bg-slate-800/50" role="progressbar" aria-label={`${propertyLabel}: ${formatPercentage(percentage)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Number(percentage.toFixed(1))}>
                         <div className="h-full rounded-full bg-blue-400/80" style={{ width: `${clampPercentage(percentage)}%` }} />
                       </div>
-                      <span className={`whitespace-nowrap text-right text-[11px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, viewModel.valuationDisplayCurrency)}</span>
+                      <span className={`properties-only-compact-money min-w-0 text-right text-[11px] font-semibold tabular-nums ${dashboardLightValueClass}`}>{formatAmount(value, viewModel.valuationDisplayCurrency)}</span>
                       <span className="w-8 text-right text-[11px] font-normal tabular-nums text-slate-400 dark:text-slate-500">{formatPercentage(percentage)}</span>
                     </div>
                   );
@@ -775,7 +870,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
           {viewModel.properties.length === 0 ? (
             <p className={`mt-8 text-center text-[13px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.propertiesEmpty')}</p>
           ) : (
-            <div className="mt-3.5">
+            <div className="mt-3.5 min-w-0 overflow-hidden">
               <table className="w-full table-fixed text-left text-[12px] 2xl:text-[13px]">
                 <colgroup>
                   <col className="w-[46%]" />
@@ -791,7 +886,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
                     <tr key={row.id} className="border-b border-[var(--dashboard-border)] last:border-0">
                       <td className="py-3 2xl:py-3.5"><div className="flex min-w-0 items-center gap-3"><PropertyThumbnail row={row} /><div className="min-w-0"><p className={`truncate font-semibold ${dashboardLightValueClass}`}>{row.name}</p><p className={`mt-0.5 truncate text-[11.5px] ${dashboardLightMutedTextClass}`}>{row.city}</p></div></div></td>
                       {[row.monthlyRent, row.monthlyTotalExpenses, row.monthlyNetCashflow].map((value, index) => (
-                        <td key={index} className={`whitespace-nowrap py-3 pl-1.5 text-right font-semibold tabular-nums 2xl:py-3.5 ${index === 2 && value !== null ? (value > 0 ? 'text-emerald-700 dark:text-emerald-300' : value < 0 ? 'text-rose-700 dark:text-rose-300' : dashboardLightValueClass) : dashboardLightValueClass}`} title={value === null ? t('dashboardUi.propertiesOnly.fxUnavailableCurrency', { currency: row.sourceOperatingCurrency }) : undefined}>
+                        <td key={index} className={`properties-only-table-value min-w-0 break-words py-3 pl-1.5 text-right font-semibold tabular-nums 2xl:py-3.5 ${index === 2 && value !== null ? (value > 0 ? 'text-emerald-700 dark:text-emerald-300' : value < 0 ? 'text-rose-700 dark:text-rose-300' : dashboardLightValueClass) : dashboardLightValueClass}`} title={value === null ? t('dashboardUi.propertiesOnly.fxUnavailableCurrency', { currency: row.sourceOperatingCurrency }) : undefined}>
                           {value === null ? `— ${row.sourceOperatingCurrency}` : formatAmount(value, viewModel.operatingDisplayCurrency)}
                         </td>
                       ))}
@@ -799,7 +894,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
                   ))}
                 </tbody>
                 <tfoot className="border-t-2 border-[var(--dashboard-border)]">
-                  <tr className={`font-bold ${dashboardLightValueClass}`}><td className="pt-3">{t('dashboardUi.propertiesOnly.portfolioTotal')}</td><td data-table-total="gross-rent" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.grossRent.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="total-monthly-expenses" className="whitespace-nowrap pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.totalMonthlyExpenses.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="net-monthly-cashflow" className={`whitespace-nowrap pt-3 pl-1 text-right tabular-nums ${(viewModel.operating.netMonthlyCashflow.value ?? 0) > 0 ? 'text-emerald-700 dark:text-emerald-300' : (viewModel.operating.netMonthlyCashflow.value ?? 0) < 0 ? 'text-rose-700 dark:text-rose-300' : ''}`}>{formatAmount(viewModel.operating.netMonthlyCashflow.value, viewModel.operatingDisplayCurrency)}</td></tr>
+                  <tr className={`font-bold ${dashboardLightValueClass}`}><td className="pt-3">{t('dashboardUi.propertiesOnly.portfolioTotal')}</td><td data-table-total="gross-rent" className="properties-only-table-value min-w-0 break-words pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.grossRent.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="total-monthly-expenses" className="properties-only-table-value min-w-0 break-words pt-3 pl-1 text-right tabular-nums">{formatAmount(viewModel.operating.totalMonthlyExpenses.value, viewModel.operatingDisplayCurrency)}</td><td data-table-total="net-monthly-cashflow" className={`properties-only-table-value min-w-0 break-words pt-3 pl-1 text-right tabular-nums ${(viewModel.operating.netMonthlyCashflow.value ?? 0) > 0 ? 'text-emerald-700 dark:text-emerald-300' : (viewModel.operating.netMonthlyCashflow.value ?? 0) < 0 ? 'text-rose-700 dark:text-rose-300' : ''}`}>{formatAmount(viewModel.operating.netMonthlyCashflow.value, viewModel.operatingDisplayCurrency)}</td></tr>
                 </tfoot>
               </table>
               <CoverageNote coverage={viewModel.operating.netMonthlyCashflow.coverage} t={t} />
@@ -829,26 +924,7 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
         </DashboardCard>
 
         <div className="properties-only-lower-stack flex h-full flex-col">
-        <DashboardCard className={`${panelClassName} flex-1`}>
-          <CardHeading title={t('dashboardUi.propertiesOnly.occupancyTitle')} icon={<Building2 className="h-4 w-4" />} iconClassName={successIconClassName} />
-          <div className="properties-only-occupancy-layout mt-3.5 grid items-center">
-            <div className="properties-only-occupancy-chart relative">
-              {viewModel.occupancy.totalCount > 0 ? (
-                <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={occupancySlices} dataKey="value" innerRadius={54} outerRadius={76} paddingAngle={2} stroke="white" strokeWidth={3}>{occupancySlices.map((slice) => <Cell key={slice.key} fill={slice.color} />)}</Pie></PieChart></ResponsiveContainer>
-              ) : <div className="absolute inset-5 rounded-full border-[18px] border-slate-100 dark:border-slate-800" />}
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center"><span className={`text-[1.625rem] font-bold ${dashboardLightValueClass}`}>{formatPercentage(viewModel.occupancy.rate, 0)}</span><span className={`text-[11px] ${dashboardLightMutedTextClass}`}>{t('dashboardUi.propertiesOnly.occupancy')}</span></div>
-            </div>
-            <div className="space-y-3">
-              {occupancyLegendSlices.map((slice) => (
-                <div key={slice.key} className="flex items-center justify-between gap-2 text-[12px] 2xl:text-[12.5px]"><span className={`flex min-w-0 items-center gap-2 ${dashboardLightMutedTextClass}`}><span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} /><span className="leading-4">{slice.label}</span></span><span className={`shrink-0 font-bold tabular-nums ${dashboardLightValueClass}`}>{slice.value}</span></div>
-              ))}
-            </div>
-          </div>
-          <div className={`mt-3 flex items-center gap-2 rounded-[12px] px-3.5 py-2.5 ${occupancyHealthy ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300'}`}>
-            {occupancyHealthy ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <Info className="h-4 w-4 shrink-0" />}
-            <p className="text-[12px] font-semibold leading-4">{t(`dashboardUi.propertiesOnly.${occupancyHealthy ? 'occupancyExcellentTitle' : 'occupancyReviewTitle'}`)}</p>
-          </div>
-        </DashboardCard>
+        <PropertiesOnlyOccupancyCard occupancy={viewModel.occupancy} t={t} />
         <DashboardCard className={`${panelClassName} flex-1`}>
           <CardHeading
             title={t('dashboardUi.propertiesOnly.eventsTitle')}
