@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
 import type { Mortgage, Property } from '../src/common/types';
+import { calculateMortgageSnapshot } from '../src/common/utils/calculations';
 import { AppSafetyProvider } from '../src/platforms/web/context/AppSafetyContext';
 import { SettingsProvider } from '../src/platforms/web/context/SettingsContext';
 import { PropertyCard } from '../src/platforms/web/components/PropertyCardExpanded';
@@ -100,13 +101,18 @@ const renderSummary = (summaryProperty: Property = property) =>
   );
 
 test('renders the compact Summary hero, KPI strip, valuation and mortgage sections', () => {
+  const asOf = new Date();
+  const expectedLtv =
+    (calculateMortgageSnapshot(mortgage, asOf).displayedBalance / property.currentEstimatedValue) * 100;
   const markup = renderSummary();
+  const renderedLtv = markup.match(/(\d+(?:[.,]\d+)?)% LTV/);
 
   assert.match(markup, /property-summary-overview/);
   assert.match(markup, /Málaga Apartment/);
   assert.match(markup, /Compra y valoracion/);
   assert.match(markup, /CaixaBank/);
-  assert.match(markup, /68\.0% LTV/);
+  assert.ok(renderedLtv, 'expected the rendered summary to include an LTV percentage');
+  assert.equal(Number(renderedLtv[1].replace(',', '.')), Number(expectedLtv.toFixed(1)));
 });
 
 test('uses the compact photo empty state when no gallery image exists', () => {
