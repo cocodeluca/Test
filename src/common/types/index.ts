@@ -618,6 +618,19 @@ export interface BankTransactionSyncState {
   updatedAt: string;
 }
 
+export type BankReconciliationStatus = 'unmatched' | 'suggested' | 'matched' | 'ignored';
+export type BankReconciliationTargetType = 'rent-receivable' | 'expense-obligation';
+
+export interface BankTransactionReconciliation {
+  bankTransactionId: string;
+  status: BankReconciliationStatus;
+  targetType?: BankReconciliationTargetType | null;
+  targetId?: string | null;
+  paymentId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface InvestmentAccount {
   id: string;
   name: string;

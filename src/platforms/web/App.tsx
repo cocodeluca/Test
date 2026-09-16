@@ -14,6 +14,7 @@ import {
   CashAccount,
   BankConnection,
   BankTransaction,
+  BankTransactionReconciliation,
   BankTransactionSyncState,
   InvestmentReport,
   InvestmentReportTemplate,
@@ -792,6 +793,9 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>(
     initialPortfolioData.bankTransactions ?? []
   );
+  const [bankTransactionReconciliations, setBankTransactionReconciliations] = useState<BankTransactionReconciliation[]>(
+    initialPortfolioData.bankTransactionReconciliations ?? []
+  );
   const [bankTransactionSyncStates, setBankTransactionSyncStates] = useState<BankTransactionSyncState[]>(
     initialPortfolioData.bankTransactionSyncStates ?? []
   );
@@ -1102,6 +1106,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const effectiveCashAccounts = effectivePortfolio?.cashAccounts ?? cashAccounts;
   const effectiveBankConnections = effectivePortfolio?.bankConnections ?? bankConnections;
   const effectiveBankTransactions = effectivePortfolio?.bankTransactions ?? bankTransactions;
+  const effectiveBankTransactionReconciliations =
+    effectivePortfolio?.bankTransactionReconciliations ?? bankTransactionReconciliations;
   const effectiveBankTransactionSyncStates =
     effectivePortfolio?.bankTransactionSyncStates ?? bankTransactionSyncStates;
   const effectiveInvestmentAccounts =
@@ -1160,6 +1166,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       cashAccounts,
       bankConnections,
       bankTransactions,
+      bankTransactionReconciliations,
       bankTransactionSyncStates,
       investmentAccounts,
       opportunities,
@@ -1176,6 +1183,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     [
       bankConnections,
       bankTransactions,
+      bankTransactionReconciliations,
       bankTransactionSyncStates,
       cashAccounts,
       investmentAccounts,
@@ -1723,6 +1731,17 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
       return;
     }
     setBankTransactions(transactions);
+  };
+
+  const handleUpdateBankTransactionReconciliations = (reconciliations: BankTransactionReconciliation[]) => {
+    if (isDemoPreviewActive) {
+      setDemoPreviewState((currentPreview) => currentPreview ? {
+        ...currentPreview,
+        portfolio: { ...currentPreview.portfolio, bankTransactionReconciliations: reconciliations },
+      } : currentPreview);
+      return;
+    }
+    setBankTransactionReconciliations(reconciliations);
   };
 
   const handleUpdateBankTransactionSyncStates = (states: BankTransactionSyncState[]) => {
@@ -2918,6 +2937,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     effectiveCashAccounts={effectiveCashAccounts}
                     effectiveBankConnections={effectiveBankConnections}
                     effectiveBankTransactions={effectiveBankTransactions}
+                    effectiveBankTransactionReconciliations={effectiveBankTransactionReconciliations}
                     effectiveBankTransactionSyncStates={effectiveBankTransactionSyncStates}
                     effectiveInvestmentAccounts={effectiveInvestmentAccounts}
                     effectiveOpportunities={effectiveOpportunities}
@@ -2936,6 +2956,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
                     onUpdateCashAccounts={handleUpdateCashAccounts}
                     onUpdateBankConnections={handleUpdateBankConnections}
                     onUpdateBankTransactions={handleUpdateBankTransactions}
+                    onUpdateBankTransactionReconciliations={handleUpdateBankTransactionReconciliations}
                     onUpdateBankTransactionSyncStates={handleUpdateBankTransactionSyncStates}
                     onUpdateInvestmentAccounts={handleUpdateInvestmentAccounts}
                     onConnectEtoroAccount={connectEtoroAccount}

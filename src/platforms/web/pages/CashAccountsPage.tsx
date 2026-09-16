@@ -15,10 +15,18 @@ import {
 import type {
   BankConnection,
   BankTransaction,
+  BankTransactionReconciliation,
+  BankReconciliationTargetType,
   BankTransactionSyncState,
   CashAccount,
   CashAccountType,
+  ExpenseObligation,
+  ExpensePayment,
   OpenBankingProviderName,
+  Property,
+  PropertyExpenseRule,
+  RentPayment,
+  RentReceivable,
 } from '../../../common/types';
 import {
   calculateCashAccountSummary,
@@ -36,6 +44,10 @@ import {
   upsertBankTransactions,
   upsertBankTransactionSyncState,
 } from '../../../common/utils/bankTransactions';
+import {
+  confirmBankTransactionMatch,
+  ignoreBankTransaction,
+} from '../../../common/utils/bankReconciliation';
 import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { currencyOptions } from '../../../common/utils/currency';
 import { formatCurrencyValue, getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
@@ -60,11 +72,21 @@ interface CashAccountsPageProps {
   cashAccounts: CashAccount[];
   bankConnections: BankConnection[];
   bankTransactions: BankTransaction[];
+  bankTransactionReconciliations: BankTransactionReconciliation[];
   bankTransactionSyncStates: BankTransactionSyncState[];
+  properties: Property[];
+  rentReceivables: RentReceivable[];
+  rentPayments: RentPayment[];
+  propertyExpenseRules: PropertyExpenseRule[];
+  expenseObligations: ExpenseObligation[];
+  expensePayments: ExpensePayment[];
   onUpdateCashAccounts: (accounts: CashAccount[]) => void;
   onUpdateBankConnections: (connections: BankConnection[]) => void;
   onUpdateBankTransactions: (transactions: BankTransaction[]) => void;
+  onUpdateBankTransactionReconciliations: (reconciliations: BankTransactionReconciliation[]) => void;
   onUpdateBankTransactionSyncStates: (states: BankTransactionSyncState[]) => void;
+  onUpdateRentCollection: (receivables: RentReceivable[], payments: RentPayment[]) => void;
+  onUpdatePropertyExpenses: (rules: PropertyExpenseRule[], obligations: ExpenseObligation[], payments: ExpensePayment[]) => void;
 }
 
 type CashTab = 'accounts' | 'transactions' | 'connections' | 'settings';
@@ -96,11 +118,21 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   cashAccounts,
   bankConnections,
   bankTransactions,
+  bankTransactionReconciliations,
   bankTransactionSyncStates,
+  properties,
+  rentReceivables,
+  rentPayments,
+  propertyExpenseRules,
+  expenseObligations,
+  expensePayments,
   onUpdateCashAccounts,
   onUpdateBankConnections,
   onUpdateBankTransactions,
+  onUpdateBankTransactionReconciliations,
   onUpdateBankTransactionSyncStates,
+  onUpdateRentCollection,
+  onUpdatePropertyExpenses,
 }) => {
   const { settings, t } = useSettings();
   const [activeTab, setActiveTab] = useState<CashTab>('accounts');
@@ -123,6 +155,40 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   const mockConnection = bankConnections.find(
     (connection) => connection.providerName === 'mock-bank' && connection.connectionStatus !== 'disconnected'
   );
+  const reconciliationContext = {
+    properties,
+    rentReceivables,
+    rentPayments,
+    expenseObligations,
+    expensePayments,
+  };
+
+  const handleConfirmTransaction = (
+    transaction: BankTransaction,
+    targetType: BankReconciliationTargetType,
+    targetId: string
+  ) => {
+    const result = confirmBankTransactionMatch({
+      transaction,
+      targetType,
+      targetId,
+      reconciliations: bankTransactionReconciliations,
+      context: reconciliationContext,
+    });
+    if (!result) return;
+    onUpdateBankTransactionReconciliations(result.reconciliations);
+    if (targetType === 'rent-receivable') {
+      onUpdateRentCollection(rentReceivables, result.rentPayments);
+    } else {
+      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, result.expensePayments);
+    }
+  };
+
+  const handleIgnoreTransaction = (transaction: BankTransaction) => {
+    onUpdateBankTransactionReconciliations(
+      ignoreBankTransaction(bankTransactionReconciliations, transaction.id)
+    );
+  };
 
   const mergeProviderAccounts = (connection: BankConnection, incoming: CashAccount[]) => {
     const accounts = upsertLinkedCashAccounts(cashAccounts, incoming);
@@ -554,10 +620,14 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             <BankTransactionsView
               transactions={bankTransactions}
               cashAccounts={cashAccounts}
+              reconciliations={bankTransactionReconciliations}
+              reconciliationContext={reconciliationContext}
               selectedAccountId={transactionAccountId}
               onSelectedAccountIdChange={setTransactionAccountId}
               onSyncMock={mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
               isSyncing={isRefreshingConnectionId === mockConnection?.id}
+              onConfirmMatch={handleConfirmTransaction}
+              onIgnore={handleIgnoreTransaction}
               language={settings.language}
               t={t}
             />

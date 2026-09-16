@@ -4,6 +4,7 @@ import type {
   CashAccount,
   BankConnection,
   BankTransaction,
+  BankTransactionReconciliation,
   BankTransactionSyncState,
   InvestmentReport,
   InvestmentReportTemplate,
@@ -103,6 +104,7 @@ type AppPageRendererProps = {
   effectiveCashAccounts: CashAccount[];
   effectiveBankConnections: BankConnection[];
   effectiveBankTransactions: BankTransaction[];
+  effectiveBankTransactionReconciliations: BankTransactionReconciliation[];
   effectiveBankTransactionSyncStates: BankTransactionSyncState[];
   effectiveInvestmentAccounts: InvestmentAccount[];
   effectiveOpportunities: Opportunity[];
@@ -136,6 +138,7 @@ type AppPageRendererProps = {
   onUpdateCashAccounts: (accounts: CashAccount[]) => void;
   onUpdateBankConnections: (connections: BankConnection[]) => void;
   onUpdateBankTransactions: (transactions: BankTransaction[]) => void;
+  onUpdateBankTransactionReconciliations: (reconciliations: BankTransactionReconciliation[]) => void;
   onUpdateBankTransactionSyncStates: (states: BankTransactionSyncState[]) => void;
   onUpdateInvestmentAccounts: (accounts: InvestmentAccount[]) => void;
   onConnectEtoroAccount: () => Promise<void>;
@@ -248,11 +251,21 @@ export const AppPageRenderer = (props: AppPageRendererProps) => {
           cashAccounts={props.effectiveCashAccounts}
           bankConnections={props.effectiveBankConnections}
           bankTransactions={props.effectiveBankTransactions}
+          bankTransactionReconciliations={props.effectiveBankTransactionReconciliations}
           bankTransactionSyncStates={props.effectiveBankTransactionSyncStates}
+          properties={props.syncedProperties}
+          rentReceivables={props.effectiveRentReceivables}
+          rentPayments={props.effectiveRentPayments}
+          propertyExpenseRules={props.effectivePropertyExpenseRules}
+          expenseObligations={props.effectiveExpenseObligations}
+          expensePayments={props.effectiveExpensePayments}
           onUpdateCashAccounts={props.onUpdateCashAccounts}
           onUpdateBankConnections={props.onUpdateBankConnections}
           onUpdateBankTransactions={props.onUpdateBankTransactions}
+          onUpdateBankTransactionReconciliations={props.onUpdateBankTransactionReconciliations}
           onUpdateBankTransactionSyncStates={props.onUpdateBankTransactionSyncStates}
+          onUpdateRentCollection={props.onUpdateRentCollection}
+          onUpdatePropertyExpenses={props.onUpdatePropertyExpenses}
         />
       );
     case 'rent-collection':

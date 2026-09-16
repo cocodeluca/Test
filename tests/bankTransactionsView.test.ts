@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
-import type { BankTransaction, CashAccount } from '../src/common/types';
+import type { BankTransaction, CashAccount, Property, RentReceivable } from '../src/common/types';
 import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
 import { normalizeProviderTransactions, upsertBankTransactions } from '../src/common/utils/bankTransactions';
 import { BankTransactionsView } from '../src/platforms/web/components/BankTransactionsView';
@@ -65,6 +65,13 @@ const translations: Record<string, string> = {
   'cashAccounts.transactionUnknownAccount': 'Unknown account',
   'cashAccounts.transactionSyncMock': 'Sync mock transactions',
   'cashAccounts.transactionSyncing': 'Syncing...',
+  'cashAccounts.reconciliation': 'Reconciliation',
+  'cashAccounts.reconciliationConfirm': 'Confirm',
+  'cashAccounts.reconciliationIgnore': 'Ignore',
+  'cashAccounts.reconciliationStatus.suggested': 'Suggested match',
+  'cashAccounts.reconciliationTarget.rent-receivable': 'Rent',
+  'cashAccounts.reconciliationReason.exact-amount': 'Exact amount',
+  'cashAccounts.reconciliationReason.date-proximity': 'Nearby date',
 };
 
 const t = (key: string) => translations[key] ?? key;
@@ -127,6 +134,44 @@ test('renders an empty state when no persisted transactions exist', () => {
   assert.match(html, /No bank transactions yet/);
   assert.match(html, /Sync a mock account\./);
   assert.doesNotMatch(html, /data-bank-transaction-id=/);
+});
+
+test('renders a conservative rent suggestion with explicit confirm and ignore actions', () => {
+  const receivable: RentReceivable = {
+    id: 'rent-receivable-ui',
+    propertyId: 'property-ui',
+    leaseId: 'lease-ui',
+    period: '2026-09',
+    dueDate: '2026-09-15',
+    expectedAmount: 1450,
+    currency: 'EUR',
+  };
+  const html = renderToStaticMarkup(React.createElement(BankTransactionsView, {
+    transactions: [transaction()],
+    cashAccounts: [account],
+    reconciliations: [],
+    reconciliationContext: {
+      properties: [{ id: 'property-ui', name: 'Central Apartment' } as Property],
+      rentReceivables: [receivable],
+      rentPayments: [],
+      expenseObligations: [],
+      expensePayments: [],
+      today: new Date('2026-09-16T12:00:00Z'),
+    },
+    selectedAccountId: 'all',
+    onSelectedAccountIdChange: () => undefined,
+    onConfirmMatch: () => undefined,
+    onIgnore: () => undefined,
+    isSyncing: false,
+    language: 'en',
+    t,
+  }));
+
+  assert.match(html, /data-reconciliation-status="suggested"/);
+  assert.match(html, /Suggested match/);
+  assert.match(html, /Central Apartment/);
+  assert.match(html, />Confirm</);
+  assert.match(html, />Ignore</);
 });
 
 test('repeated mock sync remains idempotent in the rendered rows', async () => {

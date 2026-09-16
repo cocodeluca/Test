@@ -1,7 +1,16 @@
 import React, { useMemo } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Receipt, RefreshCw } from 'lucide-react';
-import type { BankTransaction, CashAccount } from '../../../common/types';
+import type {
+  BankReconciliationTargetType,
+  BankTransaction,
+  BankTransactionReconciliation,
+  CashAccount,
+} from '../../../common/types';
 import type { AppLanguage } from '../../../common/types/settings';
+import {
+  getBankReconciliationView,
+  type BankReconciliationContext,
+} from '../../../common/utils/bankReconciliation';
 import { getCashAccountDisplayName } from '../../../common/utils/cashAccounts';
 import { formatCurrencyValue } from '../../../common/utils/formatting';
 import {
@@ -17,9 +26,13 @@ import {
 interface BankTransactionsViewProps {
   transactions: BankTransaction[];
   cashAccounts: CashAccount[];
+  reconciliations?: BankTransactionReconciliation[];
+  reconciliationContext?: BankReconciliationContext;
   selectedAccountId: string;
   onSelectedAccountIdChange: (accountId: string) => void;
   onSyncMock?: () => void;
+  onConfirmMatch?: (transaction: BankTransaction, targetType: BankReconciliationTargetType, targetId: string) => void;
+  onIgnore?: (transaction: BankTransaction) => void;
   isSyncing: boolean;
   language: AppLanguage;
   t: (key: string, replacements?: Record<string, string | number>) => string;
@@ -41,9 +54,13 @@ const formatTransactionDate = (date: string, language: AppLanguage) => {
 export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
   transactions,
   cashAccounts,
+  reconciliations = [],
+  reconciliationContext,
   selectedAccountId,
   onSelectedAccountIdChange,
   onSyncMock,
+  onConfirmMatch,
+  onIgnore,
   isSyncing,
   language,
   t,
@@ -115,6 +132,7 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                   t('cashAccounts.transactionAmount'),
                   t('cashAccounts.transactionCurrency'),
                   t('cashAccounts.transactionState'),
+                  t('cashAccounts.reconciliation'),
                 ].map((label) => (
                   <th key={label} scope="col" className={`whitespace-nowrap px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.14em] ${appTextSoftClass}`}>{label}</th>
                 ))}
@@ -127,6 +145,9 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                 const isOutflow = transaction.amount < 0;
                 const direction = isInflow ? 'inflow' : isOutflow ? 'outflow' : 'neutral';
                 const amountPrefix = isInflow ? '+' : isOutflow ? '\u2212' : '';
+                const reconciliation = reconciliationContext
+                  ? getBankReconciliationView(transaction, reconciliations, reconciliationContext)
+                  : null;
                 return (
                   <tr
                     key={transaction.id}
@@ -155,6 +176,47 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                       <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${transaction.pending ? 'border-amber-300/70 bg-amber-50/80 text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300' : 'border-emerald-300/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
                         {transaction.pending ? t('cashAccounts.transactionPending') : t('cashAccounts.transactionPosted')}
                       </span>
+                    </td>
+                    <td className="min-w-72 px-4 py-4">
+                      {reconciliation ? (
+                        <div data-reconciliation-status={reconciliation.status}>
+                          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${reconciliation.status === 'matched' ? 'border-emerald-300/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300' : reconciliation.status === 'suggested' ? 'border-cyan-300/70 bg-cyan-50/80 text-cyan-700 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-300' : 'border-slate-300/80 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-950/50 dark:text-slate-300'}`}>
+                            {t(`cashAccounts.reconciliationStatus.${reconciliation.status}`)}
+                          </span>
+                          {reconciliation.suggestion ? (
+                            <div className="mt-3">
+                              <p className={`text-sm font-medium ${appTextStrongClass}`}>
+                                {t(`cashAccounts.reconciliationTarget.${reconciliation.suggestion.targetType}`)}: {reconciliation.suggestion.propertyName} · {reconciliation.suggestion.targetLabel}
+                              </p>
+                              <p className={`mt-1 text-xs ${appTextMutedClass}`}>
+                                {reconciliation.suggestion.reasons.map((reason) => t(`cashAccounts.reconciliationReason.${reason}`)).join(' · ')}
+                              </p>
+                            </div>
+                          ) : null}
+                          {(reconciliation.status === 'unmatched' || reconciliation.status === 'suggested') && onIgnore ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {reconciliation.suggestion && onConfirmMatch ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onConfirmMatch(transaction, reconciliation.suggestion!.targetType, reconciliation.suggestion!.targetId)}
+                                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                                >
+                                  {t('cashAccounts.reconciliationConfirm')}
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => onIgnore(transaction)}
+                                className={`rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}
+                              >
+                                {t('cashAccounts.reconciliationIgnore')}
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className={`text-sm ${appTextMutedClass}`}>{t('cashAccounts.reconciliationStatus.unmatched')}</span>
+                      )}
                     </td>
                   </tr>
                 );

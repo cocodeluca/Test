@@ -22,6 +22,25 @@ export const ptExtra: TranslationTree = {
     transactionUnknownAccount: 'Conta desconhecida',
     transactionSyncMock: 'Sincronizar transações simuladas',
     transactionSyncing: 'A sincronizar...',
+    reconciliation: 'Reconciliação',
+    reconciliationConfirm: 'Confirmar',
+    reconciliationIgnore: 'Ignorar',
+    reconciliationStatus: {
+      unmatched: 'Não reconciliada',
+      suggested: 'Correspondência sugerida',
+      matched: 'Reconciliada',
+      ignored: 'Ignorada',
+    },
+    reconciliationTarget: {
+      'rent-receivable': 'Renda',
+      'expense-obligation': 'Despesa',
+    },
+    reconciliationReason: {
+      'exact-amount': 'Montante exato',
+      'similar-amount': 'Montante semelhante',
+      'date-proximity': 'Data próxima',
+      'property-context': 'Mesma propriedade',
+    },
   },
   propertyPhotos: {
     upload: 'Carregar',
