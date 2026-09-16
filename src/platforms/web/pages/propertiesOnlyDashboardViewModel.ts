@@ -53,6 +53,7 @@ export interface PropertiesOnlyDashboardViewModel {
   liquidity: DashboardCoveredAmount;
   ownCapitalInvested: DashboardCoveredAmount;
   debt: {
+    status: MortgageDebtPaydownSummary['status'];
     current: DashboardCoveredAmount;
     nextPaymentPrincipal: number | null;
     next12MonthsPrincipal: number | null;
@@ -370,6 +371,7 @@ export const buildPropertiesOnlyDashboardViewModel = ({
     liquidity,
     ownCapitalInvested,
     debt: {
+      status: debtPaydown.status,
       current: {
         value: currentDebt,
         coverage: debtCoverage,

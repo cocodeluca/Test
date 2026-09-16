@@ -342,14 +342,44 @@ const getProjectedMonthlyRent = (
   );
 };
 
-const isPropertyActuallyRentGenerating = (property: Partial<Property>): boolean =>
-  property.occupancyStatus === 'occupied';
+const isPropertyActuallyRentGenerating = (
+  property: Partial<Property>,
+  requireCurrentActiveLease = false
+): boolean => {
+  if (property.occupancyStatus !== 'occupied') {
+    return false;
+  }
+
+  if (!requireCurrentActiveLease) {
+    return true;
+  }
+
+  const activeLease = getActiveLease(property);
+  const storedLease = activeLease
+    ? property.leases?.find((lease) => lease.id === activeLease.id)
+    : null;
+
+  if (!storedLease?.active) {
+    return false;
+  }
+
+  const today = toCivilDate(getToday());
+  const startDate = parseCivilDate(storedLease.startDate);
+  const endDate = storedLease.endDate ? parseCivilDate(storedLease.endDate) : null;
+
+  return Boolean(
+    startDate &&
+    compareCivilDates(startDate, today) <= 0 &&
+    (!storedLease.endDate || (endDate && compareCivilDates(endDate, today) >= 0))
+  );
+};
 
 const getEffectiveMonthlyRent = (
   property: Partial<Property>,
-  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>,
+  requireCurrentActiveLease = false
 ): number => {
-  if (!isPropertyActuallyRentGenerating(property)) {
+  if (!isPropertyActuallyRentGenerating(property, requireCurrentActiveLease)) {
     return 0;
   }
 
@@ -1410,7 +1440,8 @@ export const calculatePortfolioDebtProjection = (
 export const calculatePropertyFinancials = (
   property: Property,
   mortgage?: Mortgage,
-  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
+  rateOverrides?: number | Partial<Record<DisplayCurrency, number>>,
+  options: { requireCurrentActiveLease?: boolean } = {}
 ): PropertyFinancials => {
   const financialValidationIssues = getPropertyFinancialValidationIssues(property);
   const propertyCurrency = getPropertyCurrency(property);
@@ -1418,7 +1449,11 @@ export const calculatePropertyFinancials = (
   const convertMortgageAmount = (value: number) =>
     convertCurrency(value, mortgageCurrency, propertyCurrency, rateOverrides);
   const taxProfile = getPropertyTaxProfile(property);
-  const monthlyRent = getEffectiveMonthlyRent(property, rateOverrides);
+  const monthlyRent = getEffectiveMonthlyRent(
+    property,
+    rateOverrides,
+    options.requireCurrentActiveLease
+  );
   const mortgageSnapshot = mortgage ? calculateMortgageSnapshot(mortgage) : null;
   const mortgageClassification = mortgage ? classifyMortgage(mortgage) : null;
   const isActiveMortgage = mortgageClassification?.status === 'active';
@@ -2284,7 +2319,9 @@ export const calculatePropertyMetrics = (
   _reportingCurrency: DisplayCurrency = 'EUR',
   rateOverrides?: number | Partial<Record<DisplayCurrency, number>>
 ): PropertyMetrics => {
-  const financials = calculatePropertyFinancials(property, mortgage, rateOverrides);
+  const financials = calculatePropertyFinancials(property, mortgage, rateOverrides, {
+    requireCurrentActiveLease: true,
+  });
   const propertyCurrency = getPropertyCurrency(property);
   const valuationDisplayCurrency = getPropertyValueCurrency(property);
   const operatingDisplayCurrency = getOperatingCurrency(property);

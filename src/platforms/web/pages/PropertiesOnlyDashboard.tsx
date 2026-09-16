@@ -260,6 +260,15 @@ export const PropertiesOnlyMortgageDebtCard: React.FC<PropertiesOnlyMortgageDebt
           </p>
         ) : null}
 
+        {debt.status === 'no-active-mortgages' ? (
+          <div
+            className={`mt-3 rounded-[14px] bg-slate-50 px-4 py-4 text-center text-[12.5px] font-semibold leading-5 dark:bg-slate-800/60 ${dashboardLightMutedTextClass}`}
+            data-dashboard-empty-state="no-active-mortgages"
+          >
+            {t('dashboardUi.debtPaydownNoActive')}
+          </div>
+        ) : (
+          <>
         <div className="properties-only-debt-detail-grid mt-3 grid gap-2 sm:grid-cols-2">
           <div className="properties-only-debt-mini-card rounded-[16px] border border-[#e5eaf0] bg-[#f8fafc] p-2.5 dark:border-[#e5eaf0] dark:bg-[#f8fafc]">
             <div className="flex items-center gap-2">
@@ -339,6 +348,8 @@ export const PropertiesOnlyMortgageDebtCard: React.FC<PropertiesOnlyMortgageDebt
         ) : null}
         */}
         <CoverageNote coverage={debt.projectionCoverage} t={t} />
+          </>
+        )}
       </div>
     </DashboardCard>
   );

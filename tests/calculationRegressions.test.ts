@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { Mortgage, Property, RecurringExpense } from '../src/common/types';
+import type { Lease, Mortgage, Property, RecurringExpense } from '../src/common/types';
 import {
   calculateMortgageDebtPaydown,
   calculateMortgageProjection,
   calculateMortgageSnapshot,
   calculatePortfolioMetrics,
   calculatePropertyFinancials,
+  calculatePropertyMetrics,
   calculateCurrentRate,
   calculateOwnCapitalInvested,
   calculateTotalDebt,
@@ -123,8 +124,27 @@ const createMortgage = (overrides: Partial<Mortgage> = {}): Mortgage => ({
   ...overrides,
 });
 
-const createProperty = (overrides: Partial<Property> = {}): Property =>
-  ({
+const createLease = (monthlyRent: number, overrides: Partial<Lease> = {}): Lease => ({
+  id: 'lease-1',
+  name: 'Current lease',
+  startDate: '2020-01-01',
+  endDate: '2099-12-31',
+  monthlyRent,
+  monthlyRentCurrency: 'EUR',
+  rentUpdateRule: {
+    type: 'no-automatic-update',
+    frequency: 'yearly',
+    baseRent: monthlyRent,
+  },
+  adjustmentHistory: [],
+  active: true,
+  ...overrides,
+});
+
+const createProperty = (overrides: Partial<Property> = {}): Property => {
+  const monthlyRent = overrides.monthlyRent ?? 1000;
+
+  return ({
     id: 'property-1',
     name: 'Test Property',
     address: '1 Test Street',
@@ -139,7 +159,7 @@ const createProperty = (overrides: Partial<Property> = {}): Property =>
     rentalDepositCurrency: 'EUR',
     lateFeeCurrency: 'EUR',
     occupancyStatus: 'occupied',
-    monthlyRent: 1000,
+    monthlyRent,
     annualRent: 0,
     purchasePrice: 100000,
     currentEstimatedValue: 120000,
@@ -173,6 +193,7 @@ const createProperty = (overrides: Partial<Property> = {}): Property =>
     spainEstimatedMarginalTaxRate: 0,
     ...overrides,
   } as Property);
+};
 
 test('preserves gross yield as active annual rent divided by current estimated value', () => {
   const financials = calculatePropertyFinancials(
@@ -189,18 +210,43 @@ test('preserves gross yield as active annual rent divided by current estimated v
   assert.notEqual(financials.grossYield, 15);
 });
 
-test('counts configured rent as income only while the property is occupied', () => {
+test('dashboard metrics count configured rent only with occupied current active tenancy', () => {
   const configuredRent = 1_300;
 
-  const pendingFinancials = calculatePropertyFinancials(
-    createProperty({ monthlyRent: configuredRent, occupancyStatus: 'tenant-to-be-confirmed' })
-  );
-  const occupiedFinancials = calculatePropertyFinancials(
-    createProperty({ monthlyRent: configuredRent, occupancyStatus: 'occupied' })
-  );
+  const activeLease = createLease(configuredRent);
+  const dashboardMonthlyRent = (property: Property) =>
+    calculatePropertyMetrics(property, undefined, 'EUR', { EUR: 1 }).annualRentalIncome / 12;
+  const pendingRent = dashboardMonthlyRent(createProperty({
+    monthlyRent: configuredRent,
+    occupancyStatus: 'tenant-to-be-confirmed',
+    leases: [activeLease],
+  }));
+  const occupiedRent = dashboardMonthlyRent(createProperty({
+    monthlyRent: configuredRent,
+    occupancyStatus: 'occupied',
+    leases: [activeLease],
+  }));
+  const missingLeaseRent = dashboardMonthlyRent(createProperty({
+    monthlyRent: configuredRent,
+    occupancyStatus: 'occupied',
+    leases: [],
+  }));
+  const inactiveLeaseRent = dashboardMonthlyRent(createProperty({
+    monthlyRent: configuredRent,
+    occupancyStatus: 'occupied',
+    leases: [createLease(configuredRent, { active: false })],
+  }));
+  const expiredLeaseRent = dashboardMonthlyRent(createProperty({
+    monthlyRent: configuredRent,
+    occupancyStatus: 'occupied',
+    leases: [createLease(configuredRent, { endDate: '2020-12-31' })],
+  }));
 
-  assert.equal(pendingFinancials.monthlyRent, 0);
-  assert.equal(occupiedFinancials.monthlyRent, configuredRent);
+  assert.equal(pendingRent, 0);
+  assert.equal(occupiedRent, configuredRent);
+  assert.equal(missingLeaseRent, 0);
+  assert.equal(inactiveLeaseRent, 0);
+  assert.equal(expiredLeaseRent, 0);
 });
 
 const createExpense = (

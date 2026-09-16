@@ -34,6 +34,7 @@ const translations: Record<string, string> = {
   'dashboardUi.propertiesOnly.propertyBreakdownTitle': 'By property',
   'dashboardUi.propertiesOnly.ownCapitalInvestedDescription': 'Total contributed from your own pocket across the portfolio.',
   'dashboardUi.propertiesOnly.ownCapitalInvestedIncludes': 'Includes down payment, purchase costs, renovations, and more.',
+  'dashboardUi.debtPaydownNoActive': 'No active mortgages are currently reducing portfolio debt.',
 };
 
 const t = (key: string, replacements?: Record<string, string | number>) => {
@@ -55,6 +56,7 @@ const availableCoverage = {
 };
 
 const debt: PropertiesOnlyDashboardViewModel['debt'] = {
+  status: 'available',
   current: {
     value: 10_000,
     coverage: availableCoverage,
@@ -113,6 +115,29 @@ test('keeps coverage states and hides the debt bar when comparison values are un
   assert.match(partialMarkup, /Calculated with 1 of 2 items/);
   assert.match(unavailableMarkup, /Unavailable because exchange-rate coverage is missing/);
   assert.doesNotMatch(unavailableMarkup, /role="progressbar"/);
+});
+
+test('renders a no-active-mortgages empty state without fake payment projections', () => {
+  const markup = renderCard({
+    ...debt,
+    status: 'no-active-mortgages',
+    current: {
+      value: 0,
+      coverage: { status: 'available', coveredCount: 0, totalCount: 0 },
+    },
+    nextPaymentPrincipal: 0,
+    next12MonthsPrincipal: 0,
+    next12MonthsInterest: 0,
+    projectedAfter12Months: 0,
+    projectionCoverage: { status: 'available', coveredCount: 0, totalCount: 0 },
+  });
+
+  assert.match(markup, /data-dashboard-empty-state="no-active-mortgages"/);
+  assert.match(markup, /No active mortgages are currently reducing portfolio debt/);
+  assert.match(markup, /data-dashboard-card="mortgage-debt"[\s\S]*?Outstanding balance/);
+  assert.doesNotMatch(markup, /Next payment principal/);
+  assert.doesNotMatch(markup, /Next 12 months/);
+  assert.doesNotMatch(markup, /12-month projection/);
 });
 
 test('renders the canonical own-capital card without presenting equity as its value', () => {
