@@ -307,6 +307,7 @@ export const esExtra = {
     reconciliationReason: {
       'exact-amount': 'Importe exacto',
       'similar-amount': 'Importe similar',
+      'partial-amount': 'Importe parcial',
       'date-proximity': 'Fecha cercana',
       'property-context': 'Misma propiedad',
     },

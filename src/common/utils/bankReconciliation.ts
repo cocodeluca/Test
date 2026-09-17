@@ -12,7 +12,7 @@ import type {
 import { buildExpenseObligationViews, createManualExpensePayment } from './propertyExpenses';
 import { buildRentReceivableViews, createManualRentPayment } from './rentCollection';
 
-export type BankReconciliationReason = 'exact-amount' | 'similar-amount' | 'date-proximity' | 'property-context';
+export type BankReconciliationReason = 'exact-amount' | 'similar-amount' | 'partial-amount' | 'date-proximity' | 'property-context';
 
 export interface BankReconciliationSuggestion {
   targetType: BankReconciliationTargetType;
@@ -44,6 +44,7 @@ interface Candidate {
   suggestion: BankReconciliationSuggestion;
   amountDifference: number;
   dateDistance: number;
+  amountReason: Extract<BankReconciliationReason, 'exact-amount' | 'similar-amount' | 'partial-amount'>;
 }
 
 const MAX_DATE_DISTANCE_DAYS = 14;
@@ -63,16 +64,23 @@ const getPropertyContextId = (transaction: BankTransaction) => {
 };
 
 const getAmountReason = (transactionAmount: number, outstandingAmount: number) => {
+  if (transactionAmount > outstandingAmount) return null;
   const difference = Math.abs(transactionAmount - outstandingAmount);
   if (difference <= 0.01) return { reason: 'exact-amount' as const, difference };
   const tolerance = Math.min(5, outstandingAmount * 0.01);
-  return transactionAmount <= outstandingAmount && difference <= tolerance
-    ? { reason: 'similar-amount' as const, difference }
+  if (transactionAmount <= outstandingAmount && difference <= tolerance) {
+    return { reason: 'similar-amount' as const, difference };
+  }
+  return transactionAmount < outstandingAmount
+    ? { reason: 'partial-amount' as const, difference }
     : null;
 };
 
 const selectConservativeCandidate = (candidates: Candidate[]): BankReconciliationSuggestion | null => {
-  const sorted = [...candidates].sort((left, right) =>
+  const strongCandidates = candidates.filter((candidate) => candidate.amountReason !== 'partial-amount');
+  const eligible = strongCandidates.length > 0 ? strongCandidates : candidates;
+  if (strongCandidates.length === 0 && eligible.length !== 1) return null;
+  const sorted = [...eligible].sort((left, right) =>
     left.amountDifference - right.amountDifference ||
     left.dateDistance - right.dateDistance ||
     left.suggestion.targetId.localeCompare(right.suggestion.targetId)
@@ -114,6 +122,7 @@ export const suggestBankTransactionMatch = (
       return [{
         amountDifference: amountMatch.difference,
         dateDistance,
+        amountReason: amountMatch.reason,
         suggestion: {
           targetType: 'rent-receivable',
           targetId: receivable.id,
@@ -151,6 +160,7 @@ export const suggestBankTransactionMatch = (
     return [{
       amountDifference: amountMatch.difference,
       dateDistance,
+      amountReason: amountMatch.reason,
       suggestion: {
         targetType: 'expense-obligation',
         targetId: obligation.id,

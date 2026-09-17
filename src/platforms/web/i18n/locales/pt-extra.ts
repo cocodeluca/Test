@@ -39,6 +39,7 @@ export const ptExtra: TranslationTree = {
     reconciliationReason: {
       'exact-amount': 'Montante exato',
       'similar-amount': 'Montante semelhante',
+      'partial-amount': 'Montante parcial',
       'date-proximity': 'Data próxima',
       'property-context': 'Mesma propriedade',
     },

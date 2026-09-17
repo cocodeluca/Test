@@ -307,6 +307,7 @@ export const enExtra = {
     reconciliationReason: {
       'exact-amount': 'Exact amount',
       'similar-amount': 'Similar amount',
+      'partial-amount': 'Partial amount',
       'date-proximity': 'Nearby date',
       'property-context': 'Same property',
     },

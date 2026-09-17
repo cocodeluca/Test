@@ -307,3 +307,140 @@ test('the bank transaction remains persisted after unmatch', async () => {
   assert.deepEqual(reloaded.bankTransactionReconciliations, []);
   assert.deepEqual(reloaded.rentPayments, []);
 });
+
+test('a smaller incoming transaction suggests one clear rent obligation', () => {
+  const suggestion = suggestBankTransactionMatch(
+    transaction({ amount: 800 }),
+    context({ today: new Date('2026-09-05T12:00:00Z') })
+  );
+  assert.equal(suggestion?.targetType, 'rent-receivable');
+  assert.equal(suggestion?.targetId, receivable.id);
+  assert.deepEqual(suggestion?.reasons, ['partial-amount', 'date-proximity']);
+});
+
+test('a smaller outgoing transaction suggests one clear expense obligation', () => {
+  const suggestion = suggestBankTransactionMatch(
+    transaction({ amount: -100, bookingDate: '2026-09-09' }),
+    context()
+  );
+  assert.equal(suggestion?.targetType, 'expense-obligation');
+  assert.equal(suggestion?.targetId, expenseObligation.id);
+  assert.deepEqual(suggestion?.reasons, ['partial-amount', 'date-proximity']);
+});
+
+test('confirm creates one idempotent partial payment and leaves rent partially outstanding', () => {
+  const partialTransaction = transaction({ amount: 800 });
+  const partialContext = context({ today: new Date('2026-09-05T12:00:00Z') });
+  const first = confirmBankTransactionMatch({
+    transaction: partialTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: partialContext,
+    timestamp: '2026-09-05T12:00:00.000Z',
+  });
+  assert.ok(first);
+  assert.equal(first.rentPayments.length, 1);
+  assert.equal(first.rentPayments[0].amount, 800);
+  assert.deepEqual(first.rentPayments[0].allocations, [{ receivableId: receivable.id, amount: 800 }]);
+  const view = buildRentReceivableViews(
+    [receivable], first.rentPayments, [property], new Date('2026-09-05T12:00:00Z')
+  )[0];
+  assert.equal(view.outstandingAmount, 650);
+  assert.equal(view.status, 'PARTIAL');
+
+  const repeated = confirmBankTransactionMatch({
+    transaction: partialTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: first.reconciliations,
+    context: context({ rentPayments: first.rentPayments, today: new Date('2026-09-05T12:00:00Z') }),
+    timestamp: '2026-09-05T13:00:00.000Z',
+  });
+  assert.ok(repeated);
+  assert.equal(repeated.rentPayments.length, 1);
+  assert.equal(repeated.reconciliations.length, 1);
+});
+
+test('partial expense confirmation decreases outstanding and remains partial', () => {
+  const partialTransaction = transaction({ amount: -100, bookingDate: '2026-09-09' });
+  const confirmed = confirmBankTransactionMatch({
+    transaction: partialTransaction,
+    targetType: 'expense-obligation',
+    targetId: expenseObligation.id,
+    reconciliations: [],
+    context: context(),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  assert.equal(confirmed.expensePayments[0].amount, 100);
+  assert.deepEqual(confirmed.expensePayments[0].allocations, [{ obligationId: expenseObligation.id, amount: 100 }]);
+  const view = buildExpenseObligationViews(
+    [expenseObligation], confirmed.expensePayments, new Date('2026-09-16T12:00:00Z')
+  )[0];
+  assert.equal(view.outstandingAmount, 85);
+  assert.equal(view.status, 'PARTIAL');
+});
+
+test('undoing a partial match restores prior outstanding and preserves manual payments', () => {
+  const manualPayment = {
+    id: 'manual-partial-payment',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-04',
+    amount: 200,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 200 }],
+  };
+  const partialTransaction = transaction({ amount: 800 });
+  const beforeContext = context({
+    rentPayments: [manualPayment],
+    today: new Date('2026-09-05T12:00:00Z'),
+  });
+  const confirmed = confirmBankTransactionMatch({
+    transaction: partialTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: beforeContext,
+    timestamp: '2026-09-05T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: partialTransaction.id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+  const restored = buildRentReceivableViews(
+    [receivable], unmatched.rentPayments, [property], new Date('2026-09-05T12:00:00Z')
+  )[0];
+  assert.deepEqual(unmatched.rentPayments, [manualPayment]);
+  assert.equal(restored.outstandingAmount, 1250);
+  assert.equal(restored.status, 'PARTIAL');
+});
+
+test('an amount greater than outstanding is never suggested', () => {
+  assert.equal(suggestBankTransactionMatch(transaction({ amount: 1600 }), context()), null);
+  assert.equal(suggestBankTransactionMatch(transaction({ amount: 1450.001 }), context()), null);
+});
+
+test('multiple eligible partial candidates remain unmatched', () => {
+  const secondReceivable: RentReceivable = {
+    ...receivable,
+    id: 'rent-receivable-ambiguous',
+    leaseId: 'lease-ambiguous',
+    dueDate: '2026-09-06',
+    expectedAmount: 1200,
+  };
+  const ambiguousContext = context({
+    rentReceivables: [receivable, secondReceivable],
+    today: new Date('2026-09-06T12:00:00Z'),
+  });
+  const view = getBankReconciliationView(
+    transaction({ amount: 800 }), [], ambiguousContext
+  );
+  assert.equal(view.status, 'unmatched');
+  assert.equal(view.suggestion, null);
+});
