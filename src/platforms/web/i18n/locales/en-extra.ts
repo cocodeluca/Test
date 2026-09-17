@@ -293,6 +293,7 @@ export const enExtra = {
     reconciliation: 'Reconciliation',
     reconciliationConfirm: 'Confirm',
     reconciliationIgnore: 'Ignore',
+    reconciliationUnmatch: 'Undo match',
     reconciliationStatus: {
       unmatched: 'Unmatched',
       suggested: 'Suggested match',

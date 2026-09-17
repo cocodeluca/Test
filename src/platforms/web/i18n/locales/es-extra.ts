@@ -293,6 +293,7 @@ export const esExtra = {
     reconciliation: 'Conciliación',
     reconciliationConfirm: 'Confirmar',
     reconciliationIgnore: 'Ignorar',
+    reconciliationUnmatch: 'Deshacer conciliación',
     reconciliationStatus: {
       unmatched: 'Sin conciliar',
       suggested: 'Coincidencia sugerida',

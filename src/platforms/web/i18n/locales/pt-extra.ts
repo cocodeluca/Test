@@ -25,6 +25,7 @@ export const ptExtra: TranslationTree = {
     reconciliation: 'Reconciliação',
     reconciliationConfirm: 'Confirmar',
     reconciliationIgnore: 'Ignorar',
+    reconciliationUnmatch: 'Desfazer reconciliação',
     reconciliationStatus: {
       unmatched: 'Não reconciliada',
       suggested: 'Correspondência sugerida',

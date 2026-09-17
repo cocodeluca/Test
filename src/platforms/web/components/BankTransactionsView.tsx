@@ -33,6 +33,7 @@ interface BankTransactionsViewProps {
   onSyncMock?: () => void;
   onConfirmMatch?: (transaction: BankTransaction, targetType: BankReconciliationTargetType, targetId: string) => void;
   onIgnore?: (transaction: BankTransaction) => void;
+  onUnmatch?: (transaction: BankTransaction) => void;
   isSyncing: boolean;
   language: AppLanguage;
   t: (key: string, replacements?: Record<string, string | number>) => string;
@@ -61,6 +62,7 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
   onSyncMock,
   onConfirmMatch,
   onIgnore,
+  onUnmatch,
   isSyncing,
   language,
   t,
@@ -212,6 +214,15 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                                 {t('cashAccounts.reconciliationIgnore')}
                               </button>
                             </div>
+                          ) : null}
+                          {reconciliation.status === 'matched' && onUnmatch ? (
+                            <button
+                              type="button"
+                              onClick={() => onUnmatch(transaction)}
+                              className={`mt-3 rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}
+                            >
+                              {t('cashAccounts.reconciliationUnmatch')}
+                            </button>
                           ) : null}
                         </div>
                       ) : (

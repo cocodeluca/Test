@@ -290,3 +290,44 @@ export const ignoreBankTransaction = (
   targetId: null,
   paymentId: null,
 }, timestamp);
+
+export const unmatchBankTransaction = (args: {
+  bankTransactionId: string;
+  reconciliations: BankTransactionReconciliation[];
+  rentPayments: RentPayment[];
+  expensePayments: ExpensePayment[];
+}) => {
+  const reconciliation = args.reconciliations.find(
+    (item) => item.bankTransactionId === args.bankTransactionId && item.status === 'matched'
+  );
+  if (!reconciliation) {
+    return {
+      reconciliations: args.reconciliations,
+      rentPayments: args.rentPayments,
+      expensePayments: args.expensePayments,
+    };
+  }
+
+  const paymentId = reconciliation.paymentId;
+  const filteredRentPayments = reconciliation.targetType === 'rent-receivable' && paymentId
+    ? args.rentPayments.filter(
+        (payment) => payment.id !== paymentId || payment.source !== 'bank_sync'
+      )
+    : args.rentPayments;
+  const filteredExpensePayments = reconciliation.targetType === 'expense-obligation' && paymentId
+    ? args.expensePayments.filter(
+        (payment) => payment.id !== paymentId || payment.source !== 'bank_sync'
+      )
+    : args.expensePayments;
+  return {
+    reconciliations: args.reconciliations.filter(
+      (item) => item.bankTransactionId !== args.bankTransactionId
+    ),
+    rentPayments: filteredRentPayments.length === args.rentPayments.length
+      ? args.rentPayments
+      : filteredRentPayments,
+    expensePayments: filteredExpensePayments.length === args.expensePayments.length
+      ? args.expensePayments
+      : filteredExpensePayments,
+  };
+};

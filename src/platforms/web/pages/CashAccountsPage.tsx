@@ -47,6 +47,7 @@ import {
 import {
   confirmBankTransactionMatch,
   ignoreBankTransaction,
+  unmatchBankTransaction,
 } from '../../../common/utils/bankReconciliation';
 import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { currencyOptions } from '../../../common/utils/currency';
@@ -188,6 +189,25 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     onUpdateBankTransactionReconciliations(
       ignoreBankTransaction(bankTransactionReconciliations, transaction.id)
     );
+  };
+
+  const handleUnmatchTransaction = (transaction: BankTransaction) => {
+    const reconciliation = bankTransactionReconciliations.find(
+      (item) => item.bankTransactionId === transaction.id && item.status === 'matched'
+    );
+    const result = unmatchBankTransaction({
+      bankTransactionId: transaction.id,
+      reconciliations: bankTransactionReconciliations,
+      rentPayments,
+      expensePayments,
+    });
+    onUpdateBankTransactionReconciliations(result.reconciliations);
+    if (reconciliation?.targetType === 'rent-receivable' && result.rentPayments !== rentPayments) {
+      onUpdateRentCollection(rentReceivables, result.rentPayments);
+    }
+    if (reconciliation?.targetType === 'expense-obligation' && result.expensePayments !== expensePayments) {
+      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, result.expensePayments);
+    }
   };
 
   const mergeProviderAccounts = (connection: BankConnection, incoming: CashAccount[]) => {
@@ -628,6 +648,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
               isSyncing={isRefreshingConnectionId === mockConnection?.id}
               onConfirmMatch={handleConfirmTransaction}
               onIgnore={handleIgnoreTransaction}
+              onUnmatch={handleUnmatchTransaction}
               language={settings.language}
               t={t}
             />

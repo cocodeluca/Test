@@ -13,9 +13,12 @@ import {
   getBankReconciliationView,
   ignoreBankTransaction,
   suggestBankTransactionMatch,
+  unmatchBankTransaction,
   type BankReconciliationContext,
 } from '../src/common/utils/bankReconciliation';
 import { upsertBankTransactions } from '../src/common/utils/bankTransactions';
+import { buildExpenseObligationViews } from '../src/common/utils/propertyExpenses';
+import { buildRentReceivableViews } from '../src/common/utils/rentCollection';
 import {
   emptyPortfolioData,
   loadUserPortfolio,
@@ -175,4 +178,132 @@ test('a transaction outside conservative amount and date rules remains unmatched
   const view = getBankReconciliationView(invalid, [], context());
   assert.equal(view.status, 'unmatched');
   assert.equal(view.suggestion, null);
+});
+
+test('confirm rent match then unmatch removes only its bank payment and restores outstanding rent', () => {
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: [], context: context(), timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  assert.equal(buildRentReceivableViews(
+    [receivable], confirmed.rentPayments, [property], new Date('2026-09-16T12:00:00Z')
+  )[0].status, 'PAID');
+
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+  const restored = buildRentReceivableViews(
+    [receivable], unmatched.rentPayments, [property], new Date('2026-09-16T12:00:00Z')
+  )[0];
+  assert.equal(unmatched.reconciliations.length, 0);
+  assert.equal(unmatched.rentPayments.length, 0);
+  assert.equal(restored.outstandingAmount, 1450);
+  assert.equal(restored.status, 'OVERDUE');
+  assert.equal(getBankReconciliationView(transaction(), unmatched.reconciliations, context()).status, 'suggested');
+});
+
+test('confirm expense match then unmatch restores the expense obligation', () => {
+  const outgoing = transaction({ amount: -185, bookingDate: '2026-09-09' });
+  const confirmed = confirmBankTransactionMatch({
+    transaction: outgoing, targetType: 'expense-obligation', targetId: expenseObligation.id,
+    reconciliations: [], context: context(), timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  assert.equal(buildExpenseObligationViews(
+    [expenseObligation], confirmed.expensePayments, new Date('2026-09-16T12:00:00Z')
+  )[0].status, 'PAID');
+
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: outgoing.id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+  const restored = buildExpenseObligationViews(
+    [expenseObligation], unmatched.expensePayments, new Date('2026-09-16T12:00:00Z')
+  )[0];
+  assert.equal(unmatched.expensePayments.length, 0);
+  assert.equal(restored.outstandingAmount, 185);
+  assert.equal(restored.status, 'OVERDUE');
+});
+
+test('unmatch preserves unrelated manual payments', () => {
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: [], context: context(), timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const manualPayment = {
+    ...confirmed.rentPayments[0],
+    id: 'manual-payment-unrelated',
+    source: 'manual' as const,
+    amount: 500,
+    allocations: [{ receivableId: 'other-receivable', amount: 500 }],
+    reference: 'Manual receipt',
+  };
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: [...confirmed.rentPayments, manualPayment],
+    expensePayments: confirmed.expensePayments,
+  });
+  assert.deepEqual(unmatched.rentPayments, [manualPayment]);
+});
+
+test('repeated unmatch is idempotent and sync does not recreate the removed payment', () => {
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: [], context: context(), timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const first = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+  const second = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: first.reconciliations,
+    rentPayments: first.rentPayments,
+    expensePayments: first.expensePayments,
+  });
+  const syncedTransactions = upsertBankTransactions([transaction()], [
+    transaction({ syncedAt: '2026-09-17T10:00:00.000Z' }),
+  ]);
+  assert.strictEqual(second.reconciliations, first.reconciliations);
+  assert.strictEqual(second.rentPayments, first.rentPayments);
+  assert.equal(second.rentPayments.length, 0);
+  assert.equal(syncedTransactions.length, 1);
+  assert.equal(getBankReconciliationView(syncedTransactions[0], second.reconciliations, context()).status, 'suggested');
+});
+
+test('the bank transaction remains persisted after unmatch', async () => {
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: [], context: context(), timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+  await saveUserPortfolio('reconciliation-unmatch-user', {
+    ...structuredClone(emptyPortfolioData),
+    properties: [property],
+    bankTransactions: [transaction()],
+    bankTransactionReconciliations: unmatched.reconciliations,
+    rentReceivables: [receivable],
+    rentPayments: unmatched.rentPayments,
+  });
+  const reloaded = await loadUserPortfolio('reconciliation-unmatch-user');
+  assert.equal(reloaded.bankTransactions?.[0].id, transaction().id);
+  assert.deepEqual(reloaded.bankTransactionReconciliations, []);
+  assert.deepEqual(reloaded.rentPayments, []);
 });

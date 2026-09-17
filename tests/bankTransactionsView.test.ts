@@ -68,6 +68,7 @@ const translations: Record<string, string> = {
   'cashAccounts.reconciliation': 'Reconciliation',
   'cashAccounts.reconciliationConfirm': 'Confirm',
   'cashAccounts.reconciliationIgnore': 'Ignore',
+  'cashAccounts.reconciliationUnmatch': 'Undo match',
   'cashAccounts.reconciliationStatus.suggested': 'Suggested match',
   'cashAccounts.reconciliationTarget.rent-receivable': 'Rent',
   'cashAccounts.reconciliationReason.exact-amount': 'Exact amount',
@@ -172,6 +173,39 @@ test('renders a conservative rent suggestion with explicit confirm and ignore ac
   assert.match(html, /Central Apartment/);
   assert.match(html, />Confirm</);
   assert.match(html, />Ignore</);
+});
+
+test('renders Undo match only for a matched reconciliation', () => {
+  const html = renderToStaticMarkup(React.createElement(BankTransactionsView, {
+    transactions: [transaction()],
+    cashAccounts: [account],
+    reconciliations: [{
+      bankTransactionId: transaction().id,
+      status: 'matched',
+      targetType: 'rent-receivable',
+      targetId: 'rent-receivable-ui',
+      paymentId: 'bank-payment-ui',
+      createdAt: '2026-09-16T12:00:00.000Z',
+      updatedAt: '2026-09-16T12:00:00.000Z',
+    }],
+    reconciliationContext: {
+      properties: [],
+      rentReceivables: [],
+      rentPayments: [],
+      expenseObligations: [],
+      expensePayments: [],
+    },
+    selectedAccountId: 'all',
+    onSelectedAccountIdChange: () => undefined,
+    onUnmatch: () => undefined,
+    isSyncing: false,
+    language: 'en',
+    t,
+  }));
+
+  assert.match(html, /data-reconciliation-status="matched"/);
+  assert.match(html, />Undo match</);
+  assert.doesNotMatch(html, />Confirm</);
 });
 
 test('repeated mock sync remains idempotent in the rendered rows', async () => {
