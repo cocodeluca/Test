@@ -57,8 +57,14 @@ export interface BankTransactionNormalizationContext {
 }
 
 export const getBankTransactionIdentity = (
-  transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'>
-) => `${transaction.providerName}:${transaction.externalAccountId ?? 'unknown-account'}:${transaction.externalTransactionId}`;
+  transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'> &
+    Partial<Pick<BankTransaction, 'cashAccountId'>>
+) => {
+  const accountIdentity = transaction.externalAccountId
+    ? `external:${transaction.externalAccountId}`
+    : `cash:${transaction.cashAccountId ?? 'unknown-account'}`;
+  return `${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
+};
 
 const buildTransactionId = (
   providerName: OpenBankingProviderName,
@@ -72,7 +78,9 @@ export const normalizeProviderTransactions = (
 ): BankTransaction[] => {
   const accountsByExternalIdentity = new Map(
     context.accounts
-      .filter((account) => account.connectionId === context.connectionId)
+      .filter((account) =>
+        account.connectionId === context.connectionId && account.status === 'active'
+      )
       .map((account) => [getLinkedCashAccountIdentity(account), account] as const)
       .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
   );
@@ -153,6 +161,7 @@ export const upsertBankTransactions = (
       const pendingIdentity = getBankTransactionIdentity({
         providerName: transaction.providerName,
         externalAccountId: transaction.externalAccountId,
+        cashAccountId: transaction.cashAccountId,
         externalTransactionId: transaction.pendingExternalTransactionId,
       });
       const pendingTransaction = existingByIdentity.get(pendingIdentity) ?? incomingByIdentity.get(pendingIdentity);
@@ -171,10 +180,11 @@ export const upsertBankTransactions = (
       const exactExisting = existingByIdentity.get(getBankTransactionIdentity(transaction));
       const linkedPendingIdentity = !transaction.pending && transaction.pendingExternalTransactionId
         ? getBankTransactionIdentity({
-            providerName: transaction.providerName,
-            externalAccountId: transaction.externalAccountId,
-            externalTransactionId: transaction.pendingExternalTransactionId,
-          })
+          providerName: transaction.providerName,
+          externalAccountId: transaction.externalAccountId,
+          cashAccountId: transaction.cashAccountId,
+          externalTransactionId: transaction.pendingExternalTransactionId,
+        })
         : null;
       const linkedPending = linkedPendingIdentity
         ? existingByIdentity.get(linkedPendingIdentity) ?? incomingByIdentity.get(linkedPendingIdentity)
@@ -246,6 +256,7 @@ export const applyBankTransactionProviderLifecycle = (args: {
     const originalIdentity = getBankTransactionIdentity({
       providerName: reversal.providerName,
       externalAccountId: reversal.externalAccountId,
+      cashAccountId: reversal.cashAccountId,
       externalTransactionId: reversal.reversesExternalTransactionId!,
     });
     const original = transactions.find((transaction) =>

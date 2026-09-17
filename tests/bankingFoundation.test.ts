@@ -6,6 +6,7 @@ import {
   createBankConnection,
   createLinkedCashAccount,
   createManualCashAccount,
+  deactivateLinkedCashAccountsForConnection,
   upsertLinkedCashAccounts,
 } from '../src/common/utils/cashAccounts';
 import {
@@ -100,6 +101,85 @@ test('repeated linked-account sync preserves internal IDs and leaves manual acco
   assert.equal(synced?.currentBalance, 1200);
   assert.equal(second.filter((account) => account.sourceType === 'linked').length, 1);
   assert.strictEqual(second.find((account) => account.id === manual.id), manual);
+});
+
+test('same external transaction ID on two accounts remains account-scoped and idempotent', () => {
+  const checking = linkedAccount({ id: 'cash-checking', externalAccountId: 'shared-bank:checking' });
+  const savings = linkedAccount({ id: 'cash-savings', externalAccountId: 'shared-bank:savings' });
+  const records = [
+    providerRecord({ externalTransactionId: 'shared-transaction', externalAccountId: 'shared-bank:checking' }),
+    providerRecord({ externalTransactionId: 'shared-transaction', externalAccountId: 'shared-bank:savings' }),
+  ];
+  const first = upsertBankTransactions([], normalize(records, [checking, savings]));
+  const repeated = upsertBankTransactions(
+    first,
+    normalize(records, [checking, savings], '2026-09-16T13:00:00.000Z')
+  );
+
+  assert.equal(first.length, 2);
+  assert.equal(new Set(first.map((item) => item.id)).size, 2);
+  assert.deepEqual(
+    first.map((item) => item.cashAccountId).sort(),
+    ['cash-checking', 'cash-savings']
+  );
+  assert.equal(repeated.length, 2);
+  assert.deepEqual(
+    repeated.map((item) => item.id).sort(),
+    first.map((item) => item.id).sort()
+  );
+});
+
+test('same external account ID under different providers does not collide', () => {
+  const externalAccountId = 'provider-shared-account';
+  const mockAccount = linkedAccount({
+    id: 'cash-mock-provider',
+    externalAccountId,
+  });
+  const tinkConnection = createBankConnection({
+    id: 'connection-tink',
+    providerName: 'tink',
+    institutionId: 'institution-tink',
+  });
+  const tinkAccount = createLinkedCashAccount({
+    id: 'cash-tink-provider',
+    providerName: 'tink',
+    connectionId: tinkConnection.id,
+    externalAccountId,
+    currency: 'EUR',
+  });
+  const accounts = upsertLinkedCashAccounts([], [mockAccount, tinkAccount]);
+  const mockTransaction = normalizeProviderTransactions([providerRecord({ externalAccountId })], {
+    providerName: 'mock-bank',
+    connectionId: connection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+  const tinkTransaction = normalizeProviderTransactions([providerRecord({ externalAccountId })], {
+    providerName: 'tink',
+    connectionId: tinkConnection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+  const transactions = upsertBankTransactions([], [mockTransaction, tinkTransaction]);
+
+  assert.equal(accounts.length, 2);
+  assert.equal(mockTransaction.cashAccountId, mockAccount.id);
+  assert.equal(tinkTransaction.cashAccountId, tinkAccount.id);
+  assert.equal(transactions.length, 2);
+  assert.notEqual(mockTransaction.id, tinkTransaction.id);
+});
+
+test('inactive linked account rejects new transaction normalization', () => {
+  const inactive = linkedAccount({ status: 'inactive' });
+
+  assert.throws(
+    () => normalize([providerRecord()], [inactive]),
+    /unknown linked account/
+  );
 });
 
 test('repeated mock transaction fetch is idempotent', async () => {
@@ -432,6 +512,93 @@ test('bank transactions and incremental sync metadata survive an IndexedDB cold 
   assert.equal(reloaded.bankTransactions?.[0].cashAccountId, 'cash-stable-1');
   assert.equal(reloaded.bankTransactionSyncStates?.[0].cursor, 'mock-cursor-1');
   assert.equal(reloaded.bankTransactionSyncStates?.[0].lastSuccessfulSyncAt, '2026-09-16T12:00:00.000Z');
+});
+
+test('disconnected account preserves transaction and reconciliation history', async () => {
+  const manual = createManualCashAccount({ id: 'manual-alongside-linked', currency: 'ARS' });
+  const activeLinked = linkedAccount();
+  const disconnectedAt = '2026-09-17T12:00:00.000Z';
+  const accounts = deactivateLinkedCashAccountsForConnection(
+    [manual, activeLinked],
+    connection.id,
+    disconnectedAt
+  );
+  const bankTransaction = normalize([providerRecord()], [activeLinked])[0];
+  const reconciliation = {
+    bankTransactionId: bankTransaction.id,
+    status: 'ignored' as const,
+    createdAt: '2026-09-16T12:00:00.000Z',
+    updatedAt: '2026-09-16T12:00:00.000Z',
+  };
+  const disconnectedConnection = {
+    ...connection,
+    connectionStatus: 'disconnected' as const,
+    syncStatus: 'idle' as const,
+    linkedAccountIds: [],
+    updatedAt: disconnectedAt,
+  };
+
+  await saveUserPortfolio('banking-disconnected-history-user', {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: accounts,
+    bankConnections: [disconnectedConnection],
+    bankTransactions: [bankTransaction],
+    bankTransactionReconciliations: [reconciliation],
+  });
+  const reloaded = await loadUserPortfolio('banking-disconnected-history-user');
+
+  assert.equal(reloaded.cashAccounts?.length, 2);
+  assert.equal(reloaded.cashAccounts?.find((item) => item.id === activeLinked.id)?.status, 'inactive');
+  assert.equal(reloaded.cashAccounts?.find((item) => item.id === manual.id)?.status, 'active');
+  assert.equal(reloaded.bankTransactions?.[0].cashAccountId, activeLinked.id);
+  assert.deepEqual(reloaded.bankTransactionReconciliations, [reconciliation]);
+});
+
+test('mixed-currency accounts and original transaction values survive an IndexedDB cold load', async () => {
+  const currencies = ['EUR', 'USD', 'ARS', 'GBP'] as const;
+  const accounts = currencies.map((currency) => linkedAccount({
+    id: `cash-${currency.toLowerCase()}`,
+    externalAccountId: `mixed:${currency.toLowerCase()}`,
+    currency,
+  }));
+  const records = currencies.map((currency, index) => providerRecord({
+    externalTransactionId: `mixed-transaction-${currency.toLowerCase()}`,
+    externalAccountId: `mixed:${currency.toLowerCase()}`,
+    amount: 100 + index,
+    currency,
+  }));
+  const transactions = normalizeProviderTransactions(records, {
+    providerName: 'mock-bank',
+    connectionId: connection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1, USD: 0.9, ARS: 0.0007 },
+    fxRateTimestamp: '2026-09-16T00:00:00.000Z',
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  });
+
+  await saveUserPortfolio('banking-mixed-currency-user', {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: accounts,
+    bankConnections: [connection],
+    bankTransactions: transactions,
+  });
+  const reloaded = await loadUserPortfolio('banking-mixed-currency-user');
+
+  assert.deepEqual(reloaded.cashAccounts, accounts);
+  assert.deepEqual(reloaded.bankTransactions, transactions);
+  assert.deepEqual(
+    reloaded.bankTransactions?.map(({ amount, currency, cashAccountId }) => ({ amount, currency, cashAccountId })),
+    currencies.map((currency, index) => ({
+      amount: 100 + index,
+      currency,
+      cashAccountId: `cash-${currency.toLowerCase()}`,
+    }))
+  );
+  const gbp = reloaded.bankTransactions?.find((item) => item.currency === 'GBP');
+  assert.equal(gbp?.normalizedAmount, null);
+  assert.equal(gbp?.fxCoverage, 'unavailable');
+  assert.equal(gbp?.fxRate, null);
 });
 
 test('IndexedDB cold load preserves the final posted lifecycle state', async () => {

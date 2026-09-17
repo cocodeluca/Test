@@ -88,11 +88,12 @@ const t = (key: string) => translations[key] ?? key;
 
 const renderView = (
   transactions: BankTransaction[],
-  cashAccounts: CashAccount[] = [account]
+  cashAccounts: CashAccount[] = [account],
+  selectedAccountId = 'all'
 ) => renderToStaticMarkup(React.createElement(BankTransactionsView, {
   transactions,
   cashAccounts,
-  selectedAccountId: 'all',
+  selectedAccountId,
   onSelectedAccountIdChange: () => undefined,
   isSyncing: false,
   language: 'en',
@@ -115,6 +116,37 @@ test('renders persisted transaction details with the stable linked account', () 
   assert.match(html, /EUR/);
   assert.match(html, /Sep 15, 2026/);
   assert.match(html, /data-bank-transaction-id="mock-bank:provider-transaction-1"/);
+});
+
+test('account filter does not leak transactions from another account', () => {
+  const savings = createLinkedCashAccount({
+    ...account,
+    id: 'cash-account-2',
+    nickname: 'Reserve Savings',
+    externalAccountId: 'mock-institution-ui:savings',
+    currency: 'USD',
+  });
+  const checkingTransaction = transaction({ description: 'Checking only' });
+  const savingsTransaction = transaction({
+    id: 'mock-bank:provider-transaction-2',
+    externalTransactionId: 'provider-transaction-2',
+    cashAccountId: savings.id,
+    externalAccountId: savings.externalAccountId,
+    description: 'Savings only',
+    amount: 25,
+    currency: 'USD',
+    normalizedAmount: 22.5,
+  });
+  const html = renderView(
+    [checkingTransaction, savingsTransaction],
+    [account, savings],
+    savings.id
+  );
+
+  assert.match(html, /Savings only/);
+  assert.match(html, /Reserve Savings/);
+  assert.doesNotMatch(html, /Checking only/);
+  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 1);
 });
 
 test('renders pending state and signed inflow and outflow amounts', () => {

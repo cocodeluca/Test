@@ -213,6 +213,22 @@ export const upsertLinkedCashAccounts = (
   return [...retained, ...upserted];
 };
 
+export const deactivateLinkedCashAccountsForConnection = (
+  accounts: CashAccount[],
+  connectionId: string,
+  timestamp = new Date().toISOString()
+): CashAccount[] =>
+  accounts.map((account) =>
+    account.sourceType === 'linked' && account.connectionId === connectionId
+      ? normalizeCashAccount({
+          ...account,
+          status: 'inactive',
+          syncStatus: 'idle',
+          updatedAt: timestamp,
+        })
+      : account
+  );
+
 export const calculateCashAccountSummary = (accounts: CashAccount[]) => {
   const manualAccounts = accounts.filter((account) => account.sourceType === 'manual');
   const linkedAccounts = accounts.filter((account) => account.sourceType === 'linked');

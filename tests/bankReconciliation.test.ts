@@ -115,6 +115,77 @@ test('an outgoing transaction only suggests an existing canonical expense obliga
   assert.equal(suggestBankTransactionMatch(outgoing, context({ expenseObligations: [] })), null);
 });
 
+test('EUR transaction reconciles against an EUR obligation', () => {
+  const outgoing = transaction({ amount: -185, currency: 'EUR', bookingDate: '2026-09-09' });
+  const result = confirmBankTransactionMatch({
+    transaction: outgoing,
+    targetType: 'expense-obligation',
+    targetId: expenseObligation.id,
+    reconciliations: [],
+    context: context(),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+
+  assert.ok(result);
+  assert.equal(result.expensePayments[0].amount, 185);
+  assert.equal(result.expensePayments[0].currency, 'EUR');
+  assert.equal(result.reconciliations[0].bankTransactionId, outgoing.id);
+});
+
+test('USD transaction reconciles against a USD obligation using the original amount', () => {
+  const usdReceivable: RentReceivable = {
+    ...receivable,
+    id: 'rent-receivable-usd',
+    expectedAmount: 1450,
+    currency: 'USD',
+  };
+  const usdTransaction = transaction({
+    id: 'bank-tx-usd',
+    externalTransactionId: 'provider-tx-usd',
+    amount: 1450,
+    currency: 'USD',
+    normalizedAmount: 1305,
+    normalizedCurrency: 'EUR',
+    fxCoverage: 'snapshot',
+    fxRate: 0.9,
+  });
+  const usdContext = context({ rentReceivables: [usdReceivable] });
+  const result = confirmBankTransactionMatch({
+    transaction: usdTransaction,
+    targetType: 'rent-receivable',
+    targetId: usdReceivable.id,
+    reconciliations: [],
+    context: usdContext,
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+
+  assert.ok(result);
+  assert.equal(result.rentPayments[0].amount, 1450);
+  assert.equal(result.rentPayments[0].currency, 'USD');
+  assert.equal(result.reconciliations[0].bankTransactionId, usdTransaction.id);
+});
+
+test('cross-currency reconciliation is rejected even when normalized values match', () => {
+  const usdTransaction = transaction({
+    id: 'bank-tx-cross-currency',
+    amount: 1611.11,
+    currency: 'USD',
+    normalizedAmount: 1450,
+    normalizedCurrency: 'EUR',
+    fxCoverage: 'snapshot',
+    fxRate: 0.9,
+  });
+
+  assert.equal(suggestBankTransactionMatch(usdTransaction, context()), null);
+  assert.equal(confirmBankTransactionMatch({
+    transaction: usdTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context(),
+  }), null);
+});
+
 test('confirm creates one linked canonical rent payment', () => {
   const result = confirmBankTransactionMatch({
     transaction: transaction(),

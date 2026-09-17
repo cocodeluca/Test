@@ -32,6 +32,7 @@ import {
   calculateCashAccountSummary,
   cashAccountTypeLabels,
   createManualCashAccount,
+  deactivateLinkedCashAccountsForConnection,
   getLinkedCashAccountIdentity,
   getCashAccountBalance,
   getCashAccountDisplayName,
@@ -464,7 +465,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       onUpdateBankConnections(
         bankConnections.map((item) => (item.id === connection.id ? disconnected : item))
       );
-      onUpdateCashAccounts(cashAccounts.filter((account) => account.connectionId !== connection.id));
+      onUpdateCashAccounts(
+        deactivateLinkedCashAccountsForConnection(cashAccounts, connection.id)
+      );
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.disconnectUnavailable')
