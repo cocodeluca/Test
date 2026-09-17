@@ -112,7 +112,7 @@ test('remote large backup save/load/import/readback/hydration uses canonical Ind
     return new Response(JSON.stringify({ ok: true, payload: serverPayload }), { status: 200 });
   };
   await saveBackupToServer(payload);
-  const loaded = await loadBackupFromServer(user.email);
+  const loaded = await loadBackupFromServer();
   await importUserAccountBackup(user, loaded.payload);
   assert.deepEqual(await loadUserPortfolio(user.id), payload.portfolio);
   await hydrateAccountWorkspace(user);

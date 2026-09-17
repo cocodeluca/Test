@@ -35,8 +35,9 @@ import {
   type OpenBankingService,
 } from './openBankingService';
 import {
-  loadAccountBackupFromStore,
-  saveAccountBackupToStore,
+  AccountBackupError,
+  defaultAccountBackupStore,
+  type AccountBackupStore,
 } from './accountBackupStore';
 import {
   assertJsonRequest,
@@ -126,28 +127,6 @@ const handleFxRates = async (_request: IncomingMessage, response: ServerResponse
   }
 };
 
-const handleSaveAccountBackup = async (request: IncomingMessage, response: ServerResponse) => {
-  try {
-    const body = await readJsonBody<{ email?: string; backup?: unknown }>(request);
-    const result = await saveAccountBackupToStore(body.email ?? '', body.backup);
-    json(response, 200, result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unexpected account backup save error';
-    json(response, 500, { error: message });
-  }
-};
-
-const handleLoadAccountBackup = async (request: IncomingMessage, response: ServerResponse) => {
-  try {
-    const body = await readJsonBody<{ email?: string }>(request);
-    const result = await loadAccountBackupFromStore(body.email ?? '');
-    json(response, 200, result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unexpected account backup load error';
-    json(response, 500, { error: message });
-  }
-};
-
 interface OpenBankingSessionBody {
   providerName?: string;
   connectionId?: string;
@@ -201,6 +180,74 @@ const jsonAuthError = (response: ServerResponse, error: unknown) => {
 const requireAuthMutationRequest = (request: IncomingMessage) => {
   assertSameOriginRequest(request);
   assertJsonRequest(request);
+};
+
+const requireAuthenticatedServerUser = async (
+  request: IncomingMessage,
+  authService: Pick<ServerAuthService, 'resolveToken'>
+) => {
+  const user = await authService.resolveToken(getSessionTokenFromRequest(request));
+  if (!user) throw new ServerAuthError('AUTH_REQUIRED', 401, 'Authentication required.');
+  return user;
+};
+
+const jsonAccountBackupError = (response: ServerResponse, error: unknown) => {
+  console.error('[account-backup] Request failed.', {
+    errorName: error instanceof Error ? error.name : 'UnknownError',
+    errorCode:
+      error instanceof ServerAuthError || error instanceof AccountBackupError
+        ? error.code
+        : null,
+  });
+  if (error instanceof ServerAuthError || error instanceof AccountBackupError) {
+    json(response, error.statusCode, { error: error.message, code: error.code });
+    return;
+  }
+  json(response, 500, { error: 'Unexpected account backup error.', code: 'ACCOUNT_BACKUP_UNEXPECTED' });
+};
+
+const assertNoClientBackupOwner = (body: Record<string, unknown>) => {
+  if (
+    Object.prototype.hasOwnProperty.call(body, 'email') ||
+    Object.prototype.hasOwnProperty.call(body, 'userId')
+  ) {
+    throw new AccountBackupError(
+      'ACCOUNT_BACKUP_OWNER_FORBIDDEN',
+      400,
+      'Backup owner fields are not accepted.'
+    );
+  }
+};
+
+const handleSaveAccountBackup = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService,
+  backupStore: AccountBackupStore
+) => {
+  requireAuthMutationRequest(request);
+  const user = await requireAuthenticatedServerUser(request, authService);
+  const body = await readJsonBody<Record<string, unknown> & { backup?: unknown }>(
+    request,
+    32 * 1024 * 1024
+  );
+  assertNoClientBackupOwner(body);
+  const result = await backupStore.save({ userId: user.id, email: user.email }, body.backup);
+  json(response, 200, result);
+};
+
+const handleLoadAccountBackup = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService,
+  backupStore: AccountBackupStore
+) => {
+  requireAuthMutationRequest(request);
+  const user = await requireAuthenticatedServerUser(request, authService);
+  const body = await readJsonBody<Record<string, unknown>>(request, 16 * 1024);
+  assertNoClientBackupOwner(body);
+  const result = await backupStore.load({ userId: user.id, email: user.email });
+  json(response, 200, result);
 };
 
 const handleAuthRegister = async (
@@ -400,6 +447,7 @@ const handleDisconnectOpenBankingConnection = async (
 };
 
 export interface BrokerApiPluginOptions {
+  accountBackupStore?: AccountBackupStore;
   authService?: ServerAuthService;
   openBankingAuthenticator?: OpenBankingRequestAuthenticator;
   openBankingService?: OpenBankingService;
@@ -424,6 +472,7 @@ const createDefaultOpenBankingService = () => createOpenBankingService({
 });
 
 export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin => {
+  const accountBackupStore = options.accountBackupStore ?? defaultAccountBackupStore;
   const authService = options.authService ?? createDefaultServerAuthService();
   const openBankingAuthenticator =
     options.openBankingAuthenticator ?? createServerSessionOpenBankingAuthenticator(authService);
@@ -460,7 +509,11 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
         return methodNotAllowed(response);
       }
 
-      await handleSaveAccountBackup(request, response);
+      try {
+        await handleSaveAccountBackup(request, response, authService, accountBackupStore);
+      } catch (error) {
+        jsonAccountBackupError(response, error);
+      }
     });
 
     server.middlewares.use('/api/account-backup/load', async (request, response) => {
@@ -468,7 +521,11 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
         return methodNotAllowed(response);
       }
 
-      await handleLoadAccountBackup(request, response);
+      try {
+        await handleLoadAccountBackup(request, response, authService, accountBackupStore);
+      } catch (error) {
+        jsonAccountBackupError(response, error);
+      }
     });
 
     server.middlewares.use('/api/auth/register', async (request, response) => {

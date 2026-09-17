@@ -13,11 +13,12 @@ const ensureOk = async <T>(response: Response): Promise<T> => {
 
 const remoteWrites = new Map<string, Promise<unknown>>();
 export const saveBackupToServer = (backup: UserAccountBackup) => {
-  const email = backup.user.email.trim().toLowerCase();
-  const body = JSON.stringify({ email, backup });
-  const next = (remoteWrites.get(email) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+  const ownerKey = 'authenticated-session';
+  const body = JSON.stringify({ backup });
+  const next = (remoteWrites.get(ownerKey) ?? Promise.resolve()).catch(() => undefined).then(async () => {
   const response = await fetch('/api/account-backup/save', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -26,20 +27,22 @@ export const saveBackupToServer = (backup: UserAccountBackup) => {
 
   return ensureOk<{ ok: boolean; email: string; updatedAt: string }>(response);
   });
-  remoteWrites.set(email, next);
-  void next.finally(() => { if (remoteWrites.get(email) === next) remoteWrites.delete(email); }).catch(() => undefined);
+  remoteWrites.set(ownerKey, next);
+  void next.finally(() => {
+    if (remoteWrites.get(ownerKey) === next) remoteWrites.delete(ownerKey);
+  }).catch(() => undefined);
   return next;
 };
 
-export const loadBackupFromServer = async (email: string) => {
-  // Caller-side hydration traces carry the account ID; do not log email here.
+export const loadBackupFromServer = async () => {
   tracePortfolioPersistence('backup:remote-load', {});
   const response = await fetch('/api/account-backup/load', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({}),
   });
 
   return ensureOk<{

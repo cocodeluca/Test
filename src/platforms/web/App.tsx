@@ -1850,7 +1850,7 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
 
   const handleRestoreBackupFromServer = async () => {
     await runPortfolioTransition(async () => {
-      const result = await loadBackupFromServer(user.email);
+      const result = await loadBackupFromServer();
       await importUserAccountBackup(user, result.payload);
       window.location.reload();
     });

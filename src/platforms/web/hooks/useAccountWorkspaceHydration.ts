@@ -78,7 +78,7 @@ export const hydrateAccountWorkspace = async (currentUser: LocalAccountUser): Pr
         let payload: UserAccountBackup | null = null;
         try {
           tracePortfolioPersistence('hydration:remote-load', { userId: currentUser.id, accountId: currentUser.id, indexedDbKey: currentUser.id });
-          const response = await loadBackupFromServer(currentUser.email);
+          const response = await loadBackupFromServer();
           if (!hasValidBackupShape(response.payload)) throw new Error('Invalid server backup');
           payload = response.payload;
         } catch (error) {
