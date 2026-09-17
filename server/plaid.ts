@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import {
+  readPlaidPilotConfiguration,
+  SANTANDER_SPAIN_COUNTRY_CODE,
+} from './openBankingPolicy';
 
-const PLAID_ENV = (process.env.PLAID_ENV ?? 'sandbox').trim().toLowerCase();
-const PLAID_BASE_URL =
-  PLAID_ENV === 'development'
+const getPlaidBaseUrl = () => {
+  const plaidEnvironment = readPlaidPilotConfiguration().environment;
+  return plaidEnvironment === 'development'
     ? 'https://development.plaid.com'
-    : PLAID_ENV === 'production'
+    : plaidEnvironment === 'production'
     ? 'https://production.plaid.com'
     : 'https://sandbox.plaid.com';
-
-type PlaidProduct = 'transactions' | 'auth' | 'identity' | 'assets' | 'investments' | 'liabilities' | 'signal' | 'transfer';
-type PlaidCountryCode = 'US' | 'GB' | 'FR' | 'ES' | 'IE' | 'NL' | 'DE' | 'IT' | 'CA' | 'DK' | 'NO' | 'SE';
+};
 
 interface PlaidLinkTokenResponse {
   link_token: string;
@@ -21,9 +23,13 @@ interface PlaidPublicTokenExchangeResponse {
   item_id: string;
 }
 
-interface PlaidInstitution {
-  institution_id?: string | null;
-  name?: string | null;
+interface PlaidInstitutionResponse {
+  institution: {
+    institution_id: string;
+    name: string;
+    country_codes: string[];
+    products: string[];
+  };
 }
 
 interface PlaidAccountBalance {
@@ -33,7 +39,7 @@ interface PlaidAccountBalance {
   unofficial_currency_code?: string | null;
 }
 
-interface PlaidAccount {
+export interface PlaidAccount {
   account_id: string;
   balances: PlaidAccountBalance;
   mask?: string | null;
@@ -43,7 +49,7 @@ interface PlaidAccount {
   type?: string | null;
 }
 
-interface PlaidAccountsBalanceResponse {
+export interface PlaidAccountsBalanceResponse {
   accounts: PlaidAccount[];
   item?: {
     consent_expiration_time?: string | null;
@@ -51,7 +57,7 @@ interface PlaidAccountsBalanceResponse {
   };
 }
 
-interface PlaidItemGetResponse {
+export interface PlaidItemGetResponse {
   item: {
     item_id: string;
     institution_id?: string | null;
@@ -69,27 +75,23 @@ const getRequiredEnv = (name: 'PLAID_CLIENT_ID' | 'PLAID_SECRET'): string => {
   return value;
 };
 
-const parseProducts = (): PlaidProduct[] => {
-  const raw = process.env.PLAID_PRODUCTS?.trim();
-  if (!raw) {
-    return ['transactions'];
-  }
-  return raw.split(',').map((value) => value.trim()).filter(Boolean) as PlaidProduct[];
-};
+export class PlaidProviderError extends Error {
+  readonly code: string | null;
+  readonly requestId: string | null;
 
-const parseCountryCodes = (): PlaidCountryCode[] => {
-  const raw = process.env.PLAID_COUNTRY_CODES?.trim();
-  if (!raw) {
-    return ['ES', 'US'];
+  constructor(message: string, code?: string | null, requestId?: string | null) {
+    super(message);
+    this.name = 'PlaidProviderError';
+    this.code = code ?? null;
+    this.requestId = requestId ?? null;
   }
-  return raw.split(',').map((value) => value.trim().toUpperCase()).filter(Boolean) as PlaidCountryCode[];
-};
+}
 
 const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Promise<T> => {
   const clientId = getRequiredEnv('PLAID_CLIENT_ID');
   const secret = getRequiredEnv('PLAID_SECRET');
 
-  const response = await fetch(`${PLAID_BASE_URL}${path}`, {
+  const response = await fetch(`${getPlaidBaseUrl()}${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -103,13 +105,17 @@ const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Pro
     }),
   });
 
-  const payload = (await response.json()) as T & { error_message?: string; error_code?: string };
+  const payload = (await response.json()) as T & {
+    error_message?: string;
+    error_code?: string;
+    request_id?: string;
+  };
 
   if (!response.ok) {
     const message =
       payload.error_message ||
       `${path} failed with status ${response.status}`;
-    throw new Error(message);
+    throw new PlaidProviderError(message, payload.error_code, payload.request_id);
   }
 
   return payload;
@@ -119,12 +125,13 @@ export const createPlaidLinkToken = async (input: {
   userId: string;
   accessToken?: string | null;
 }): Promise<{ linkToken: string; expiration?: string; mode: 'create' | 'update' }> => {
-  const products = input.accessToken ? undefined : parseProducts();
+  const configuration = readPlaidPilotConfiguration();
+  const products = input.accessToken ? undefined : configuration.products;
   const body: Record<string, unknown> = {
     client_name: process.env.PLAID_CLIENT_NAME ?? 'RePortfolio',
     user: { client_user_id: input.userId },
     language: 'en',
-    country_codes: parseCountryCodes(),
+    country_codes: configuration.countryCodes,
   };
 
   if (input.accessToken) {
@@ -156,6 +163,19 @@ export const fetchPlaidItem = async (accessToken: string) =>
     access_token: accessToken,
   });
 
+export const fetchPlaidInstitution = async (institutionId: string) => {
+  const result = await plaidRequest<PlaidInstitutionResponse>('/institutions/get_by_id', {
+    institution_id: institutionId,
+    country_codes: [SANTANDER_SPAIN_COUNTRY_CODE],
+  });
+  return {
+    institutionId: result.institution.institution_id,
+    name: result.institution.name,
+    countryCodes: result.institution.country_codes,
+    products: result.institution.products,
+  };
+};
+
 export const fetchPlaidBalances = async (accessToken: string) =>
   plaidRequest<PlaidAccountsBalanceResponse>('/accounts/balance/get', {
     access_token: accessToken,
@@ -166,11 +186,13 @@ export const removePlaidItem = async (accessToken: string) =>
     access_token: accessToken,
   });
 
-const mapCurrency = (currency: string | null | undefined): 'EUR' | 'USD' | 'ARS' => {
+const mapCurrency = (currency: string | null | undefined): 'EUR' | 'USD' | 'ARS' | 'GBP' => {
   const value = (currency ?? '').toUpperCase();
+  if (value === 'EUR') return 'EUR';
   if (value === 'USD') return 'USD';
   if (value === 'ARS') return 'ARS';
-  return 'EUR';
+  if (value === 'GBP') return 'GBP';
+  throw new PlaidProviderError('Plaid returned an unsupported account currency.');
 };
 
 const mapAccountType = (account: PlaidAccount) => {

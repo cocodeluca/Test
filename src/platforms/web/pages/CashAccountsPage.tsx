@@ -491,12 +491,14 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           institutionName: currentConnection.institutionName,
           institutionId: currentConnection.institutionId,
           scenario: 'success',
+          connectionId: currentConnection.id,
         });
         const result = await adapter.completeConnection(session, {
           userId,
           institutionName: currentConnection.institutionName,
           institutionId: currentConnection.institutionId,
           scenario: 'success',
+          connectionId: currentConnection.id,
         });
         const next = commitBankingState((current) => applyBankConnectionAccountResult(
           current,

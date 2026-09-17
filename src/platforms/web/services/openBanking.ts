@@ -448,27 +448,21 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
 
 const plaidAdapter: ProviderAdapter = {
   providerName: 'plaid',
-  async createConnectionSession({ userId, connectionId }) {
+  async createConnectionSession({ connectionId }) {
     return jsonRequest<ProviderConnectionSession>('/api/open-banking/session/create', {
       providerName: 'plaid',
-      userId,
       connectionId: connectionId ?? null,
     });
   },
-  async completeConnection(session, input) {
+  async completeConnection(session, _input) {
     if (!session.linkToken) {
       throw new Error('Missing Plaid link token.');
     }
 
     const linkResult = await launchPlaidLink(session.linkToken);
     return jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/complete', {
-      providerName: 'plaid',
-      userId: input.userId,
-      connectionId: input.connectionId ?? session.connectionId ?? null,
+      sessionId: session.sessionId,
       publicToken: linkResult.publicToken,
-      institutionName: linkResult.institutionName,
-      institutionId: linkResult.institutionId,
-      selectedAccountIds: linkResult.selectedAccountIds,
     });
   },
   async fetchAccounts(connection) {

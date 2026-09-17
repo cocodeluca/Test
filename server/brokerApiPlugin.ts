@@ -6,17 +6,34 @@ import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   fetchPlaidBalances,
+  fetchPlaidInstitution,
   fetchPlaidItem,
   isPlaidLoginRequiredError,
   mapPlaidAccountsToCashAccounts,
   removePlaidItem,
+  PlaidProviderError,
 } from './plaid';
 import {
-  deleteOpenBankingConnection,
-  loadOpenBankingConnection,
-  saveOpenBankingConnection,
-  updateOpenBankingConnection,
+  createDefaultOpenBankingConnectionStore,
+  OpenBankingConnectionOwnershipError,
+  OpenBankingVaultError,
 } from './openBankingStore';
+import {
+  OpenBankingAuthenticationError,
+  type OpenBankingRequestAuthenticator,
+  unavailableOpenBankingAuthenticator,
+} from './openBankingAuth';
+import {
+  createOpenBankingLinkSessionStore,
+  OpenBankingLinkSessionError,
+} from './openBankingLinkSessions';
+import {
+  OpenBankingConfigurationError,
+} from './openBankingPolicy';
+import {
+  createOpenBankingService,
+  type OpenBankingService,
+} from './openBankingService';
 import {
   loadAccountBackupFromStore,
   saveAccountBackupToStore,
@@ -111,269 +128,162 @@ const handleLoadAccountBackup = async (request: IncomingMessage, response: Serve
 
 interface OpenBankingSessionBody {
   providerName?: string;
-  userId?: string;
   connectionId?: string;
 }
 
 interface OpenBankingCompleteBody {
-  providerName?: string;
-  userId?: string;
+  sessionId?: string;
   publicToken?: string;
-  institutionName?: string;
-  institutionId?: string;
-  selectedAccountIds?: string[];
-  connectionId?: string;
 }
 
-const jsonError = (response: ServerResponse, error: unknown, fallbackMessage: string) => {
-  const message = error instanceof Error ? error.message : fallbackMessage;
-  json(response, 500, { error: message });
+const logOpenBankingError = (operation: string, error: unknown) => {
+  console.error('[open-banking] Request failed.', {
+    operation,
+    errorName: error instanceof Error ? error.name : 'UnknownError',
+    errorCode:
+      error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : null,
+    providerRequestId: error instanceof PlaidProviderError ? error.requestId : null,
+  });
+};
+
+const jsonOpenBankingError = (
+  response: ServerResponse,
+  error: unknown,
+  operation: string
+) => {
+  logOpenBankingError(operation, error);
+  if (error instanceof OpenBankingAuthenticationError) {
+    json(response, 401, {
+      error: 'Server-authenticated session required.',
+      code: error.code,
+    });
+    return;
+  }
+  if (error instanceof OpenBankingConnectionOwnershipError) {
+    json(response, 404, {
+      error: 'Open banking connection not found.',
+      code: error.code,
+    });
+    return;
+  }
+  if (error instanceof OpenBankingLinkSessionError) {
+    json(response, 400, {
+      error: 'Bank connection session is invalid or expired.',
+      code: error.code,
+    });
+    return;
+  }
+  if (error instanceof OpenBankingConfigurationError || error instanceof OpenBankingVaultError) {
+    json(response, 503, {
+      error: 'Open banking is not securely configured.',
+      code: error.code,
+    });
+    return;
+  }
+  if (error instanceof PlaidProviderError) {
+    json(response, 502, {
+      error: 'The banking provider could not complete the request.',
+      code: 'OPEN_BANKING_PROVIDER_ERROR',
+    });
+    return;
+  }
+  json(response, 500, { error: 'Unexpected open banking error.' });
 };
 
 const handleCreateOpenBankingSession = async (
   request: IncomingMessage,
-  response: ServerResponse
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
 ) => {
+  const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingSessionBody>(request);
-  const providerName = body.providerName ?? 'mock-bank';
-
-  if (providerName !== 'plaid') {
-    json(response, 200, {
-      providerName,
-      mode: 'create',
-      status: 'mock',
-    });
-    return;
-  }
-
-  if (!body.userId) {
-    json(response, 400, { error: 'userId is required.' });
-    return;
-  }
-
-  const storedConnection = body.connectionId
-    ? await loadOpenBankingConnection(body.connectionId)
-    : null;
-  const result = await createPlaidLinkToken({
-    userId: body.userId,
-    accessToken: storedConnection?.accessToken ?? null,
+  const result = await service.createConnectionSession(principal, {
+    providerName: body.providerName,
+    connectionId: body.connectionId,
   });
-
-  json(response, 200, {
-    providerName,
-    mode: result.mode,
-    status: 'redirect-required',
-    linkToken: result.linkToken,
-    expiration: result.expiration ?? null,
-    connectionId: body.connectionId ?? null,
-  });
+  json(response, 200, result);
 };
 
 const handleCompleteOpenBankingConnection = async (
   request: IncomingMessage,
-  response: ServerResponse
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
 ) => {
+  const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingCompleteBody>(request);
-  const providerName = body.providerName ?? 'mock-bank';
-
-  if (providerName !== 'plaid') {
-    json(response, 400, { error: 'Only Plaid is supported by the real backend flow.' });
-    return;
-  }
-
-  if (!body.userId || !body.publicToken) {
-    json(response, 400, { error: 'userId and publicToken are required.' });
-    return;
-  }
-
-  const syncedAt = new Date().toISOString();
-  const existingConnection = body.connectionId
-    ? await loadOpenBankingConnection(body.connectionId)
-    : null;
-
-  const exchanged = existingConnection
-    ? null
-    : await exchangePlaidPublicToken(body.publicToken);
-  const accessToken = existingConnection?.accessToken ?? exchanged?.access_token;
-
-  if (!accessToken) {
-    json(response, 500, { error: 'Missing Plaid access token after connection completion.' });
-    return;
-  }
-
-  const balances = await fetchPlaidBalances(accessToken);
-  const item = await fetchPlaidItem(accessToken);
-  const connectionId = body.connectionId ?? `connection-${Date.now()}`;
-  const institutionId =
-    body.institutionId ||
-    existingConnection?.institutionId ||
-    balances.item?.institution_id ||
-    item.item.institution_id ||
-    `plaid-institution-${Date.now()}`;
-  const institutionName = body.institutionName || existingConnection?.institutionName || 'Connected institution';
-
-  const mappedAccounts = mapPlaidAccountsToCashAccounts({
-    userId: body.userId,
-    providerName: 'plaid',
-    connectionId,
-    institutionName,
-    institutionId,
-    accounts: balances.accounts,
-    selectedAccountIds: body.selectedAccountIds ?? existingConnection?.selectedAccountIds ?? [],
-    syncedAt,
+  const result = await service.completeConnection(principal, {
+    sessionId: body.sessionId,
+    publicToken: body.publicToken,
   });
-
-  const storedConnection = await saveOpenBankingConnection({
-    id: connectionId,
-    userId: body.userId,
-    providerName: 'plaid',
-    institutionName,
-    institutionId,
-    accessToken,
-    itemId: existingConnection?.itemId ?? exchanged?.item_id ?? item.item.item_id,
-    selectedAccountIds: body.selectedAccountIds ?? existingConnection?.selectedAccountIds ?? [],
-    consentExpirationTime:
-      balances.item?.consent_expiration_time ?? item.item.consent_expiration_time ?? null,
-    createdAt: existingConnection?.createdAt ?? syncedAt,
-    updatedAt: syncedAt,
-  });
-
-  json(response, 200, {
-    connection: {
-      id: storedConnection.id,
-      userId: storedConnection.userId,
-      providerName: storedConnection.providerName,
-      institutionName: storedConnection.institutionName,
-      institutionId: storedConnection.institutionId,
-      connectionStatus: 'connected',
-      syncStatus: 'success',
-      lastSyncedAt: syncedAt,
-      needsReauth: false,
-      errorMessage: null,
-      linkedAccountIds: mappedAccounts.map((account) => account.id),
-      createdAt: storedConnection.createdAt,
-      updatedAt: storedConnection.updatedAt,
-    },
-    accounts: mappedAccounts,
-  });
+  json(response, 200, result);
 };
 
 const handleRefreshOpenBankingConnection = async (
   request: IncomingMessage,
-  response: ServerResponse
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
 ) => {
+  const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<{ connectionId?: string }>(request);
-
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-
-  const storedConnection = await loadOpenBankingConnection(body.connectionId);
-
-  if (!storedConnection) {
-    json(response, 404, { error: 'Stored open banking connection not found.' });
-    return;
-  }
-
-  try {
-    const balances = await fetchPlaidBalances(storedConnection.accessToken);
-    const syncedAt = new Date().toISOString();
-    const mappedAccounts = mapPlaidAccountsToCashAccounts({
-      userId: storedConnection.userId,
-      providerName: 'plaid',
-      connectionId: storedConnection.id,
-      institutionName: storedConnection.institutionName,
-      institutionId: storedConnection.institutionId,
-      accounts: balances.accounts,
-      selectedAccountIds: storedConnection.selectedAccountIds,
-      syncedAt,
-    });
-    await updateOpenBankingConnection(storedConnection.id, {
-      selectedAccountIds: storedConnection.selectedAccountIds,
-      consentExpirationTime: balances.item?.consent_expiration_time ?? null,
-      updatedAt: syncedAt,
-    });
-
-    json(response, 200, {
-      connection: {
-        id: storedConnection.id,
-        userId: storedConnection.userId,
-        providerName: storedConnection.providerName,
-        institutionName: storedConnection.institutionName,
-        institutionId: storedConnection.institutionId,
-        connectionStatus: 'connected',
-        syncStatus: 'success',
-        lastSyncedAt: syncedAt,
-        needsReauth: false,
-        errorMessage: null,
-        linkedAccountIds: mappedAccounts.map((account) => account.id),
-        createdAt: storedConnection.createdAt,
-        updatedAt: syncedAt,
-      },
-      accounts: mappedAccounts,
-    });
-  } catch (error) {
-    if (isPlaidLoginRequiredError(error)) {
-      await updateOpenBankingConnection(storedConnection.id, {
-        updatedAt: new Date().toISOString(),
-      });
-
-      json(response, 200, {
-        connection: {
-          id: storedConnection.id,
-          userId: storedConnection.userId,
-          providerName: storedConnection.providerName,
-          institutionName: storedConnection.institutionName,
-          institutionId: storedConnection.institutionId,
-          connectionStatus: 'needs-reauthentication',
-          syncStatus: 'needs-reauth',
-          lastSyncedAt: null,
-          needsReauth: true,
-          errorMessage: error instanceof Error ? error.message : 'Connection requires reauthentication.',
-          linkedAccountIds: storedConnection.selectedAccountIds,
-          createdAt: storedConnection.createdAt,
-          updatedAt: new Date().toISOString(),
-        },
-        accounts: [],
-      });
-      return;
-    }
-
-    throw error;
-  }
+  const result = await service.refreshConnection(principal, body.connectionId);
+  json(response, 200, result);
 };
 
 const handleDisconnectOpenBankingConnection = async (
   request: IncomingMessage,
-  response: ServerResponse
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
 ) => {
+  const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<{ connectionId?: string }>(request);
-
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-
-  const storedConnection = await loadOpenBankingConnection(body.connectionId);
-
-  if (!storedConnection) {
-    json(response, 404, { error: 'Stored open banking connection not found.' });
-    return;
-  }
-
-  await removePlaidItem(storedConnection.accessToken);
-  await deleteOpenBankingConnection(storedConnection.id);
-
-  json(response, 200, {
-    ok: true,
-    connectionId: storedConnection.id,
-  });
+  const result = await service.disconnectConnection(principal, body.connectionId);
+  json(response, 200, result);
 };
 
-export const brokerApiPlugin = (): Plugin => ({
-  name: 'broker-api-plugin',
-  configureServer(server) {
+export interface BrokerApiPluginOptions {
+  openBankingAuthenticator?: OpenBankingRequestAuthenticator;
+  openBankingService?: OpenBankingService;
+}
+
+const createDefaultOpenBankingService = () => createOpenBankingService({
+  store: createDefaultOpenBankingConnectionStore(),
+  linkSessions: createOpenBankingLinkSessionStore(),
+  plaid: {
+    createLinkToken: createPlaidLinkToken,
+    exchangePublicToken: exchangePlaidPublicToken,
+    fetchItem: fetchPlaidItem,
+    fetchInstitution: fetchPlaidInstitution,
+    fetchBalances: fetchPlaidBalances,
+    removeItem: removePlaidItem,
+    isLoginRequiredError: isPlaidLoginRequiredError,
+    mapAccounts: (input) => mapPlaidAccountsToCashAccounts({
+      ...input,
+      providerName: 'plaid',
+    }),
+  },
+});
+
+export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin => {
+  const openBankingAuthenticator =
+    options.openBankingAuthenticator ?? unavailableOpenBankingAuthenticator;
+  const openBankingService = options.openBankingService ?? createDefaultOpenBankingService();
+  return {
+    name: 'broker-api-plugin',
+    configureServer(server) {
     server.middlewares.use('/api/brokers/etoro/account', async (request, response) => {
       if (request.method !== 'GET') {
         return methodNotAllowed(response);
@@ -420,9 +330,14 @@ export const brokerApiPlugin = (): Plugin => ({
       }
 
       try {
-        await handleCreateOpenBankingSession(request, response);
+        await handleCreateOpenBankingSession(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
       } catch (error) {
-        jsonError(response, error, 'Unexpected open banking session error');
+        jsonOpenBankingError(response, error, 'session-create');
       }
     });
 
@@ -432,9 +347,14 @@ export const brokerApiPlugin = (): Plugin => ({
       }
 
       try {
-        await handleCompleteOpenBankingConnection(request, response);
+        await handleCompleteOpenBankingConnection(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
       } catch (error) {
-        jsonError(response, error, 'Unexpected open banking completion error');
+        jsonOpenBankingError(response, error, 'connection-complete');
       }
     });
 
@@ -444,9 +364,14 @@ export const brokerApiPlugin = (): Plugin => ({
       }
 
       try {
-        await handleRefreshOpenBankingConnection(request, response);
+        await handleRefreshOpenBankingConnection(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
       } catch (error) {
-        jsonError(response, error, 'Unexpected open banking refresh error');
+        jsonOpenBankingError(response, error, 'connection-refresh');
       }
     });
 
@@ -456,10 +381,16 @@ export const brokerApiPlugin = (): Plugin => ({
       }
 
       try {
-        await handleDisconnectOpenBankingConnection(request, response);
+        await handleDisconnectOpenBankingConnection(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
       } catch (error) {
-        jsonError(response, error, 'Unexpected open banking disconnect error');
+        jsonOpenBankingError(response, error, 'connection-disconnect');
       }
     });
-  },
-});
+    },
+  };
+};
