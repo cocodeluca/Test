@@ -19,9 +19,9 @@ import {
   OpenBankingVaultError,
 } from './openBankingStore';
 import {
+  createServerSessionOpenBankingAuthenticator,
   OpenBankingAuthenticationError,
   type OpenBankingRequestAuthenticator,
-  unavailableOpenBankingAuthenticator,
 } from './openBankingAuth';
 import {
   createOpenBankingLinkSessionStore,
@@ -38,6 +38,17 @@ import {
   loadAccountBackupFromStore,
   saveAccountBackupToStore,
 } from './accountBackupStore';
+import {
+  assertJsonRequest,
+  assertSameOriginRequest,
+  createDefaultServerAuthService,
+  getSessionTokenFromRequest,
+  isSecureRequest,
+  serializeExpiredSessionCookie,
+  serializeSessionCookie,
+  ServerAuthError,
+  type ServerAuthService,
+} from './serverAuth';
 
 const json = (response: ServerResponse, statusCode: number, payload: unknown) => {
   response.statusCode = statusCode;
@@ -48,19 +59,30 @@ const json = (response: ServerResponse, statusCode: number, payload: unknown) =>
 const methodNotAllowed = (response: ServerResponse) =>
   json(response, 405, { error: 'Method not allowed' });
 
-const readJsonBody = async <T>(request: IncomingMessage): Promise<T> =>
+const readJsonBody = async <T>(request: IncomingMessage, maximumBytes = 1024 * 1024): Promise<T> =>
   new Promise((resolve, reject) => {
     let body = '';
+    let size = 0;
+    let exceededLimit = false;
 
     request.on('data', (chunk) => {
+      size += Buffer.byteLength(chunk);
+      if (size > maximumBytes) {
+        exceededLimit = true;
+        return;
+      }
       body += chunk.toString();
     });
 
     request.on('end', () => {
+      if (exceededLimit) {
+        reject(new ServerAuthError('REQUEST_BODY_TOO_LARGE', 413, 'Request body is too large.'));
+        return;
+      }
       try {
         resolve((body ? JSON.parse(body) : {}) as T);
-      } catch (error) {
-        reject(error);
+      } catch {
+        reject(new ServerAuthError('REQUEST_JSON_INVALID', 400, 'Invalid JSON request body.'));
       }
     });
 
@@ -148,6 +170,117 @@ const logOpenBankingError = (operation: string, error: unknown) => {
   });
 };
 
+const setSessionCookie = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  token: string,
+  expiresAt: string
+) => {
+  const maxAgeSeconds = Math.max(
+    0,
+    Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000)
+  );
+  response.setHeader('Set-Cookie', serializeSessionCookie(token, {
+    secure: isSecureRequest(request),
+    maxAgeSeconds,
+  }));
+};
+
+const jsonAuthError = (response: ServerResponse, error: unknown) => {
+  console.error('[auth] Request failed.', {
+    errorName: error instanceof Error ? error.name : 'UnknownError',
+    errorCode: error instanceof ServerAuthError ? error.code : null,
+  });
+  if (error instanceof ServerAuthError) {
+    json(response, error.statusCode, { error: error.message, code: error.code });
+    return;
+  }
+  json(response, 500, { error: 'Unexpected authentication error.', code: 'AUTH_UNEXPECTED' });
+};
+
+const requireAuthMutationRequest = (request: IncomingMessage) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
+};
+
+const handleAuthRegister = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService
+) => {
+  requireAuthMutationRequest(request);
+  const body = await readJsonBody<{ email?: string; name?: string; password?: string }>(request, 16 * 1024);
+  const result = await authService.register({
+    email: body.email ?? '',
+    name: body.name ?? '',
+    password: body.password ?? '',
+  });
+  setSessionCookie(request, response, result.token, result.expiresAt);
+  json(response, 201, { user: result.user });
+};
+
+const handleAuthEnroll = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService
+) => {
+  requireAuthMutationRequest(request);
+  const body = await readJsonBody<{
+    userId?: string;
+    email?: string;
+    name?: string;
+    password?: string;
+  }>(request, 16 * 1024);
+  const result = await authService.enroll({
+    userId: body.userId ?? '',
+    email: body.email ?? '',
+    name: body.name ?? '',
+    password: body.password ?? '',
+  });
+  setSessionCookie(request, response, result.token, result.expiresAt);
+  json(response, 201, { user: result.user });
+};
+
+const handleAuthLogin = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService
+) => {
+  requireAuthMutationRequest(request);
+  const body = await readJsonBody<{ email?: string; password?: string }>(request, 16 * 1024);
+  const result = await authService.login({
+    email: body.email ?? '',
+    password: body.password ?? '',
+    throttleKey: request.socket.remoteAddress ?? 'unknown',
+  });
+  setSessionCookie(request, response, result.token, result.expiresAt);
+  json(response, 200, { user: result.user });
+};
+
+const handleAuthSession = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService
+) => {
+  const user = await authService.resolveToken(getSessionTokenFromRequest(request));
+  if (!user) {
+    json(response, 401, { error: 'Authentication required.', code: 'AUTH_REQUIRED' });
+    return;
+  }
+  json(response, 200, { user });
+};
+
+const handleAuthLogout = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  authService: ServerAuthService
+) => {
+  requireAuthMutationRequest(request);
+  authService.logout(getSessionTokenFromRequest(request));
+  response.setHeader('Set-Cookie', serializeExpiredSessionCookie(isSecureRequest(request)));
+  json(response, 200, { ok: true });
+};
+
 const jsonOpenBankingError = (
   response: ServerResponse,
   error: unknown,
@@ -159,6 +292,10 @@ const jsonOpenBankingError = (
       error: 'Server-authenticated session required.',
       code: error.code,
     });
+    return;
+  }
+  if (error instanceof ServerAuthError) {
+    json(response, error.statusCode, { error: error.message, code: error.code });
     return;
   }
   if (error instanceof OpenBankingConnectionOwnershipError) {
@@ -198,6 +335,8 @@ const handleCreateOpenBankingSession = async (
   service: OpenBankingService,
   authenticator: OpenBankingRequestAuthenticator
 ) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingSessionBody>(request);
   const result = await service.createConnectionSession(principal, {
@@ -213,6 +352,8 @@ const handleCompleteOpenBankingConnection = async (
   service: OpenBankingService,
   authenticator: OpenBankingRequestAuthenticator
 ) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingCompleteBody>(request);
   const result = await service.completeConnection(principal, {
@@ -228,6 +369,8 @@ const handleRefreshOpenBankingConnection = async (
   service: OpenBankingService,
   authenticator: OpenBankingRequestAuthenticator
 ) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<{ connectionId?: string }>(request);
   if (!body.connectionId) {
@@ -244,6 +387,8 @@ const handleDisconnectOpenBankingConnection = async (
   service: OpenBankingService,
   authenticator: OpenBankingRequestAuthenticator
 ) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<{ connectionId?: string }>(request);
   if (!body.connectionId) {
@@ -255,6 +400,7 @@ const handleDisconnectOpenBankingConnection = async (
 };
 
 export interface BrokerApiPluginOptions {
+  authService?: ServerAuthService;
   openBankingAuthenticator?: OpenBankingRequestAuthenticator;
   openBankingService?: OpenBankingService;
 }
@@ -278,8 +424,9 @@ const createDefaultOpenBankingService = () => createOpenBankingService({
 });
 
 export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin => {
+  const authService = options.authService ?? createDefaultServerAuthService();
   const openBankingAuthenticator =
-    options.openBankingAuthenticator ?? unavailableOpenBankingAuthenticator;
+    options.openBankingAuthenticator ?? createServerSessionOpenBankingAuthenticator(authService);
   const openBankingService = options.openBankingService ?? createDefaultOpenBankingService();
   return {
     name: 'broker-api-plugin',
@@ -322,6 +469,51 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
       }
 
       await handleLoadAccountBackup(request, response);
+    });
+
+    server.middlewares.use('/api/auth/register', async (request, response) => {
+      if (request.method !== 'POST') return methodNotAllowed(response);
+      try {
+        await handleAuthRegister(request, response, authService);
+      } catch (error) {
+        jsonAuthError(response, error);
+      }
+    });
+
+    server.middlewares.use('/api/auth/enroll', async (request, response) => {
+      if (request.method !== 'POST') return methodNotAllowed(response);
+      try {
+        await handleAuthEnroll(request, response, authService);
+      } catch (error) {
+        jsonAuthError(response, error);
+      }
+    });
+
+    server.middlewares.use('/api/auth/login', async (request, response) => {
+      if (request.method !== 'POST') return methodNotAllowed(response);
+      try {
+        await handleAuthLogin(request, response, authService);
+      } catch (error) {
+        jsonAuthError(response, error);
+      }
+    });
+
+    server.middlewares.use('/api/auth/session', async (request, response) => {
+      if (request.method !== 'GET') return methodNotAllowed(response);
+      try {
+        await handleAuthSession(request, response, authService);
+      } catch (error) {
+        jsonAuthError(response, error);
+      }
+    });
+
+    server.middlewares.use('/api/auth/logout', async (request, response) => {
+      if (request.method !== 'POST') return methodNotAllowed(response);
+      try {
+        await handleAuthLogout(request, response, authService);
+      } catch (error) {
+        jsonAuthError(response, error);
+      }
     });
 
     server.middlewares.use('/api/open-banking/session/create', async (request, response) => {

@@ -1,4 +1,8 @@
 import type { IncomingMessage } from 'node:http';
+import {
+  getSessionTokenFromRequest,
+  type ServerAuthService,
+} from './serverAuth';
 
 export interface AuthenticatedOpenBankingPrincipal {
   userId: string;
@@ -22,3 +26,14 @@ export const unavailableOpenBankingAuthenticator: OpenBankingRequestAuthenticato
     throw new OpenBankingAuthenticationError();
   },
 };
+
+export const createServerSessionOpenBankingAuthenticator = (
+  authService: Pick<ServerAuthService, 'resolveToken'>
+): OpenBankingRequestAuthenticator => ({
+  async authenticate(request) {
+    const token = getSessionTokenFromRequest(request);
+    const user = token ? await authService.resolveToken(token) : null;
+    if (!user) throw new OpenBankingAuthenticationError();
+    return { userId: user.id };
+  },
+});

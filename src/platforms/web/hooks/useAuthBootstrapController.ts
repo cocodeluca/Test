@@ -7,34 +7,46 @@ import {
   setStoredLanguageSelection,
 } from '../../../common/utils/settingsStore';
 import {
-  ensureLocalAccountPassword,
-  getLocalSessionDebugInfo,
+  clearDemoLocalSession,
+  demoAccountCredentials,
+  DEMO_ACCOUNT_EMAIL,
+  finalizeLegacyAuthenticationMigration,
+  findLegacyLocalAccountForEnrollment,
+  initializeRegisteredServerAccount,
   loadUserPortfolioHydrationSnapshot,
   loadUserSettings,
-  loginLocalAccount,
-  logoutLocalAccount,
   makeUserSettingsStorageKey,
   normalizeDemoAccountState,
-  registerLocalAccount,
-  restoreLocalSession,
-  saveUserSettings,
-  saveUserPortfolio,
-  UserAccountBackup,
-  UserPortfolioHydrationSnapshot,
-  LocalAccountUser,
-  DEMO_ACCOUNT_EMAIL,
-  demoAccountCredentials,
+  persistAuthenticatedServerUser,
+  restoreDemoLocalSession,
   safeJsonParse,
+  saveUserPortfolio,
+  saveUserSettings,
+  startDemoLocalSession,
+  type LocalAccountUser,
+  type UserAccountBackup,
+  type UserPortfolioHydrationSnapshot,
 } from '../services/localAccountStore';
+import {
+  enrollExistingServerAccount,
+  loadServerSession,
+  loginServerAccount,
+  logoutServerAccount,
+  registerServerAccount,
+  ServerAuthApiError,
+} from '../services/serverAuthApi';
 import { saveBackupToServer } from '../services/accountBackupApi';
 import { useAccountWorkspaceHydration } from './useAccountWorkspaceHydration';
 import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from '../services/portfolioPersistenceTrace';
 
 type LoginPayload = { email: string; password: string };
 type RegisterPayload = { name: string; email: string; password: string };
+type AuthenticationAuthority = 'server' | 'demo' | null;
 
 export const useAuthBootstrapController = () => {
   const [currentUser, setCurrentUser] = useState<LocalAccountUser | null>(null);
+  const [authenticationAuthority, setAuthenticationAuthority] =
+    useState<AuthenticationAuthority>(null);
   const [isAuthBootstrapLoading, setIsAuthBootstrapLoading] = useState(true);
   const [portfolioHydration, setPortfolioHydration] =
     useState<UserPortfolioHydrationSnapshot | null>(null);
@@ -44,23 +56,23 @@ export const useAuthBootstrapController = () => {
   const { hydrateAccountWorkspace } = useAccountWorkspaceHydration();
 
   useEffect(() => {
+    let cancelled = false;
     tracePortfolioPersistence('bootstrap:start', {});
-    ensureLocalAccountPassword('cocodeluca97@gmail.com', 'cocococo97', 'Coco Deluca');
-    ensureLocalAccountPassword(demoAccountCredentials.email, demoAccountCredentials.password, demoAccountCredentials.name);
-    // Demo settings are normalized only when that account is hydrated.
-
-    const persistedSessionBeforeRestore = getLocalSessionDebugInfo();
-    console.info('[auth] App bootstrap started.', {
-      persistedSessionBeforeRestore,
-      sessionValidation: 'local persisted session',
-      refreshStrategy: 'local refresh token rotation',
+    void loadServerSession().then((serverUser) => {
+      if (cancelled) return;
+      const user = serverUser ?? restoreDemoLocalSession();
+      setCurrentUser(user);
+      setAuthenticationAuthority(serverUser ? 'server' : user ? 'demo' : null);
+      setIsAuthBootstrapLoading(user !== null);
+    }).catch(() => {
+      if (cancelled) return;
+      setCurrentUser(null);
+      setAuthenticationAuthority(null);
+      setIsAuthBootstrapLoading(false);
     });
-
-    const restoredSession = restoreLocalSession();
-    console.info('[auth] App bootstrap restore result.', restoredSession.debug);
-
-    setCurrentUser(restoredSession.user);
-    setIsAuthBootstrapLoading(restoredSession.user !== null);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -76,94 +88,119 @@ export const useAuthBootstrapController = () => {
     setIsAuthBootstrapLoading(true);
     void hydrateAccountWorkspace(currentUser).then(async ({ shouldRefreshSession }) => {
       const hydration = await loadUserPortfolioHydrationSnapshot(currentUser.id);
-      if (isCancelled) {
-        return;
+      if (isCancelled) return;
+
+      if (authenticationAuthority === 'server') {
+        finalizeLegacyAuthenticationMigration({
+          expectedUserId: currentUser.id,
+          authenticatedUserId: currentUser.id,
+          hydration,
+        });
+        persistAuthenticatedServerUser(currentUser);
       }
 
-      if (shouldRefreshSession) {
-        setSessionKey((currentKey) => currentKey + 1);
-      }
-
+      if (shouldRefreshSession) setSessionKey((currentKey) => currentKey + 1);
       setPortfolioHydration(hydration);
       tracePortfolioPersistence('bootstrap:hydrated', getPortfolioSnapshotTraceMetadata(currentUser.id, hydration.portfolio, {
         accountId: currentUser.id,
         indexedDbKey: currentUser.id,
       }));
       setIsAuthBootstrapLoading(false);
-    }).catch(error => { if (!isCancelled) { setHydrationError(error); setIsAuthBootstrapLoading(false); } });
+    }).catch((error) => {
+      if (!isCancelled) {
+        setHydrationError(error);
+        setIsAuthBootstrapLoading(false);
+      }
+    });
 
     return () => {
       isCancelled = true;
     };
-  }, [currentUser, hydrateAccountWorkspace, hydrationAttempt]);
+  }, [currentUser, authenticationAuthority, hydrateAccountWorkspace, hydrationAttempt]);
 
-  const handleLogin = async (payload: LoginPayload) => {
-    const { user } = loginLocalAccount(payload);
-    const pendingLanguage = getPendingAnonymousLanguagePreference();
-    const normalizedEmail = user.email.trim().toLowerCase();
-    const isDemoLogin = normalizedEmail === DEMO_ACCOUNT_EMAIL;
-
-    if (pendingLanguage) {
-      saveUserSettings(user, {
-        ...loadUserSettings(user),
-        language: pendingLanguage,
-      });
-      setStoredLanguageSelection(makeUserSettingsStorageKey(user.id), true);
+  const acceptServerUser = async (user: LocalAccountUser) => {
+    const verified = await loadServerSession();
+    if (!verified || verified.id !== user.id) {
+      throw new Error('Server session identity verification failed.');
     }
-
-    if (typeof window !== 'undefined' && isDemoLogin) {
-      const dismissedStorageKey = `re-portfolio-demo-tutorial-dismissed:${normalizedEmail}`;
-      const restartRequestStorageKey = `re-portfolio-demo-tutorial-restart-request:${normalizedEmail}`;
-      const advancedSessionStorageKey = `re-portfolio-demo-advanced-session:${normalizedEmail}`;
-
-      try {
-        window.localStorage.removeItem(dismissedStorageKey);
-        window.localStorage.setItem(restartRequestStorageKey, new Date().toISOString());
-        window.localStorage.removeItem(advancedSessionStorageKey);
-      } catch (error) {
-        console.warn('[demo-restore] localStorage update failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (isDemoLogin) {
-      await normalizeDemoAccountState(user);
-    }
-
-
+    clearDemoLocalSession();
     setPortfolioHydration(null);
     setIsAuthBootstrapLoading(true);
-    setCurrentUser(user);
+    setAuthenticationAuthority('server');
+    setCurrentUser(verified);
     setSessionKey((currentKey) => currentKey + 1);
+    return verified;
+  };
+
+  const applyPendingLanguage = (user: LocalAccountUser) => {
+    const pendingLanguage = getPendingAnonymousLanguagePreference();
+    if (!pendingLanguage) return;
+    saveUserSettings(user, {
+      ...loadUserSettings(user),
+      language: pendingLanguage,
+    });
+    setStoredLanguageSelection(makeUserSettingsStorageKey(user.id), true);
+  };
+
+  const handleLogin = async (payload: LoginPayload) => {
+    const normalizedEmail = payload.email.trim().toLowerCase();
+    if (
+      normalizedEmail === DEMO_ACCOUNT_EMAIL &&
+      payload.password === demoAccountCredentials.password
+    ) {
+      // Demo mode is local-only and must never inherit a server session capable of Banking.
+      await logoutServerAccount();
+      const user = await startDemoLocalSession();
+      await normalizeDemoAccountState(user);
+      setPortfolioHydration(null);
+      setIsAuthBootstrapLoading(true);
+      setAuthenticationAuthority('demo');
+      setCurrentUser(user);
+      setSessionKey((currentKey) => currentKey + 1);
+      return;
+    }
+
+    clearDemoLocalSession();
+    let user: LocalAccountUser;
+    try {
+      user = (await loginServerAccount(payload)).user;
+    } catch (error) {
+      if (!(error instanceof ServerAuthApiError) || error.status !== 401) throw error;
+      const legacyUser = findLegacyLocalAccountForEnrollment(payload);
+      if (!legacyUser) throw error;
+      const enrolled = await enrollExistingServerAccount({
+        userId: legacyUser.id,
+        name: legacyUser.name,
+        email: legacyUser.email,
+        password: payload.password,
+      });
+      if (enrolled.user.id !== legacyUser.id) {
+        throw new Error('Existing account enrollment changed the local user identity.');
+      }
+      user = enrolled.user;
+    }
+
+    const verified = await acceptServerUser(user);
+    applyPendingLanguage(verified);
   };
 
   const handleRegister = async (payload: RegisterPayload) => {
-    const { user } = registerLocalAccount(payload);
-    const pendingLanguage = getPendingAnonymousLanguagePreference();
-
-    if (pendingLanguage) {
-      saveUserSettings(user, {
-        ...loadUserSettings(user),
-        language: pendingLanguage,
-      });
-      setStoredLanguageSelection(makeUserSettingsStorageKey(user.id), true);
-    }
-
-    setPortfolioHydration(null);
-    setIsAuthBootstrapLoading(true);
-    setCurrentUser(user);
-    setSessionKey((currentKey) => currentKey + 1);
+    clearDemoLocalSession();
+    const registered = await registerServerAccount(payload);
+    const verified = await acceptServerUser(registered.user);
+    initializeRegisteredServerAccount(verified);
+    applyPendingLanguage(verified);
   };
 
   const handleLogout = async (backup: UserAccountBackup) => {
     if (currentUser) await saveUserPortfolio(currentUser.id, backup.portfolio);
-    // Local commit above is mandatory; remote availability does not prevent logout.
     await saveBackupToServer(backup).catch(() => undefined);
 
-    logoutLocalAccount();
+    if (authenticationAuthority === 'server') await logoutServerAccount();
+    clearDemoLocalSession();
     setPortfolioHydration(null);
     setCurrentUser(null);
+    setAuthenticationAuthority(null);
     setSessionKey((currentKey) => currentKey + 1);
   };
 
@@ -184,18 +221,8 @@ const getPendingAnonymousLanguagePreference = (): AppLanguage | null => {
   if (typeof window === 'undefined' || !hasStoredLanguageSelection(DEFAULT_SETTINGS_STORAGE_KEY)) {
     return null;
   }
-
   const storedValue = safeLocalStorageGet(DEFAULT_SETTINGS_STORAGE_KEY);
-
-  if (!storedValue) {
-    return null;
-  }
-
+  if (!storedValue) return null;
   const parsedValue = safeJsonParse<{ language?: AppLanguage } | null>(storedValue, null);
-
-  if (!parsedValue) {
-    return null;
-  }
-
-  return parsedValue.language ?? null;
+  return parsedValue?.language ?? null;
 };

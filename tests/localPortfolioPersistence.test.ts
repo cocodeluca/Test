@@ -3,7 +3,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mockCashAccounts, mockProperties } from '../src/common/data/mockData';
 import {
-  ensureLocalAccountPassword,
   emptyPortfolioData,
   loadUserPortfolio,
   saveUserPortfolio,
@@ -52,11 +51,7 @@ test.beforeEach(() => {
 });
 
 test('an edited property valuation persists in account storage and reloads without changing other fields', async () => {
-  const { user } = ensureLocalAccountPassword(
-    'local-property-persistence@example.com',
-    'test-password',
-    'Local Property Test'
-  );
+  const user = { id: '4943fc3d-d329-4fd3-a92e-22366485f119' };
   const originalProperty = {
     ...mockProperties[0],
     notes: 'Keep this unrelated property note.',
@@ -93,11 +88,7 @@ test('an edited property valuation persists in account storage and reloads witho
 });
 
 test('an edited cash balance uses the same account save/load path without duplicating accounts', async () => {
-  const { user } = ensureLocalAccountPassword(
-    'local-cash-persistence@example.com',
-    'test-password',
-    'Local Cash Test'
-  );
+  const user = { id: '50b15b06-39fe-4f9a-91e4-53734fd247c3' };
   const originalAccount = {
     ...mockCashAccounts[0],
     notes: 'Keep this unrelated cash-account note.',

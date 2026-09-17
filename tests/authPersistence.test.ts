@@ -2,23 +2,26 @@ import { IDBFactory } from 'fake-indexeddb';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ensureLocalAccountPassword,
-  getCurrentLocalAccount,
-  loginLocalAccount,
-  logoutLocalAccount,
-  loadUserSettings,
-  normalizeDemoAccountState,
-  saveUserSettings,
-  restoreLocalSession,
-  makeUserSettingsStorageKey,
-  loadUserPortfolio,
   ensureDemoLocalAccount,
+  finalizeLegacyAuthenticationMigration,
+  findLegacyLocalAccountForEnrollment,
+  loadUserPortfolio,
+  loadUserPortfolioHydrationSnapshot,
+  loadUserSettings,
+  makeUserSettingsStorageKey,
+  normalizeDemoAccountState,
+  restoreDemoLocalSession,
+  saveUserPortfolio,
+  saveUserSettings,
+  startDemoLocalSession,
 } from '../src/platforms/web/services/localAccountStore';
+import { emptyPortfolioData } from '../src/platforms/web/services/localAccountStore';
 import { DEFAULT_SETTINGS } from '../src/common/utils/settingsStore';
 import { makeSelectedUseCaseIdStorageKey, makeUseCaseSelectionStorageKey } from '../src/common/utils/settingsStore';
 
-const SESSION_STORAGE_KEY = 're-portfolio-local-session';
+const LEGACY_SESSION_STORAGE_KEY = 're-portfolio-local-session';
 const USERS_STORAGE_KEY = 're-portfolio-local-users';
+const LEGACY_USER_ID = 'b7bd7adb-b4cf-4ec7-a51c-438c8d32c3a7';
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -42,118 +45,86 @@ class MemoryStorage {
 
 const installWindow = () => {
   const localStorage = new MemoryStorage();
-  const windowObject = { localStorage } as unknown as Window & typeof globalThis;
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     writable: true,
-    value: windowObject,
+    value: { localStorage } as unknown as Window & typeof globalThis,
   });
   return localStorage;
 };
 
-const resetAuthState = () => {
-  const storage = installWindow();
-  storage.clear();
-  return storage;
-};
-
-const seedAccountAndLogin = (email = 'persist@example.com', password = 'secret123') => {
-  ensureLocalAccountPassword(email, password, 'Persist User');
-  return loginLocalAccount({ email, password }).user;
+const seedLegacyAccount = () => {
+  window.localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify([{
+    id: LEGACY_USER_ID,
+    name: 'Legacy User',
+    email: 'legacy@example.com',
+    password: 'legacy-password',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  }]));
+  window.localStorage.setItem(LEGACY_SESSION_STORAGE_KEY, JSON.stringify({
+    userId: LEGACY_USER_ID,
+    accessToken: 'legacy-fake-access',
+    refreshToken: 'legacy-fake-refresh',
+  }));
 };
 
 test.beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
-  resetAuthState();
+  installWindow();
 });
 
-test('login persists after refresh and restores the same user', async () => {
-  const user = seedAccountAndLogin();
-
-  const storedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
-  assert.equal(storedSession.userId, user.id);
-  assert.ok(storedSession.accessToken);
-  assert.ok(storedSession.refreshToken);
-
-  const restored = restoreLocalSession();
-
-  assert.equal(restored.user?.id, user.id);
-  assert.equal(restored.debug.reason, 'session-restored');
-  assert.equal(restored.debug.restored, true);
+test('legacy account is eligible for enrollment only after explicit password re-entry', () => {
+  seedLegacyAccount();
+  assert.equal(findLegacyLocalAccountForEnrollment({
+    email: 'legacy@example.com',
+    password: 'wrong-password',
+  }), null);
+  assert.equal(findLegacyLocalAccountForEnrollment({
+    email: 'legacy@example.com',
+    password: 'legacy-password',
+  })?.id, LEGACY_USER_ID);
 });
 
-test('protected route state remains authenticated after reload bootstrap', async () => {
-  const user = seedAccountAndLogin('route@example.com', 'route-pass');
+test('verified server identity and hydration remove only legacy authentication secrets', async () => {
+  seedLegacyAccount();
+  const portfolio = { ...structuredClone(emptyPortfolioData), properties: [{ id: 'property-1' }] } as never;
+  await saveUserPortfolio(LEGACY_USER_ID, portfolio);
+  const hydration = await loadUserPortfolioHydrationSnapshot(LEGACY_USER_ID);
 
-  const restored = restoreLocalSession();
+  finalizeLegacyAuthenticationMigration({
+    expectedUserId: LEGACY_USER_ID,
+    authenticatedUserId: LEGACY_USER_ID,
+    hydration,
+  });
 
-  assert.equal(restored.user?.email, user.email);
-  assert.equal(getCurrentLocalAccount()?.id, user.id);
+  const accounts = window.localStorage.getItem(USERS_STORAGE_KEY) ?? '';
+  assert.equal(accounts.includes('legacy-password'), false);
+  assert.equal(window.localStorage.getItem(LEGACY_SESSION_STORAGE_KEY), null);
+  assert.equal((await loadUserPortfolio(LEGACY_USER_ID)).properties[0].id, 'property-1');
 });
 
-test('expired access token with valid refresh token restores the session', async () => {
-  const user = seedAccountAndLogin('refresh@example.com', 'refresh-pass');
-  const session = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
-  const now = new Date('2026-04-14T12:00:00.000Z');
+test('migration verification failure preserves plaintext credential, fake session, and portfolio', async () => {
+  seedLegacyAccount();
+  await saveUserPortfolio(LEGACY_USER_ID, structuredClone(emptyPortfolioData));
+  const hydration = await loadUserPortfolioHydrationSnapshot(LEGACY_USER_ID);
 
-  session.accessTokenExpiresAt = new Date(now.getTime() - 60_000).toISOString();
-  session.refreshTokenExpiresAt = new Date(now.getTime() + 60_000).toISOString();
-  window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-
-  const restored = restoreLocalSession(now);
-  const refreshedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
-
-  assert.equal(restored.user?.id, user.id);
-  assert.equal(restored.debug.reason, 'session-refreshed');
-  assert.equal(restored.debug.refreshed, true);
-  assert.notEqual(refreshedSession.accessToken, session.accessToken);
-  assert.ok(new Date(refreshedSession.accessTokenExpiresAt).getTime() > now.getTime());
+  assert.throws(() => finalizeLegacyAuthenticationMigration({
+    expectedUserId: LEGACY_USER_ID,
+    authenticatedUserId: '7ec308d2-b615-4ace-bc47-7acaa2cc5f14',
+    hydration,
+  }));
+  assert.match(window.localStorage.getItem(USERS_STORAGE_KEY) ?? '', /legacy-password/);
+  assert.ok(window.localStorage.getItem(LEGACY_SESSION_STORAGE_KEY));
+  assert.equal((await loadUserPortfolioHydrationSnapshot(LEGACY_USER_ID)).userId, LEGACY_USER_ID);
 });
 
-test('invalid expired session clears persistence and falls back to anonymous state', async () => {
-  seedAccountAndLogin('expired@example.com', 'expired-pass');
-  const session = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
-  const now = new Date('2026-04-14T12:00:00.000Z');
-
-  session.accessTokenExpiresAt = new Date(now.getTime() - 60_000).toISOString();
-  session.refreshTokenExpiresAt = new Date(now.getTime() - 30_000).toISOString();
-  window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-
-  const restored = restoreLocalSession(now);
-
-  assert.equal(restored.user, null);
-  assert.equal(restored.debug.reason, 'expired-session');
-  assert.equal(window.localStorage.getItem(SESSION_STORAGE_KEY), null);
-});
-
-test('logout clears persisted session correctly', async () => {
-  seedAccountAndLogin('logout@example.com', 'logout-pass');
-  assert.ok(window.localStorage.getItem(SESSION_STORAGE_KEY));
-
-  logoutLocalAccount();
-
-  assert.equal(window.localStorage.getItem(SESSION_STORAGE_KEY), null);
-  assert.equal(getCurrentLocalAccount(), null);
-});
-
-test('legacy userId-only sessions are upgraded during restore', async () => {
-  const user = seedAccountAndLogin('legacy@example.com', 'legacy-pass');
-  window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ userId: user.id }));
-
-  const restored = restoreLocalSession(new Date('2026-04-14T12:00:00.000Z'));
-  const upgradedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) ?? 'null');
-
-  assert.equal(restored.user?.id, user.id);
-  assert.equal(restored.debug.reason, 'session-refreshed');
-  assert.ok(upgradedSession.accessToken);
-  assert.ok(upgradedSession.refreshToken);
-});
-
-test('account persistence lives in localStorage for the current stack', async () => {
-  seedAccountAndLogin('storage@example.com', 'storage-pass');
-
-  assert.ok(window.localStorage.getItem(USERS_STORAGE_KEY));
-  assert.ok(window.localStorage.getItem(SESSION_STORAGE_KEY));
+test('demo session is isolated metadata without a password or fake auth tokens', async () => {
+  const user = await startDemoLocalSession();
+  assert.equal(restoreDemoLocalSession()?.id, user.id);
+  const serializedUsers = window.localStorage.getItem(USERS_STORAGE_KEY) ?? '';
+  assert.equal(serializedUsers.includes('"password"'), false);
+  assert.equal(serializedUsers.includes('accessToken'), false);
+  assert.equal(serializedUsers.includes('refreshToken'), false);
 });
 
 test('demo account normalization rewrites stale full-portfolio state back to properties-only', async () => {
@@ -192,12 +163,10 @@ test('demo account normalization rewrites stale full-portfolio state back to pro
 
   window.localStorage.setItem(makeUseCaseSelectionStorageKey(settingsKey), 'true');
   window.localStorage.setItem(makeSelectedUseCaseIdStorageKey(settingsKey), 'full-portfolio');
-
   await normalizeDemoAccountState(user);
 
   const normalizedSettings = loadUserSettings(user);
-  const normalizedPortfolio = (await loadUserPortfolio(user.id));
-
+  const normalizedPortfolio = await loadUserPortfolio(user.id);
   assert.equal(normalizedSettings.userMode, 'basic');
   assert.equal(normalizedSettings.onboarding.trackingPreference, 'properties-only');
   assert.deepEqual(normalizedSettings.workspaceConfig.enabledModules, ['dashboard', 'rent-collection', 'properties', 'settings']);

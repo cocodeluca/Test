@@ -38,6 +38,7 @@ import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from './
 
 const LOCAL_USERS_STORAGE_KEY = 're-portfolio-local-users';
 const LOCAL_SESSION_STORAGE_KEY = 're-portfolio-local-session';
+const DEMO_SESSION_STORAGE_KEY = 're-portfolio-demo-session';
 const USER_PORTFOLIO_STORAGE_KEY_PREFIX = 're-portfolio-user-data';
 const USER_RECOVERY_SNAPSHOT_KEY_PREFIX = 're-portfolio-user-recovery';
 const LEGACY_CASH_ACCOUNTS_STORAGE_KEY = 're-portfolio-cash-accounts';
@@ -52,46 +53,10 @@ interface StoredAccountRecord {
   id: string;
   name: string;
   email: string;
-  password: string;
+  /** Legacy-only plaintext credential removed after verified server enrollment and hydration. */
+  password?: string;
   createdAt: string;
 }
-
-interface StoredSessionRecord {
-  userId: string;
-  accessToken: string;
-  accessTokenExpiresAt: string;
-  refreshToken: string;
-  refreshTokenExpiresAt: string;
-  createdAt: string;
-  refreshedAt: string;
-}
-
-export interface LocalSessionDebugInfo {
-  sessionExists: boolean;
-  accessTokenExists: boolean;
-  accessTokenExpired: boolean;
-  refreshTokenExists: boolean;
-  refreshTokenExpired: boolean;
-  restored: boolean;
-  refreshed: boolean;
-  reason:
-    | 'session-restored'
-    | 'session-refreshed'
-    | 'missing-session'
-    | 'missing-user'
-    | 'missing-access-token'
-    | 'expired-session'
-    | 'window-unavailable';
-}
-
-export interface LocalSessionRestoreResult {
-  user: LocalAccountUser | null;
-  debug: LocalSessionDebugInfo;
-}
-
-const ACCESS_TOKEN_TTL_MS = 1000 * 60 * 60;
-const REFRESH_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
-const AUTH_DEBUG_PREFIX = '[auth]';
 
 export interface LocalAccountUser {
   id: string;
@@ -393,73 +358,6 @@ const writeStoredAccounts = (accounts: StoredAccountRecord[]) => {
   writeJson(LOCAL_USERS_STORAGE_KEY, accounts);
 };
 
-const createStoredSession = (userId: string, now = new Date()): StoredSessionRecord => ({
-  userId,
-  accessToken: `access-${userId}-${now.getTime()}`,
-  accessTokenExpiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
-  refreshToken: `refresh-${userId}-${now.getTime()}`,
-  refreshTokenExpiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS).toISOString(),
-  createdAt: now.toISOString(),
-  refreshedAt: now.toISOString(),
-});
-
-const debugAuth = (message: string, details?: unknown) => {
-  if (typeof console === 'undefined') {
-    return;
-  }
-
-  if (details) {
-    console.info(`${AUTH_DEBUG_PREFIX} ${message}`, details);
-    return;
-  }
-
-  console.info(`${AUTH_DEBUG_PREFIX} ${message}`);
-};
-
-const isIsoTimestampExpired = (value: string | null | undefined, now = new Date()): boolean => {
-  if (!value) {
-    return true;
-  }
-
-  const timestamp = new Date(value).getTime();
-  return Number.isNaN(timestamp) || timestamp <= now.getTime();
-};
-
-const writeStoredSessionRecord = (session: StoredSessionRecord | null) => {
-  if (session) {
-    writeJson(LOCAL_SESSION_STORAGE_KEY, session);
-    return;
-  }
-
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage.removeItem(LOCAL_SESSION_STORAGE_KEY);
-    } catch (error) {
-      console.warn(`${BOOTSTRAP_STORAGE_LOG_PREFIX} localStorage remove failed`, {
-        key: LOCAL_SESSION_STORAGE_KEY,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-};
-
-const writeStoredSession = (userId: string | null, now = new Date()) => {
-  writeStoredSessionRecord(userId ? createStoredSession(userId, now) : null);
-};
-
-const readStoredSession = (): StoredSessionRecord | null =>
-  readJson<StoredSessionRecord | null>(LOCAL_SESSION_STORAGE_KEY, null);
-
-const refreshStoredSession = (
-  session: StoredSessionRecord,
-  now = new Date()
-): StoredSessionRecord => ({
-  ...session,
-  accessToken: `access-${session.userId}-${now.getTime()}`,
-  accessTokenExpiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
-  refreshedAt: now.toISOString(),
-});
-
 const makeUserId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -644,259 +542,104 @@ const isBackupUsableForUser = (
       backup.portfolio
   );
 
-export const getCurrentLocalAccount = (): LocalAccountUser | null => {
-  return restoreLocalSession().user;
-};
-
-export const getLocalSessionDebugInfo = (
-  now = new Date()
-): Omit<LocalSessionDebugInfo, 'restored' | 'refreshed' | 'reason'> => {
-  if (typeof window === 'undefined') {
-    return {
-      sessionExists: false,
-      accessTokenExists: false,
-      accessTokenExpired: true,
-      refreshTokenExists: false,
-      refreshTokenExpired: true,
-    };
-  }
-
-  const session = readStoredSession();
-
-  return {
-    sessionExists: Boolean(session),
-    accessTokenExists: Boolean(session?.accessToken),
-    accessTokenExpired: isIsoTimestampExpired(session?.accessTokenExpiresAt, now),
-    refreshTokenExists: Boolean(session?.refreshToken),
-    refreshTokenExpired: isIsoTimestampExpired(session?.refreshTokenExpiresAt, now),
-  };
-};
-
-export const restoreLocalSession = (now = new Date()): LocalSessionRestoreResult => {
-  if (typeof window === 'undefined') {
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: false,
-      refreshed: false,
-      reason: 'window-unavailable',
-    };
-    return { user: null, debug };
-  }
-
-  const session = readStoredSession();
-
-  if (!session?.userId) {
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: false,
-      refreshed: false,
-      reason: 'missing-session',
-    };
-    debugAuth('No persisted session found during app bootstrap.', debug);
-    return { user: null, debug };
-  }
-
-  const account = readStoredAccounts().find((candidate) => candidate.id === session.userId);
-
-  if (!account) {
-    writeStoredSessionRecord(null);
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: false,
-      refreshed: false,
-      reason: 'missing-user',
-    };
-    debugAuth('Stored session user no longer exists. Clearing session.', debug);
-    return { user: null, debug };
-  }
-
-  if (!session.accessToken || !session.refreshToken) {
-    const migratedSession = createStoredSession(session.userId, now);
-    writeStoredSessionRecord(migratedSession);
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: true,
-      refreshed: true,
-      reason: 'session-refreshed',
-    };
-    debugAuth('Legacy session record upgraded during restore.', debug);
-    return { user: toPublicUser(account), debug };
-  }
-
-  const accessExpired = isIsoTimestampExpired(session.accessTokenExpiresAt, now);
-  const refreshExpired = isIsoTimestampExpired(session.refreshTokenExpiresAt, now);
-
-  if (!accessExpired) {
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: true,
-      refreshed: false,
-      reason: 'session-restored',
-    };
-    debugAuth('Persisted session restored from localStorage.', debug);
-    return { user: toPublicUser(account), debug };
-  }
-
-  if (!refreshExpired && session.refreshToken) {
-    const refreshedSession = refreshStoredSession(session, now);
-    writeStoredSessionRecord(refreshedSession);
-    const debug: LocalSessionDebugInfo = {
-      ...getLocalSessionDebugInfo(now),
-      restored: true,
-      refreshed: true,
-      reason: 'session-refreshed',
-    };
-    debugAuth('Access token expired. Session restored via refresh token.', debug);
-    return { user: toPublicUser(account), debug };
-  }
-
-  writeStoredSessionRecord(null);
-  const debug: LocalSessionDebugInfo = {
-    ...getLocalSessionDebugInfo(now),
-    restored: false,
-    refreshed: false,
-    reason: 'expired-session',
-  };
-  debugAuth('Persisted session expired and could not be refreshed. Redirecting to login.', debug);
-  return { user: null, debug };
-};
-
-export const ensureLocalAccountPassword = (
-  emailAddress: string,
-  password: string,
-  fallbackName = 'Coco Deluca'
-): { user: LocalAccountUser } => {
-  const email = normalizeEmail(emailAddress);
-  const accounts = readStoredAccounts();
-  const existingAccount = accounts.find((account) => account.email === email);
-
-  if (existingAccount) {
-    const updatedAccount: StoredAccountRecord = {
-      ...existingAccount,
-      password,
-    };
-
-    writeStoredAccounts(
-      accounts.map((account) => (account.id === existingAccount.id ? updatedAccount : account))
-    );
-
-    return { user: toPublicUser(updatedAccount) };
-  }
-
-  const newAccount: StoredAccountRecord = {
-    id: makeUserId(),
-    name: fallbackName,
-    email,
-    password,
-    createdAt: new Date().toISOString(),
-  };
-
-  writeStoredAccounts([...accounts, newAccount]);
-  saveUserSettings(
-    { id: newAccount.id, name: fallbackName, email },
-    {
-      profile: {
-        ...DEFAULT_SETTINGS.profile,
-        name: fallbackName,
-        email,
-      },
-    }
-  );
-
-  return { user: toPublicUser(newAccount) };
-};
-
-export const registerLocalAccount = (
-  payload: AccountRegistration
-): { user: LocalAccountUser } => {
-  const email = normalizeEmail(payload.email);
-  const name = payload.name.trim();
-  const password = payload.password;
-  const userMode = payload.userMode ?? DEFAULT_SETTINGS.userMode;
-  const dashboardSetupMode = payload.dashboardSetupMode ?? DEFAULT_SETTINGS.dashboardSetupMode;
-  const onboardingCompleted =
-    payload.onboardingCompleted ?? payload.onboarding?.completed ?? DEFAULT_SETTINGS.onboardingCompleted;
-  const onboarding = payload.onboarding ?? DEFAULT_SETTINGS.onboarding;
-  const workspaceConfig = payload.workspaceConfig ?? DEFAULT_SETTINGS.workspaceConfig;
-
-  if (!name || !email || !password) {
-    throw new Error('Name, email, and password are required.');
-  }
-
-  const accounts = readStoredAccounts();
-  const existingAccount = accounts.find((account) => account.email === email);
-
-  if (existingAccount) {
-    throw new Error('An account with this email already exists.');
-  }
-
-  const account: StoredAccountRecord = {
-    id: makeUserId(),
-    name,
-    email,
-    password,
-    createdAt: new Date().toISOString(),
-  };
-
-  writeStoredAccounts([...accounts, account]);
-  saveUserSettings(
-    { id: account.id, name, email },
-    {
-      userMode,
-      onboardingCompleted,
-      onboardingStep: onboardingCompleted ? null : 'welcome',
-      dashboardSetupMode,
-      onboarding,
-      workspaceConfig: {
-        ...workspaceConfig,
-        userId: account.id,
-        updatedAt: new Date().toISOString(),
-        createdAt: workspaceConfig.createdAt || new Date().toISOString(),
-      },
-      profile: {
-        ...DEFAULT_SETTINGS.profile,
-        name,
-        email,
-      },
-    }
-  );
-  writeStoredSession(account.id);
-  debugAuth('Registered local account and persisted session.', {
-    userId: account.id,
-    email,
-    session: getLocalSessionDebugInfo(),
-  });
-
-  return { user: toPublicUser(account) };
-};
-
-export const loginLocalAccount = (
+export const findLegacyLocalAccountForEnrollment = (
   credentials: AccountCredentials
-): { user: LocalAccountUser } => {
+): LocalAccountUser | null => {
   const email = normalizeEmail(credentials.email);
-  const password = credentials.password;
-
-  const account = readStoredAccounts().find(
-    (candidate) => candidate.email === email && candidate.password === password
+  const account = readStoredAccounts().find((candidate) =>
+    candidate.email === email &&
+    candidate.email !== DEMO_ACCOUNT_EMAIL &&
+    typeof candidate.password === 'string' &&
+    candidate.password === credentials.password
   );
-
-  if (!account) {
-    throw new Error('Incorrect email or password.');
-  }
-
-  writeStoredSession(account.id);
-  debugAuth('Login succeeded and session was persisted.', {
-    userId: account.id,
-    email,
-    session: getLocalSessionDebugInfo(),
-  });
-  return { user: toPublicUser(account) };
+  return account ? toPublicUser(account) : null;
 };
 
-export const logoutLocalAccount = () => {
-  writeStoredSession(null);
-  debugAuth('Logout cleared persisted session.', {
-    session: getLocalSessionDebugInfo(),
+export const persistAuthenticatedServerUser = (user: LocalAccountUser) => {
+  const accounts = readStoredAccounts();
+  const existing = accounts.find((account) => account.id === user.id);
+  const record: StoredAccountRecord = {
+    id: user.id,
+    name: user.name,
+    email: normalizeEmail(user.email),
+    createdAt: existing?.createdAt ?? user.createdAt,
+  };
+  const next = existing
+    ? accounts.map((account) => account.id === user.id ? record : account)
+    : [...accounts, record];
+  writeStoredAccounts(next);
+};
+
+export const finalizeLegacyAuthenticationMigration = (input: {
+  expectedUserId: string;
+  authenticatedUserId: string;
+  hydration: Pick<UserPortfolioHydrationSnapshot, 'userId' | 'storageState'>;
+}) => {
+  if (
+    input.expectedUserId !== input.authenticatedUserId ||
+    input.hydration.userId !== input.expectedUserId ||
+    input.hydration.storageState === 'invalid'
+  ) {
+    throw new Error('Authentication migration identity or hydration verification failed.');
+  }
+
+  const accounts = readStoredAccounts();
+  writeStoredAccounts(accounts.map((account) => {
+    if (account.id !== input.expectedUserId) return account;
+    const { password: _legacyPassword, ...safeAccount } = account;
+    return safeAccount;
+  }));
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(LOCAL_SESSION_STORAGE_KEY);
+  }
+};
+
+export const startDemoLocalSession = async (): Promise<LocalAccountUser> => {
+  const { user } = await ensureDemoLocalAccount();
+  writeJson(DEMO_SESSION_STORAGE_KEY, { userId: user.id });
+  return user;
+};
+
+export const restoreDemoLocalSession = (): LocalAccountUser | null => {
+  const session = readJson<{ userId?: string } | null>(DEMO_SESSION_STORAGE_KEY, null);
+  if (!session?.userId) return null;
+  const account = readStoredAccounts().find((candidate) =>
+    candidate.id === session.userId && candidate.email === DEMO_ACCOUNT_EMAIL
+  );
+  return account ? toPublicUser(account) : null;
+};
+
+export const clearDemoLocalSession = () => {
+  if (typeof window !== 'undefined') window.localStorage.removeItem(DEMO_SESSION_STORAGE_KEY);
+};
+
+export const initializeRegisteredServerAccount = (
+  user: LocalAccountUser,
+  payload?: Omit<AccountRegistration, 'name' | 'email' | 'password'>
+) => {
+  persistAuthenticatedServerUser(user);
+  const userMode = payload?.userMode ?? DEFAULT_SETTINGS.userMode;
+  const onboardingCompleted =
+    payload?.onboardingCompleted ?? payload?.onboarding?.completed ?? DEFAULT_SETTINGS.onboardingCompleted;
+  const onboarding = payload?.onboarding ?? DEFAULT_SETTINGS.onboarding;
+  const workspaceConfig = payload?.workspaceConfig ?? DEFAULT_SETTINGS.workspaceConfig;
+  saveUserSettings(user, {
+    userMode,
+    onboardingCompleted,
+    onboardingStep: onboardingCompleted ? null : 'welcome',
+    dashboardSetupMode: payload?.dashboardSetupMode ?? DEFAULT_SETTINGS.dashboardSetupMode,
+    onboarding,
+    workspaceConfig: {
+      ...workspaceConfig,
+      userId: user.id,
+      updatedAt: new Date().toISOString(),
+      createdAt: workspaceConfig.createdAt || new Date().toISOString(),
+    },
+    profile: {
+      ...DEFAULT_SETTINGS.profile,
+      name: user.name,
+      email: user.email,
+    },
   });
 };
 
@@ -1348,7 +1091,25 @@ export const resetDemoAccountData = async (
 };
 
 export const ensureDemoLocalAccount = async (): Promise<{ user: LocalAccountUser }> => {
-  const { user } = ensureLocalAccountPassword(DEMO_ACCOUNT_EMAIL, DEMO_ACCOUNT_PASSWORD, DEMO_ACCOUNT_NAME);
+  const accounts = readStoredAccounts();
+  const existing = accounts.find((account) => account.email === DEMO_ACCOUNT_EMAIL);
+  const safeAccount: StoredAccountRecord = existing
+    ? {
+        id: existing.id,
+        name: DEMO_ACCOUNT_NAME,
+        email: DEMO_ACCOUNT_EMAIL,
+        createdAt: existing.createdAt,
+      }
+    : {
+        id: makeUserId(),
+        name: DEMO_ACCOUNT_NAME,
+        email: DEMO_ACCOUNT_EMAIL,
+        createdAt: new Date().toISOString(),
+      };
+  writeStoredAccounts(existing
+    ? accounts.map((account) => account.id === existing.id ? safeAccount : account)
+    : [...accounts, safeAccount]);
+  const user = toPublicUser(safeAccount);
   await normalizeDemoAccountState(user);
   return { user };
 };
