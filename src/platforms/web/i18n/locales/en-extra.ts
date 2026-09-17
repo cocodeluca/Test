@@ -284,6 +284,13 @@ export const enExtra = {
     transactionState: 'State',
     transactionPending: 'Pending',
     transactionPosted: 'Posted',
+    transactionLifecycle: {
+      pending: 'Pending',
+      posted: 'Posted',
+      removed: 'Removed',
+      reversed: 'Reversed',
+      reversal: 'Reversal',
+    },
     transactionEmptyTitle: 'No bank transactions yet',
     transactionEmptyBody: 'Connect or refresh a mock bank account to load its transactions.',
     transactionAllAccounts: 'All accounts',
@@ -299,6 +306,8 @@ export const enExtra = {
       suggested: 'Suggested match',
       matched: 'Matched',
       ignored: 'Ignored',
+      removed: 'Removed',
+      reversed: 'Reversed',
     },
     reconciliationTarget: {
       'rent-receivable': 'Rent',

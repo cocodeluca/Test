@@ -40,11 +40,12 @@ import {
   upsertLinkedCashAccounts,
 } from '../../../common/utils/cashAccounts';
 import {
+  applyBankTransactionProviderLifecycle,
   normalizeProviderTransactions,
-  upsertBankTransactions,
   upsertBankTransactionSyncState,
 } from '../../../common/utils/bankTransactions';
 import {
+  applyBankTransactionLifecycleToReconciliation,
   confirmBankTransactionMatch,
   ignoreBankTransaction,
   unmatchBankTransaction,
@@ -245,7 +246,32 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         fxRateTimestamp: snapshot?.lastSuccessfulUpdateAt ?? null,
         syncedAt,
       });
-      onUpdateBankTransactions(upsertBankTransactions(bankTransactions, normalized));
+      const lifecycle = applyBankTransactionProviderLifecycle({
+        existingTransactions: bankTransactions,
+        incomingTransactions: normalized,
+        removedTransactions: page.removedTransactions,
+        providerName: connection.providerName,
+        syncedAt,
+      });
+      const reconciliationLifecycle = applyBankTransactionLifecycleToReconciliation({
+        lifecycleEvents: lifecycle.lifecycleEvents,
+        reconciliations: bankTransactionReconciliations,
+        rentPayments,
+        expensePayments,
+        timestamp: syncedAt,
+      });
+      onUpdateBankTransactions(lifecycle.transactions);
+      onUpdateBankTransactionReconciliations(reconciliationLifecycle.reconciliations);
+      if (reconciliationLifecycle.rentPayments !== rentPayments) {
+        onUpdateRentCollection(rentReceivables, reconciliationLifecycle.rentPayments);
+      }
+      if (reconciliationLifecycle.expensePayments !== expensePayments) {
+        onUpdatePropertyExpenses(
+          propertyExpenseRules,
+          expenseObligations,
+          reconciliationLifecycle.expensePayments
+        );
+      }
       onUpdateBankTransactionSyncStates(
         upsertBankTransactionSyncState(bankTransactionSyncStates, {
           connectionId: connection.id,

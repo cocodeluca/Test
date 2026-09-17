@@ -11,6 +11,7 @@ import type {
 } from '../types';
 import { buildExpenseObligationViews, createManualExpensePayment } from './propertyExpenses';
 import { buildRentReceivableViews, createManualRentPayment } from './rentCollection';
+import type { BankTransactionLifecycleEvent } from './bankTransactions';
 
 export type BankReconciliationReason = 'exact-amount' | 'similar-amount' | 'partial-amount' | 'date-proximity' | 'property-context';
 
@@ -97,7 +98,11 @@ export const suggestBankTransactionMatch = (
   transaction: BankTransaction,
   context: BankReconciliationContext
 ): BankReconciliationSuggestion | null => {
-  if (transaction.pending || transaction.amount === 0) return null;
+  if (
+    transaction.pending ||
+    transaction.amount === 0 ||
+    (transaction.lifecycleStatus && transaction.lifecycleStatus !== 'active')
+  ) return null;
   const amount = Math.abs(transaction.amount);
   const propertyContextId = getPropertyContextId(transaction);
   const propertyNames = new Map(context.properties.map((property) => [property.id, property.name]));
@@ -186,8 +191,19 @@ export const getBankReconciliationView = (
   context: BankReconciliationContext
 ): BankReconciliationView => {
   const reconciliation = reconciliations.find((item) => item.bankTransactionId === transaction.id) ?? null;
-  if (reconciliation?.status === 'matched' || reconciliation?.status === 'ignored') {
+  if (
+    reconciliation?.status === 'matched' ||
+    reconciliation?.status === 'ignored' ||
+    reconciliation?.status === 'removed' ||
+    reconciliation?.status === 'reversed'
+  ) {
     return { status: reconciliation.status, suggestion: null, reconciliation };
+  }
+  if (transaction.lifecycleStatus === 'removed' || transaction.lifecycleStatus === 'reversed') {
+    return { status: transaction.lifecycleStatus, suggestion: null, reconciliation };
+  }
+  if (transaction.lifecycleStatus === 'reversal') {
+    return { status: 'reversed', suggestion: null, reconciliation };
   }
   const suggestion = suggestBankTransactionMatch(transaction, context);
   return {
@@ -340,4 +356,53 @@ export const unmatchBankTransaction = (args: {
       ? args.expensePayments
       : filteredExpensePayments,
   };
+};
+
+export const applyBankTransactionLifecycleToReconciliation = (args: {
+  lifecycleEvents: BankTransactionLifecycleEvent[];
+  reconciliations: BankTransactionReconciliation[];
+  rentPayments: RentPayment[];
+  expensePayments: ExpensePayment[];
+  timestamp?: string;
+}) => {
+  let reconciliations = args.reconciliations;
+  let rentPayments = args.rentPayments;
+  let expensePayments = args.expensePayments;
+  const timestamp = args.timestamp ?? new Date().toISOString();
+
+  for (const event of args.lifecycleEvents) {
+    const reconciliation = reconciliations.find(
+      (item) => item.bankTransactionId === event.bankTransactionId
+    );
+    if (!reconciliation) continue;
+
+    if (reconciliation.status === 'matched' && reconciliation.paymentId) {
+      if (reconciliation.targetType === 'rent-receivable') {
+        rentPayments = rentPayments.filter(
+          (payment) => payment.id !== reconciliation.paymentId || payment.source !== 'bank_sync'
+        );
+      } else if (reconciliation.targetType === 'expense-obligation') {
+        expensePayments = expensePayments.filter(
+          (payment) => payment.id !== reconciliation.paymentId || payment.source !== 'bank_sync'
+        );
+      }
+    }
+
+    const nextStatus = reconciliation.status === 'ignored'
+      ? 'ignored'
+      : event.reason === 'provider-removed' ? 'removed' : 'reversed';
+    const alreadyApplied = reconciliation.status === nextStatus &&
+      reconciliation.lifecycleReason === event.reason &&
+      (reconciliation.lifecycleTransactionId ?? null) === (event.relatedBankTransactionId ?? null);
+    if (alreadyApplied) continue;
+    reconciliations = reconciliations.map((item) => item.bankTransactionId === event.bankTransactionId ? {
+      ...item,
+      status: nextStatus,
+      lifecycleReason: event.reason,
+      lifecycleTransactionId: event.relatedBankTransactionId ?? null,
+      updatedAt: timestamp,
+    } : item);
+  }
+
+  return { reconciliations, rentPayments, expensePayments };
 };

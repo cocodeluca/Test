@@ -16,6 +16,13 @@ export const ptExtra: TranslationTree = {
     transactionState: 'Estado',
     transactionPending: 'Pendente',
     transactionPosted: 'Registada',
+    transactionLifecycle: {
+      pending: 'Pendente',
+      posted: 'Registada',
+      removed: 'Removida',
+      reversed: 'Revertida',
+      reversal: 'Reversão',
+    },
     transactionEmptyTitle: 'Ainda não existem transações bancárias',
     transactionEmptyBody: 'Ligue ou atualize uma conta bancária simulada para carregar as transações.',
     transactionAllAccounts: 'Todas as contas',
@@ -31,6 +38,8 @@ export const ptExtra: TranslationTree = {
       suggested: 'Correspondência sugerida',
       matched: 'Reconciliada',
       ignored: 'Ignorada',
+      removed: 'Removida',
+      reversed: 'Revertida',
     },
     reconciliationTarget: {
       'rent-receivable': 'Renda',

@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import type { BankTransaction, CashAccount, Property, RentReceivable } from '../src/common/types';
 import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
-import { normalizeProviderTransactions, upsertBankTransactions } from '../src/common/utils/bankTransactions';
+import {
+  applyBankTransactionProviderLifecycle,
+  normalizeProviderTransactions,
+  upsertBankTransactions,
+} from '../src/common/utils/bankTransactions';
 import { BankTransactionsView } from '../src/platforms/web/components/BankTransactionsView';
 import { openBankingAdapters } from '../src/platforms/web/services/openBanking';
 
@@ -59,6 +63,11 @@ const translations: Record<string, string> = {
   'cashAccounts.transactionState': 'State',
   'cashAccounts.transactionPending': 'Pending',
   'cashAccounts.transactionPosted': 'Posted',
+  'cashAccounts.transactionLifecycle.pending': 'Pending',
+  'cashAccounts.transactionLifecycle.posted': 'Posted',
+  'cashAccounts.transactionLifecycle.removed': 'Removed',
+  'cashAccounts.transactionLifecycle.reversed': 'Reversed',
+  'cashAccounts.transactionLifecycle.reversal': 'Reversal',
   'cashAccounts.transactionEmptyTitle': 'No bank transactions yet',
   'cashAccounts.transactionEmptyBody': 'Sync a mock account.',
   'cashAccounts.transactionAllAccounts': 'All accounts',
@@ -237,7 +246,7 @@ test('repeated mock sync remains idempotent in the rendered rows', async () => {
     syncedAt: '2026-09-16T12:00:00.000Z',
   }));
   const secondPage = await adapter.fetchTransactions(connection, accounts, firstPage.nextCursor);
-  const twiceSynced = upsertBankTransactions(first, normalizeProviderTransactions(secondPage.transactions, {
+  const normalized = normalizeProviderTransactions(secondPage.transactions, {
     providerName: 'mock-bank',
     connectionId: connection.id,
     accounts,
@@ -245,9 +254,19 @@ test('repeated mock sync remains idempotent in the rendered rows', async () => {
     fxRates: { EUR: 1, USD: 0.9 },
     fxRateTimestamp: '2026-09-16T00:00:00.000Z',
     syncedAt: '2026-09-16T13:00:00.000Z',
-  }));
+  });
+  const twiceSynced = applyBankTransactionProviderLifecycle({
+    existingTransactions: first,
+    incomingTransactions: normalized,
+    removedTransactions: secondPage.removedTransactions,
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-16T13:00:00.000Z',
+  }).transactions;
   const html = renderView(twiceSynced, accounts);
 
-  assert.equal(twiceSynced.length, 6);
-  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 6);
+  assert.equal(twiceSynced.length, 8);
+  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 8);
+  assert.match(html, /data-state="removed"/);
+  assert.match(html, /data-state="reversed"/);
+  assert.match(html, /data-state="reversal"/);
 });

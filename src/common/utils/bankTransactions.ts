@@ -13,6 +13,8 @@ export interface ProviderTransactionRecord {
   externalTransactionId: string;
   /** Explicit provider evidence that this posted record replaces the named pending record. */
   pendingExternalTransactionId?: string | null;
+  /** Explicit provider evidence that this transaction reverses the named posted transaction. */
+  reversesExternalTransactionId?: string | null;
   externalAccountId: string;
   bookingDate: string;
   authorizedDate?: string | null;
@@ -27,8 +29,21 @@ export interface ProviderTransactionRecord {
 
 export interface ProviderTransactionPage {
   transactions: ProviderTransactionRecord[];
+  removedTransactions?: ProviderRemovedTransactionRecord[];
   nextCursor?: string | null;
   hasMore: boolean;
+}
+
+export interface ProviderRemovedTransactionRecord {
+  externalTransactionId: string;
+  externalAccountId: string;
+  reason?: string | null;
+}
+
+export interface BankTransactionLifecycleEvent {
+  bankTransactionId: string;
+  reason: 'provider-removed' | 'provider-reversed';
+  relatedBankTransactionId?: string | null;
 }
 
 export interface BankTransactionNormalizationContext {
@@ -92,6 +107,9 @@ export const normalizeProviderTransactions = (
       connectionId: context.connectionId,
       externalTransactionId: record.externalTransactionId,
       pendingExternalTransactionId: record.pendingExternalTransactionId ?? null,
+      reversesExternalTransactionId: record.reversesExternalTransactionId ?? null,
+      reversesBankTransactionId: null,
+      reversedByBankTransactionId: null,
       cashAccountId: account.id,
       externalAccountId: record.externalAccountId,
       bookingDate: record.bookingDate,
@@ -106,6 +124,10 @@ export const normalizeProviderTransactions = (
       description: record.description,
       counterparty: record.counterparty ?? null,
       pending: record.pending,
+      lifecycleStatus: record.reversesExternalTransactionId ? 'reversal' : 'active',
+      lifecycleUpdatedAt: null,
+      removedAt: null,
+      removalReason: null,
       ...(record.metadata ? { providerMetadata: record.metadata } : {}),
       createdAt: context.syncedAt,
       updatedAt: context.syncedAt,
@@ -158,14 +180,108 @@ export const upsertBankTransactions = (
         ? existingByIdentity.get(linkedPendingIdentity) ?? incomingByIdentity.get(linkedPendingIdentity)
         : undefined;
       const existing = exactExisting ?? (linkedPending?.pending ? linkedPending : undefined);
+      const preserveTerminalLifecycle = exactExisting &&
+        (exactExisting.lifecycleStatus === 'removed' || exactExisting.lifecycleStatus === 'reversed');
+      const preserveReversalAudit = exactExisting?.lifecycleStatus === 'reversal' &&
+        transaction.lifecycleStatus === 'reversal';
       return {
         ...existing,
         ...transaction,
         id: existing?.id ?? transaction.id,
         createdAt: existing?.createdAt ?? transaction.createdAt,
+        ...(preserveTerminalLifecycle ? {
+          lifecycleStatus: exactExisting.lifecycleStatus,
+          lifecycleUpdatedAt: exactExisting.lifecycleUpdatedAt ?? null,
+          removedAt: exactExisting.removedAt ?? null,
+          removalReason: exactExisting.removalReason ?? null,
+          reversesBankTransactionId: exactExisting.reversesBankTransactionId ?? null,
+          reversedByBankTransactionId: exactExisting.reversedByBankTransactionId ?? null,
+        } : {}),
+        ...(preserveReversalAudit ? {
+          reversesBankTransactionId: exactExisting.reversesBankTransactionId ?? null,
+          lifecycleUpdatedAt: exactExisting.lifecycleUpdatedAt ?? null,
+        } : {}),
       };
     });
   return [...retained, ...upserted];
+};
+
+export const applyBankTransactionProviderLifecycle = (args: {
+  existingTransactions: BankTransaction[];
+  incomingTransactions: BankTransaction[];
+  removedTransactions?: ProviderRemovedTransactionRecord[];
+  providerName: OpenBankingProviderName;
+  syncedAt: string;
+}): { transactions: BankTransaction[]; lifecycleEvents: BankTransactionLifecycleEvent[] } => {
+  let transactions = upsertBankTransactions(args.existingTransactions, args.incomingTransactions);
+  const lifecycleEvents = new Map<string, BankTransactionLifecycleEvent>();
+
+  for (const removed of args.removedTransactions ?? []) {
+    const identity = getBankTransactionIdentity({
+      providerName: args.providerName,
+      externalAccountId: removed.externalAccountId,
+      externalTransactionId: removed.externalTransactionId,
+    });
+    const existing = transactions.find((transaction) => getBankTransactionIdentity(transaction) === identity);
+    if (!existing) continue;
+    transactions = transactions.map((transaction) => transaction.id === existing.id ? {
+      ...transaction,
+      lifecycleStatus: 'removed',
+      lifecycleUpdatedAt: transaction.lifecycleStatus === 'removed'
+        ? transaction.lifecycleUpdatedAt ?? args.syncedAt
+        : args.syncedAt,
+      removedAt: transaction.removedAt ?? args.syncedAt,
+      removalReason: transaction.removalReason ?? removed.reason ?? null,
+    } : transaction);
+    lifecycleEvents.set(existing.id, {
+      bankTransactionId: existing.id,
+      reason: 'provider-removed',
+    });
+  }
+
+  const reversalTransactions = transactions.filter((transaction) =>
+    transaction.lifecycleStatus === 'reversal' && transaction.reversesExternalTransactionId
+  );
+  for (const reversal of reversalTransactions) {
+    const originalIdentity = getBankTransactionIdentity({
+      providerName: reversal.providerName,
+      externalAccountId: reversal.externalAccountId,
+      externalTransactionId: reversal.reversesExternalTransactionId!,
+    });
+    const original = transactions.find((transaction) =>
+      transaction.id !== reversal.id && getBankTransactionIdentity(transaction) === originalIdentity
+    );
+    if (!original) continue;
+    transactions = transactions.map((transaction) => {
+      if (transaction.id === reversal.id) {
+        return {
+          ...transaction,
+          reversesBankTransactionId: original.id,
+          lifecycleUpdatedAt: transaction.lifecycleUpdatedAt ?? args.syncedAt,
+        };
+      }
+      if (transaction.id === original.id) {
+        const alreadyLinked = transaction.lifecycleStatus === 'reversed' &&
+          transaction.reversedByBankTransactionId === reversal.id;
+        return {
+          ...transaction,
+          lifecycleStatus: 'reversed',
+          reversedByBankTransactionId: reversal.id,
+          lifecycleUpdatedAt: alreadyLinked
+            ? transaction.lifecycleUpdatedAt ?? args.syncedAt
+            : args.syncedAt,
+        };
+      }
+      return transaction;
+    });
+    lifecycleEvents.set(original.id, {
+      bankTransactionId: original.id,
+      reason: 'provider-reversed',
+      relatedBankTransactionId: reversal.id,
+    });
+  }
+
+  return { transactions, lifecycleEvents: [...lifecycleEvents.values()] };
 };
 
 export const upsertBankTransactionSyncState = (

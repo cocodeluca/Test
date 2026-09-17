@@ -581,6 +581,7 @@ export interface BankConnection {
 }
 
 export type BankTransactionFxCoverage = 'same-currency' | 'snapshot' | 'unavailable';
+export type BankTransactionLifecycleStatus = 'active' | 'removed' | 'reversed' | 'reversal';
 
 export interface BankTransaction {
   id: string;
@@ -589,6 +590,10 @@ export interface BankTransaction {
   externalTransactionId: string;
   /** Provider-supplied predecessor ID when a posted transaction replaces a pending transaction. */
   pendingExternalTransactionId?: string | null;
+  /** Provider-supplied original transaction ID when this record is an explicit reversal. */
+  reversesExternalTransactionId?: string | null;
+  reversesBankTransactionId?: string | null;
+  reversedByBankTransactionId?: string | null;
   cashAccountId: string;
   externalAccountId?: string | null;
   bookingDate: string;
@@ -604,6 +609,10 @@ export interface BankTransaction {
   description: string;
   counterparty?: string | null;
   pending: boolean;
+  lifecycleStatus?: BankTransactionLifecycleStatus;
+  lifecycleUpdatedAt?: string | null;
+  removedAt?: string | null;
+  removalReason?: string | null;
   providerMetadata?: Record<string, string | number | boolean | null>;
   createdAt: string;
   updatedAt: string;
@@ -620,7 +629,8 @@ export interface BankTransactionSyncState {
   updatedAt: string;
 }
 
-export type BankReconciliationStatus = 'unmatched' | 'suggested' | 'matched' | 'ignored';
+export type BankReconciliationStatus = 'unmatched' | 'suggested' | 'matched' | 'ignored' | 'removed' | 'reversed';
+export type BankReconciliationLifecycleReason = 'provider-removed' | 'provider-reversed';
 export type BankReconciliationTargetType = 'rent-receivable' | 'expense-obligation';
 
 export interface BankTransactionReconciliation {
@@ -629,6 +639,8 @@ export interface BankTransactionReconciliation {
   targetType?: BankReconciliationTargetType | null;
   targetId?: string | null;
   paymentId?: string | null;
+  lifecycleReason?: BankReconciliationLifecycleReason | null;
+  lifecycleTransactionId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

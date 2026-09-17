@@ -9,6 +9,7 @@ import {
   upsertLinkedCashAccounts,
 } from '../src/common/utils/cashAccounts';
 import {
+  applyBankTransactionProviderLifecycle,
   normalizeProviderTransactions,
   type ProviderTransactionRecord,
   upsertBankTransactions,
@@ -116,16 +117,47 @@ test('repeated mock transaction fetch is idempotent', async () => {
   const firstPage = await adapter.fetchTransactions(connection, accounts, null);
   const secondPage = await adapter.fetchTransactions(connection, accounts, firstPage.nextCursor);
   const first = upsertBankTransactions([], normalize(firstPage.transactions, accounts));
-  const second = upsertBankTransactions(
-    first,
-    normalize(secondPage.transactions, accounts, '2026-09-16T13:00:00.000Z')
-  );
+  const secondLifecycle = applyBankTransactionProviderLifecycle({
+    existingTransactions: first,
+    incomingTransactions: normalize(secondPage.transactions, accounts, '2026-09-16T13:00:00.000Z'),
+    removedTransactions: secondPage.removedTransactions,
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-16T13:00:00.000Z',
+  });
+  const second = secondLifecycle.transactions;
+  const thirdPage = await adapter.fetchTransactions(connection, accounts, secondPage.nextCursor);
+  const third = applyBankTransactionProviderLifecycle({
+    existingTransactions: second,
+    incomingTransactions: normalize(thirdPage.transactions, accounts, '2026-09-16T14:00:00.000Z'),
+    removedTransactions: thirdPage.removedTransactions,
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-16T14:00:00.000Z',
+  }).transactions;
 
-  assert.equal(firstPage.transactions.length, 6);
-  assert.equal(second.length, 6);
+  assert.equal(firstPage.transactions.length, 7);
+  assert.equal(second.length, 8);
+  assert.equal(third.length, 8);
   assert.deepEqual(
-    second.map((transaction) => transaction.id).sort(),
-    first.map((transaction) => transaction.id).sort()
+    third.map((transaction) => transaction.id).sort(),
+    second.map((transaction) => transaction.id).sort()
+  );
+  assert.deepEqual(
+    third.map(({ id, lifecycleStatus, lifecycleUpdatedAt, removedAt, reversesBankTransactionId, reversedByBankTransactionId }) => ({
+      id,
+      lifecycleStatus,
+      lifecycleUpdatedAt,
+      removedAt,
+      reversesBankTransactionId,
+      reversedByBankTransactionId,
+    })),
+    second.map(({ id, lifecycleStatus, lifecycleUpdatedAt, removedAt, reversesBankTransactionId, reversedByBankTransactionId }) => ({
+      id,
+      lifecycleStatus,
+      lifecycleUpdatedAt,
+      removedAt,
+      reversesBankTransactionId,
+      reversedByBankTransactionId,
+    }))
   );
   assert.ok(second.some((transaction) => transaction.amount > 0));
   assert.ok(second.some((transaction) => transaction.amount < 0));
@@ -151,6 +183,17 @@ test('repeated mock transaction fetch is idempotent', async () => {
   assert.ok(second.some((transaction) =>
     transaction.externalTransactionId.endsWith(':card-similar-unrelated')
   ));
+  assert.equal(second.filter((transaction) => transaction.lifecycleStatus === 'removed').length, 4);
+  const reversed = second.find((transaction) =>
+    transaction.externalTransactionId.endsWith(':usd-interest')
+  );
+  const reversal = second.find((transaction) =>
+    transaction.externalTransactionId.endsWith(':usd-interest-reversal')
+  );
+  assert.equal(reversed?.lifecycleStatus, 'reversed');
+  assert.equal(reversal?.lifecycleStatus, 'reversal');
+  assert.equal(reversed?.reversedByBankTransactionId, reversal?.id);
+  assert.equal(reversal?.reversesBankTransactionId, reversed?.id);
 });
 
 test('changed provider transaction data updates instead of duplicating', () => {
@@ -251,6 +294,84 @@ test('explicitly linked pending and posted records in one provider page coalesce
   assert.equal(result[0].pending, false);
 });
 
+test('explicit removal persists a tombstone while absence alone does not remove a transaction', () => {
+  const existing = normalize([providerRecord({ externalTransactionId: 'provider-removal-1' })]);
+  const absent = applyBankTransactionProviderLifecycle({
+    existingTransactions: existing,
+    incomingTransactions: [],
+    removedTransactions: [],
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  });
+  assert.equal(absent.transactions[0].lifecycleStatus, 'active');
+  assert.deepEqual(absent.lifecycleEvents, []);
+
+  const removedRecord = {
+    externalTransactionId: 'provider-removal-1',
+    externalAccountId: `${connection.institutionId}:checking`,
+    reason: 'provider-deleted',
+  };
+  const removed = applyBankTransactionProviderLifecycle({
+    existingTransactions: existing,
+    incomingTransactions: [],
+    removedTransactions: [removedRecord],
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  });
+  assert.equal(removed.transactions.length, 1);
+  assert.equal(removed.transactions[0].id, existing[0].id);
+  assert.equal(removed.transactions[0].lifecycleStatus, 'removed');
+  assert.equal(removed.transactions[0].removedAt, '2026-09-17T12:00:00.000Z');
+  assert.equal(removed.transactions[0].removalReason, 'provider-deleted');
+  assert.deepEqual(removed.lifecycleEvents, [{
+    bankTransactionId: existing[0].id,
+    reason: 'provider-removed',
+  }]);
+
+  const repeated = applyBankTransactionProviderLifecycle({
+    existingTransactions: removed.transactions,
+    incomingTransactions: [],
+    removedTransactions: [removedRecord],
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-18T12:00:00.000Z',
+  });
+  assert.equal(repeated.transactions[0].removedAt, removed.transactions[0].removedAt);
+  assert.equal(repeated.transactions[0].lifecycleUpdatedAt, removed.transactions[0].lifecycleUpdatedAt);
+});
+
+test('explicit reversal links both records and retains a coherent opposite financial effect', () => {
+  const original = normalize([providerRecord({
+    externalTransactionId: 'provider-original-1',
+    amount: 1450,
+    direction: 'credit',
+  })]);
+  const reversal = normalize([providerRecord({
+    externalTransactionId: 'provider-reversal-1',
+    reversesExternalTransactionId: 'provider-original-1',
+    amount: 1450,
+    direction: 'debit',
+  })], undefined, '2026-09-17T12:00:00.000Z');
+  const result = applyBankTransactionProviderLifecycle({
+    existingTransactions: original,
+    incomingTransactions: reversal,
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  });
+  const storedOriginal = result.transactions.find((item) => item.externalTransactionId === 'provider-original-1');
+  const storedReversal = result.transactions.find((item) => item.externalTransactionId === 'provider-reversal-1');
+
+  assert.equal(storedOriginal?.lifecycleStatus, 'reversed');
+  assert.equal(storedReversal?.lifecycleStatus, 'reversal');
+  assert.equal(storedOriginal?.reversedByBankTransactionId, storedReversal?.id);
+  assert.equal(storedReversal?.reversesBankTransactionId, storedOriginal?.id);
+  assert.equal((storedOriginal?.amount ?? 0) + (storedReversal?.amount ?? 0), 0);
+  assert.deepEqual(result.lifecycleEvents, [{
+    bankTransactionId: storedOriginal?.id,
+    reason: 'provider-reversed',
+    relatedBankTransactionId: storedReversal?.id,
+  }]);
+});
+
 test('multi-currency normalization uses existing FX coverage and never falls back to 1:1', () => {
   const accounts = [
     linkedAccount({ currency: 'USD' }),
@@ -339,4 +460,40 @@ test('IndexedDB cold load preserves the final posted lifecycle state', async () 
   assert.equal(reloaded.bankTransactions?.[0].id, pending[0].id);
   assert.equal(reloaded.bankTransactions?.[0].externalTransactionId, 'provider-cold-posted');
   assert.equal(reloaded.bankTransactions?.[0].pending, false);
+});
+
+test('IndexedDB cold load preserves removed and explicitly reversed transaction audit state', async () => {
+  const original = normalize([
+    providerRecord({ externalTransactionId: 'cold-removed' }),
+    providerRecord({ externalTransactionId: 'cold-original', amount: 25 }),
+  ]);
+  const incoming = normalize([providerRecord({
+    externalTransactionId: 'cold-reversal',
+    reversesExternalTransactionId: 'cold-original',
+    amount: 25,
+    direction: 'debit',
+  })], undefined, '2026-09-17T12:00:00.000Z');
+  const lifecycle = applyBankTransactionProviderLifecycle({
+    existingTransactions: original,
+    incomingTransactions: incoming,
+    removedTransactions: [{
+      externalTransactionId: 'cold-removed',
+      externalAccountId: `${connection.institutionId}:checking`,
+      reason: 'provider-deleted',
+    }],
+    providerName: 'mock-bank',
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  });
+  await saveUserPortfolio('banking-lifecycle-cold-load-user', {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: [linkedAccount()],
+    bankConnections: [connection],
+    bankTransactions: lifecycle.transactions,
+  });
+  const reloaded = await loadUserPortfolio('banking-lifecycle-cold-load-user');
+
+  assert.deepEqual(reloaded.bankTransactions, lifecycle.transactions);
+  assert.equal(reloaded.bankTransactions?.find((item) => item.externalTransactionId === 'cold-removed')?.lifecycleStatus, 'removed');
+  assert.equal(reloaded.bankTransactions?.find((item) => item.externalTransactionId === 'cold-original')?.lifecycleStatus, 'reversed');
+  assert.equal(reloaded.bankTransactions?.find((item) => item.externalTransactionId === 'cold-reversal')?.lifecycleStatus, 'reversal');
 });

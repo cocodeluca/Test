@@ -147,6 +147,18 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                 const isOutflow = transaction.amount < 0;
                 const direction = isInflow ? 'inflow' : isOutflow ? 'outflow' : 'neutral';
                 const amountPrefix = isInflow ? '+' : isOutflow ? '\u2212' : '';
+                const transactionState = transaction.lifecycleStatus === 'removed'
+                  ? 'removed'
+                  : transaction.lifecycleStatus === 'reversed'
+                    ? 'reversed'
+                    : transaction.lifecycleStatus === 'reversal'
+                      ? 'reversal'
+                      : transaction.pending ? 'pending' : 'posted';
+                const transactionStateClass = transactionState === 'pending'
+                  ? 'border-amber-300/70 bg-amber-50/80 text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300'
+                  : transactionState === 'posted'
+                    ? 'border-emerald-300/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300'
+                    : 'border-slate-300/80 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-950/50 dark:text-slate-300';
                 const reconciliation = reconciliationContext
                   ? getBankReconciliationView(transaction, reconciliations, reconciliationContext)
                   : null;
@@ -155,7 +167,7 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                     key={transaction.id}
                     data-bank-transaction-id={transaction.id}
                     data-direction={direction}
-                    data-state={transaction.pending ? 'pending' : 'posted'}
+                    data-state={transactionState}
                     className={`border-b last:border-b-0 ${appBorderClass}`}
                   >
                     <td className={`whitespace-nowrap px-4 py-4 text-sm ${appTextMutedClass}`}>{formatTransactionDate(transaction.bookingDate, language)}</td>
@@ -175,8 +187,8 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                     </td>
                     <td className={`whitespace-nowrap px-4 py-4 text-sm ${appTextMutedClass}`}>{transaction.currency}</td>
                     <td className="whitespace-nowrap px-4 py-4">
-                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${transaction.pending ? 'border-amber-300/70 bg-amber-50/80 text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300' : 'border-emerald-300/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
-                        {transaction.pending ? t('cashAccounts.transactionPending') : t('cashAccounts.transactionPosted')}
+                      <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${transactionStateClass}`}>
+                        {t(`cashAccounts.transactionLifecycle.${transactionState}`)}
                       </span>
                     </td>
                     <td className="min-w-72 px-4 py-4">

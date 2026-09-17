@@ -274,6 +274,17 @@ const buildMockTransactions = (
     metadata: { category: 'card', lifecycle: 'unrelated' },
   },
   {
+    externalTransactionId: `${institutionId}:unmatched-removal`,
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: '2026-09-12',
+    amount: 33,
+    direction: 'debit',
+    currency: 'EUR',
+    description: 'Unmatched provider removal',
+    pending: false,
+    metadata: { category: 'other' },
+  },
+  {
     externalTransactionId: `${institutionId}:usd-interest`,
     externalAccountId: `${institutionId}:savings`,
     bookingDate: '2026-09-10',
@@ -284,6 +295,42 @@ const buildMockTransactions = (
     counterparty: 'Mock Bank',
     pending: false,
     metadata: { category: 'interest' },
+  },
+  ...(lifecycle === 'posted' ? [{
+    externalTransactionId: `${institutionId}:usd-interest-reversal`,
+    reversesExternalTransactionId: `${institutionId}:usd-interest`,
+    externalAccountId: `${institutionId}:savings`,
+    bookingDate: '2026-09-16',
+    amount: 25,
+    direction: 'debit' as const,
+    currency: 'USD' as const,
+    description: 'Savings interest reversal',
+    counterparty: 'Mock Bank',
+    pending: false,
+    metadata: { category: 'interest', lifecycle: 'reversal' },
+  }] : []),
+];
+
+const buildMockRemovedTransactions = (institutionId: string) => [
+  {
+    externalTransactionId: `${institutionId}:rent-2026-09`,
+    externalAccountId: `${institutionId}:checking`,
+    reason: 'provider-deleted',
+  },
+  {
+    externalTransactionId: `${institutionId}:insurance-2026`,
+    externalAccountId: `${institutionId}:checking`,
+    reason: 'provider-deleted',
+  },
+  {
+    externalTransactionId: `${institutionId}:unmatched-removal`,
+    externalAccountId: `${institutionId}:checking`,
+    reason: 'provider-deleted',
+  },
+  {
+    externalTransactionId: `${institutionId}:card-similar-unrelated`,
+    externalAccountId: `${institutionId}:checking`,
+    reason: 'provider-deleted',
   },
 ];
 
@@ -353,6 +400,9 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
           const lifecycle = cursor ? 'posted' : 'pending';
           return {
             transactions: buildMockTransactions(connection.institutionId, lifecycle),
+            removedTransactions: lifecycle === 'posted'
+              ? buildMockRemovedTransactions(connection.institutionId)
+              : [],
             nextCursor: `${connection.id}:mock-v2`,
             hasMore: false,
           };

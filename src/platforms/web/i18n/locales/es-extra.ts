@@ -284,6 +284,13 @@ export const esExtra = {
     transactionState: 'Estado',
     transactionPending: 'Pendiente',
     transactionPosted: 'Contabilizada',
+    transactionLifecycle: {
+      pending: 'Pendiente',
+      posted: 'Contabilizada',
+      removed: 'Eliminada',
+      reversed: 'Revertida',
+      reversal: 'ReversiÃ³n',
+    },
     transactionEmptyTitle: 'Aún no hay transacciones bancarias',
     transactionEmptyBody: 'Conecta o actualiza una cuenta bancaria simulada para cargar sus transacciones.',
     transactionAllAccounts: 'Todas las cuentas',
@@ -299,6 +306,8 @@ export const esExtra = {
       suggested: 'Coincidencia sugerida',
       matched: 'Conciliada',
       ignored: 'Ignorada',
+      removed: 'Eliminada',
+      reversed: 'Revertida',
     },
     reconciliationTarget: {
       'rent-receivable': 'Alquiler',
