@@ -248,6 +248,6 @@ test('repeated mock sync remains idempotent in the rendered rows', async () => {
   }));
   const html = renderView(twiceSynced, accounts);
 
-  assert.equal(twiceSynced.length, 4);
-  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 4);
+  assert.equal(twiceSynced.length, 6);
+  assert.equal((html.match(/data-bank-transaction-id=/g) ?? []).length, 6);
 });

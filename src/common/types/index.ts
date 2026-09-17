@@ -587,6 +587,8 @@ export interface BankTransaction {
   providerName: OpenBankingProviderName;
   connectionId: string;
   externalTransactionId: string;
+  /** Provider-supplied predecessor ID when a posted transaction replaces a pending transaction. */
+  pendingExternalTransactionId?: string | null;
   cashAccountId: string;
   externalAccountId?: string | null;
   bookingDate: string;

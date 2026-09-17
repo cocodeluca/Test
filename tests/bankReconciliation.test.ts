@@ -173,6 +173,72 @@ test('transaction sync updates do not reset persisted reconciliation state', () 
   assert.equal(view.status, 'ignored');
 });
 
+test('pending to posted lifecycle enables suggestion without losing ignored state', () => {
+  const pending = transaction({
+    id: 'bank-tx-lifecycle-stable',
+    externalTransactionId: 'provider-pending-lifecycle',
+    pending: true,
+  });
+  assert.equal(suggestBankTransactionMatch(pending, context()), null);
+  const ignored = ignoreBankTransaction([], pending.id, '2026-09-16T12:00:00.000Z');
+  const [posted] = upsertBankTransactions([pending], [transaction({
+    id: 'provider-generated-posted-id',
+    externalTransactionId: 'provider-posted-lifecycle',
+    pendingExternalTransactionId: pending.externalTransactionId,
+    pending: false,
+    updatedAt: '2026-09-17T12:00:00.000Z',
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  })]);
+
+  assert.equal(posted.id, pending.id);
+  assert.equal(suggestBankTransactionMatch(posted, context())?.targetId, receivable.id);
+  assert.equal(getBankReconciliationView(posted, ignored, context()).status, 'ignored');
+});
+
+test('matched lifecycle transaction remains matched and cannot create a duplicate payment after sync', () => {
+  const pending = transaction({
+    id: 'bank-tx-matched-lifecycle',
+    externalTransactionId: 'provider-matched-pending',
+    pending: true,
+  });
+  const [posted] = upsertBankTransactions([pending], [transaction({
+    id: 'provider-generated-matched-posted-id',
+    externalTransactionId: 'provider-matched-posted',
+    pendingExternalTransactionId: pending.externalTransactionId,
+    pending: false,
+  })]);
+  const confirmed = confirmBankTransactionMatch({
+    transaction: posted,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context(),
+    timestamp: '2026-09-17T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const [resynced] = upsertBankTransactions([posted], [transaction({
+    id: 'another-provider-generated-id',
+    externalTransactionId: 'provider-matched-posted',
+    pendingExternalTransactionId: pending.externalTransactionId,
+    pending: false,
+    description: 'Final posted description',
+  })]);
+  const repeated = confirmBankTransactionMatch({
+    transaction: resynced,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: confirmed.reconciliations,
+    context: context({ rentPayments: confirmed.rentPayments }),
+    timestamp: '2026-09-18T12:00:00.000Z',
+  });
+
+  assert.equal(resynced.id, pending.id);
+  assert.equal(getBankReconciliationView(resynced, confirmed.reconciliations, context()).status, 'matched');
+  assert.ok(repeated);
+  assert.equal(repeated.rentPayments.length, 1);
+  assert.equal(repeated.reconciliations.length, 1);
+});
+
 test('a transaction outside conservative amount and date rules remains unmatched', () => {
   const invalid = transaction({ amount: 1200, bookingDate: '2026-07-01' });
   const view = getBankReconciliationView(invalid, [], context());

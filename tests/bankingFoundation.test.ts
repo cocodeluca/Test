@@ -121,8 +121,8 @@ test('repeated mock transaction fetch is idempotent', async () => {
     normalize(secondPage.transactions, accounts, '2026-09-16T13:00:00.000Z')
   );
 
-  assert.equal(firstPage.transactions.length, 4);
-  assert.equal(second.length, 4);
+  assert.equal(firstPage.transactions.length, 6);
+  assert.equal(second.length, 6);
   assert.deepEqual(
     second.map((transaction) => transaction.id).sort(),
     first.map((transaction) => transaction.id).sort()
@@ -131,6 +131,26 @@ test('repeated mock transaction fetch is idempotent', async () => {
   assert.ok(second.some((transaction) => transaction.amount < 0));
   assert.ok(second.some((transaction) => transaction.pending));
   assert.ok(second.some((transaction) => transaction.currency === 'USD'));
+  const pendingLifecycle = first.find((transaction) =>
+    transaction.externalTransactionId.endsWith(':card-lifecycle-pending')
+  );
+  const postedLifecycle = second.find((transaction) =>
+    transaction.externalTransactionId.endsWith(':card-lifecycle-posted')
+  );
+  assert.ok(pendingLifecycle);
+  assert.ok(postedLifecycle);
+  assert.equal(postedLifecycle.id, pendingLifecycle.id);
+  assert.equal(postedLifecycle.pending, false);
+  assert.equal(
+    postedLifecycle.pendingExternalTransactionId,
+    pendingLifecycle.externalTransactionId
+  );
+  assert.ok(second.some((transaction) =>
+    transaction.externalTransactionId.endsWith(':maintenance-pending') && transaction.pending
+  ));
+  assert.ok(second.some((transaction) =>
+    transaction.externalTransactionId.endsWith(':card-similar-unrelated')
+  ));
 });
 
 test('changed provider transaction data updates instead of duplicating', () => {
@@ -147,6 +167,88 @@ test('changed provider transaction data updates instead of duplicating', () => {
   assert.equal(result[0].description, 'Updated transfer');
   assert.equal(result[0].pending, true);
   assert.equal(result[0].updatedAt, '2026-09-16T14:00:00.000Z');
+});
+
+test('explicit provider linkage replaces pending with posted while preserving internal identity', () => {
+  const pending = normalize([
+    providerRecord({
+      externalTransactionId: 'provider-pending-1',
+      pending: true,
+      metadata: { lifecycle: 'pending' },
+    }),
+  ], undefined, '2026-09-16T12:00:00.000Z');
+  const posted = normalize([
+    providerRecord({
+      externalTransactionId: 'provider-posted-1',
+      pendingExternalTransactionId: 'provider-pending-1',
+      bookingDate: '2026-09-16',
+      description: 'Posted transfer',
+      pending: false,
+      metadata: { lifecycle: 'posted' },
+    }),
+  ], undefined, '2026-09-17T12:00:00.000Z');
+
+  const result = upsertBankTransactions(pending, posted);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, pending[0].id);
+  assert.equal(result[0].externalTransactionId, 'provider-posted-1');
+  assert.equal(result[0].pendingExternalTransactionId, 'provider-pending-1');
+  assert.equal(result[0].pending, false);
+  assert.equal(result[0].description, 'Posted transfer');
+  assert.equal(result[0].createdAt, '2026-09-16T12:00:00.000Z');
+  assert.equal(result[0].updatedAt, '2026-09-17T12:00:00.000Z');
+  assert.deepEqual(result[0].providerMetadata, { lifecycle: 'posted' });
+
+  const repeated = upsertBankTransactions(result, normalize([
+    providerRecord({
+      externalTransactionId: 'provider-posted-1',
+      pendingExternalTransactionId: 'provider-pending-1',
+      bookingDate: '2026-09-16',
+      description: 'Posted transfer',
+      pending: false,
+      metadata: { lifecycle: 'posted' },
+    }),
+  ], undefined, '2026-09-18T12:00:00.000Z'));
+  assert.equal(repeated.length, 1);
+  assert.equal(repeated[0].id, pending[0].id);
+  assert.equal(repeated[0].createdAt, pending[0].createdAt);
+});
+
+test('similar transaction without explicit provider linkage is not merged', () => {
+  const pending = normalize([providerRecord({
+    externalTransactionId: 'provider-pending-similar',
+    bookingDate: '2026-09-15',
+    description: 'Similar transfer',
+    pending: true,
+  })]);
+  const unrelatedPosted = normalize([providerRecord({
+    externalTransactionId: 'provider-posted-unrelated',
+    bookingDate: '2026-09-15',
+    description: 'Similar transfer',
+    pending: false,
+  })]);
+  const result = upsertBankTransactions(pending, unrelatedPosted);
+
+  assert.equal(result.length, 2);
+  assert.ok(result.some((item) => item.externalTransactionId === 'provider-pending-similar'));
+  assert.ok(result.some((item) => item.externalTransactionId === 'provider-posted-unrelated'));
+});
+
+test('explicitly linked pending and posted records in one provider page coalesce safely', () => {
+  const page = normalize([
+    providerRecord({ externalTransactionId: 'same-page-pending', pending: true }),
+    providerRecord({
+      externalTransactionId: 'same-page-posted',
+      pendingExternalTransactionId: 'same-page-pending',
+      pending: false,
+    }),
+  ]);
+  const result = upsertBankTransactions([], page);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, page[0].id);
+  assert.equal(result[0].externalTransactionId, 'same-page-posted');
+  assert.equal(result[0].pending, false);
 });
 
 test('multi-currency normalization uses existing FX coverage and never falls back to 1:1', () => {
@@ -209,4 +311,32 @@ test('bank transactions and incremental sync metadata survive an IndexedDB cold 
   assert.equal(reloaded.bankTransactions?.[0].cashAccountId, 'cash-stable-1');
   assert.equal(reloaded.bankTransactionSyncStates?.[0].cursor, 'mock-cursor-1');
   assert.equal(reloaded.bankTransactionSyncStates?.[0].lastSuccessfulSyncAt, '2026-09-16T12:00:00.000Z');
+});
+
+test('IndexedDB cold load preserves the final posted lifecycle state', async () => {
+  const pending = normalize([providerRecord({
+    externalTransactionId: 'provider-cold-pending',
+    pending: true,
+  })], undefined, '2026-09-16T12:00:00.000Z');
+  const posted = normalize([providerRecord({
+    externalTransactionId: 'provider-cold-posted',
+    pendingExternalTransactionId: 'provider-cold-pending',
+    bookingDate: '2026-09-17',
+    pending: false,
+  })], undefined, '2026-09-17T12:00:00.000Z');
+  const finalTransactions = upsertBankTransactions(pending, posted);
+
+  await saveUserPortfolio('banking-posted-cold-load-user', {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: [linkedAccount()],
+    bankConnections: [connection],
+    bankTransactions: finalTransactions,
+  });
+  const reloaded = await loadUserPortfolio('banking-posted-cold-load-user');
+
+  assert.deepEqual(reloaded.bankTransactions, finalTransactions);
+  assert.equal(reloaded.bankTransactions?.length, 1);
+  assert.equal(reloaded.bankTransactions?.[0].id, pending[0].id);
+  assert.equal(reloaded.bankTransactions?.[0].externalTransactionId, 'provider-cold-posted');
+  assert.equal(reloaded.bankTransactions?.[0].pending, false);
 });

@@ -11,6 +11,8 @@ import { getLinkedCashAccountIdentity } from './cashAccounts';
 
 export interface ProviderTransactionRecord {
   externalTransactionId: string;
+  /** Explicit provider evidence that this posted record replaces the named pending record. */
+  pendingExternalTransactionId?: string | null;
   externalAccountId: string;
   bookingDate: string;
   authorizedDate?: string | null;
@@ -89,6 +91,7 @@ export const normalizeProviderTransactions = (
       providerName: context.providerName,
       connectionId: context.connectionId,
       externalTransactionId: record.externalTransactionId,
+      pendingExternalTransactionId: record.pendingExternalTransactionId ?? null,
       cashAccountId: account.id,
       externalAccountId: record.externalAccountId,
       bookingDate: record.bookingDate,
@@ -118,19 +121,50 @@ export const upsertBankTransactions = (
   const existingByIdentity = new Map(
     existingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
-  const incomingIdentities = new Set(incomingTransactions.map(getBankTransactionIdentity));
-  const retained = existingTransactions.filter(
-    (transaction) => !incomingIdentities.has(getBankTransactionIdentity(transaction))
+  const incomingByIdentity = new Map(
+    incomingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
-  const upserted = incomingTransactions.map((transaction) => {
-    const existing = existingByIdentity.get(getBankTransactionIdentity(transaction));
-    return {
-      ...existing,
-      ...transaction,
-      id: existing?.id ?? transaction.id,
-      createdAt: existing?.createdAt ?? transaction.createdAt,
-    };
-  });
+  const incomingIdentities = new Set(incomingTransactions.map(getBankTransactionIdentity));
+  const explicitlyReplacedPendingIdentities = new Set(
+    incomingTransactions.flatMap((transaction) => {
+      if (transaction.pending || !transaction.pendingExternalTransactionId) return [];
+      const pendingIdentity = getBankTransactionIdentity({
+        providerName: transaction.providerName,
+        externalAccountId: transaction.externalAccountId,
+        externalTransactionId: transaction.pendingExternalTransactionId,
+      });
+      const pendingTransaction = existingByIdentity.get(pendingIdentity) ?? incomingByIdentity.get(pendingIdentity);
+      return pendingTransaction?.pending ? [pendingIdentity] : [];
+    })
+  );
+  const retained = existingTransactions.filter(
+    (transaction) => {
+      const identity = getBankTransactionIdentity(transaction);
+      return !incomingIdentities.has(identity) && !explicitlyReplacedPendingIdentities.has(identity);
+    }
+  );
+  const upserted = incomingTransactions
+    .filter((transaction) => !explicitlyReplacedPendingIdentities.has(getBankTransactionIdentity(transaction)))
+    .map((transaction) => {
+      const exactExisting = existingByIdentity.get(getBankTransactionIdentity(transaction));
+      const linkedPendingIdentity = !transaction.pending && transaction.pendingExternalTransactionId
+        ? getBankTransactionIdentity({
+            providerName: transaction.providerName,
+            externalAccountId: transaction.externalAccountId,
+            externalTransactionId: transaction.pendingExternalTransactionId,
+          })
+        : null;
+      const linkedPending = linkedPendingIdentity
+        ? existingByIdentity.get(linkedPendingIdentity) ?? incomingByIdentity.get(linkedPendingIdentity)
+        : undefined;
+      const existing = exactExisting ?? (linkedPending?.pending ? linkedPending : undefined);
+      return {
+        ...existing,
+        ...transaction,
+        id: existing?.id ?? transaction.id,
+        createdAt: existing?.createdAt ?? transaction.createdAt,
+      };
+    });
   return [...retained, ...upserted];
 };
 

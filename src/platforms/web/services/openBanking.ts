@@ -203,7 +203,8 @@ const buildMockAccounts = (
 ];
 
 const buildMockTransactions = (
-  institutionId: string
+  institutionId: string,
+  lifecycle: 'pending' | 'posted'
 ): ProviderTransactionRecord[] => [
   {
     externalTransactionId: `${institutionId}:rent-2026-09`,
@@ -240,6 +241,37 @@ const buildMockTransactions = (
     description: 'Maintenance authorization',
     pending: true,
     metadata: { category: 'maintenance' },
+  },
+  {
+    externalTransactionId: lifecycle === 'pending'
+      ? `${institutionId}:card-lifecycle-pending`
+      : `${institutionId}:card-lifecycle-posted`,
+    ...(lifecycle === 'posted'
+      ? { pendingExternalTransactionId: `${institutionId}:card-lifecycle-pending` }
+      : {}),
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: lifecycle === 'pending' ? '2026-09-14' : '2026-09-15',
+    authorizedDate: '2026-09-14',
+    amount: 48,
+    direction: 'debit',
+    currency: 'EUR',
+    description: 'Card purchase',
+    counterparty: 'Local supplier',
+    pending: lifecycle === 'pending',
+    metadata: { category: 'card', lifecycle },
+  },
+  {
+    externalTransactionId: `${institutionId}:card-similar-unrelated`,
+    externalAccountId: `${institutionId}:checking`,
+    bookingDate: '2026-09-15',
+    authorizedDate: '2026-09-14',
+    amount: 48,
+    direction: 'debit',
+    currency: 'EUR',
+    description: 'Card purchase',
+    counterparty: 'Local supplier',
+    pending: false,
+    metadata: { category: 'card', lifecycle: 'unrelated' },
   },
   {
     externalTransactionId: `${institutionId}:usd-interest`,
@@ -318,9 +350,10 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
     ? {
         async fetchTransactions(connection: BankConnection, _accounts: CashAccount[], cursor?: string | null) {
           await delay(320);
+          const lifecycle = cursor ? 'posted' : 'pending';
           return {
-            transactions: buildMockTransactions(connection.institutionId),
-            nextCursor: cursor ?? `${connection.id}:mock-v1`,
+            transactions: buildMockTransactions(connection.institutionId, lifecycle),
+            nextCursor: `${connection.id}:mock-v2`,
             hasMore: false,
           };
         },
