@@ -292,6 +292,7 @@ test('repeated mock sync remains idempotent in the rendered rows', async () => {
     incomingTransactions: normalized,
     removedTransactions: secondPage.removedTransactions,
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-16T13:00:00.000Z',
   }).transactions;
   const html = renderView(twiceSynced, accounts);

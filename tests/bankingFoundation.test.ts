@@ -6,6 +6,7 @@ import {
   createBankConnection,
   createLinkedCashAccount,
   createManualCashAccount,
+  canRefreshBankConnection,
   deactivateLinkedCashAccountsForConnection,
   upsertLinkedCashAccounts,
 } from '../src/common/utils/cashAccounts';
@@ -215,6 +216,84 @@ test('same external account ID under different providers does not collide', () =
   assert.notEqual(mockTransaction.id, tinkTransaction.id);
 });
 
+test('same provider account and transaction identities remain distinct across connections', () => {
+  const secondConnection = createBankConnection({
+    id: 'connection-mock-2',
+    userId: connection.userId,
+    providerName: connection.providerName,
+    institutionName: connection.institutionName,
+    institutionId: connection.institutionId,
+  });
+  const externalAccountId = 'shared-provider-account';
+  const firstAccount = linkedAccount({
+    id: 'cash-connection-1',
+    connectionId: connection.id,
+    externalAccountId,
+  });
+  const secondAccount = linkedAccount({
+    id: 'cash-connection-2',
+    connectionId: secondConnection.id,
+    externalAccountId,
+  });
+  const accounts = upsertLinkedCashAccounts([], [firstAccount, secondAccount]);
+  const record = providerRecord({
+    externalAccountId,
+    externalTransactionId: 'shared-provider-transaction',
+  });
+  const firstTransaction = normalizeProviderTransactions([record], {
+    providerName: 'mock-bank',
+    connectionId: connection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+  const secondTransaction = normalizeProviderTransactions([record], {
+    providerName: 'mock-bank',
+    connectionId: secondConnection.id,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+  const transactions = upsertBankTransactions([], [firstTransaction, secondTransaction]);
+  const repeated = upsertBankTransactions(transactions, [firstTransaction, secondTransaction]);
+
+  assert.equal(accounts.length, 2);
+  assert.equal(firstTransaction.cashAccountId, firstAccount.id);
+  assert.equal(secondTransaction.cashAccountId, secondAccount.id);
+  assert.notEqual(firstTransaction.id, secondTransaction.id);
+  assert.equal(transactions.length, 2);
+  assert.equal(repeated.length, 2);
+  assert.deepEqual(
+    repeated.map((item) => item.id).sort(),
+    transactions.map((item) => item.id).sort()
+  );
+});
+
+test('legacy linked identities adopt one connection scope without changing stable internal IDs', () => {
+  const legacyAccount = linkedAccount({
+    id: 'legacy-cash-id',
+    connectionId: null,
+  });
+  const incomingAccount = linkedAccount({ id: 'new-provider-account-id' });
+  const accounts = upsertLinkedCashAccounts([legacyAccount], [incomingAccount]);
+  const incomingTransaction = normalize([providerRecord()], accounts)[0];
+  const legacyTransaction: BankTransaction = {
+    ...incomingTransaction,
+    id: 'legacy-bank-transaction-id',
+    connectionId: '',
+  };
+  const transactions = upsertBankTransactions([legacyTransaction], [incomingTransaction]);
+
+  assert.equal(accounts.length, 1);
+  assert.equal(accounts[0].id, legacyAccount.id);
+  assert.equal(accounts[0].connectionId, connection.id);
+  assert.equal(transactions.length, 1);
+  assert.equal(transactions[0].id, legacyTransaction.id);
+  assert.equal(transactions[0].connectionId, connection.id);
+});
+
 test('inactive linked account rejects new transaction normalization', () => {
   const inactive = linkedAccount({ status: 'inactive' });
 
@@ -244,6 +323,7 @@ test('repeated mock transaction fetch is idempotent', async () => {
     incomingTransactions: normalize(secondPage.transactions, accounts, '2026-09-16T13:00:00.000Z'),
     removedTransactions: secondPage.removedTransactions,
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-16T13:00:00.000Z',
   });
   const second = secondLifecycle.transactions;
@@ -253,6 +333,7 @@ test('repeated mock transaction fetch is idempotent', async () => {
     incomingTransactions: normalize(thirdPage.transactions, accounts, '2026-09-16T14:00:00.000Z'),
     removedTransactions: thirdPage.removedTransactions,
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-16T14:00:00.000Z',
   }).transactions;
 
@@ -423,6 +504,7 @@ test('explicit removal persists a tombstone while absence alone does not remove 
     incomingTransactions: [],
     removedTransactions: [],
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-17T12:00:00.000Z',
   });
   assert.equal(absent.transactions[0].lifecycleStatus, 'active');
@@ -438,6 +520,7 @@ test('explicit removal persists a tombstone while absence alone does not remove 
     incomingTransactions: [],
     removedTransactions: [removedRecord],
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-17T12:00:00.000Z',
   });
   assert.equal(removed.transactions.length, 1);
@@ -455,6 +538,7 @@ test('explicit removal persists a tombstone while absence alone does not remove 
     incomingTransactions: [],
     removedTransactions: [removedRecord],
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-18T12:00:00.000Z',
   });
   assert.equal(repeated.transactions[0].removedAt, removed.transactions[0].removedAt);
@@ -477,6 +561,7 @@ test('explicit reversal links both records and retains a coherent opposite finan
     existingTransactions: original,
     incomingTransactions: reversal,
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-17T12:00:00.000Z',
   });
   const storedOriginal = result.transactions.find((item) => item.externalTransactionId === 'provider-original-1');
@@ -596,6 +681,40 @@ test('disconnected account preserves transaction and reconciliation history', as
   assert.deepEqual(reloaded.bankTransactionReconciliations, [reconciliation]);
 });
 
+test('disconnected connections require reconnect and restore inactive accounts coherently', () => {
+  const activeLinked = linkedAccount({ id: 'stable-reconnect-account' });
+  const historicalTransaction = normalize([providerRecord()], [activeLinked])[0];
+  const disconnected = {
+    ...connection,
+    connectionStatus: 'disconnected' as const,
+    linkedAccountIds: [],
+  };
+  const inactiveAccounts = deactivateLinkedCashAccountsForConnection(
+    [activeLinked],
+    connection.id,
+    '2026-09-17T12:00:00.000Z'
+  );
+
+  assert.equal(canRefreshBankConnection(disconnected), false);
+  assert.equal(inactiveAccounts[0].status, 'inactive');
+
+  const reconnectedAccounts = upsertLinkedCashAccounts(inactiveAccounts, [
+    linkedAccount({ id: 'provider-reconnect-account', status: 'active' }),
+  ]);
+  const reconnected = {
+    ...disconnected,
+    connectionStatus: 'connected' as const,
+    linkedAccountIds: [reconnectedAccounts[0].id],
+  };
+
+  assert.equal(canRefreshBankConnection(reconnected), true);
+  assert.equal(reconnectedAccounts.length, 1);
+  assert.equal(reconnectedAccounts[0].id, activeLinked.id);
+  assert.equal(reconnectedAccounts[0].status, 'active');
+  assert.equal(reconnected.linkedAccountIds[0], activeLinked.id);
+  assert.equal(historicalTransaction.cashAccountId, activeLinked.id);
+});
+
 test('mixed-currency accounts and original transaction values survive an IndexedDB cold load', async () => {
   const currencies = ['EUR', 'USD', 'ARS', 'GBP'] as const;
   const accounts = currencies.map((currency) => linkedAccount({
@@ -691,6 +810,7 @@ test('IndexedDB cold load preserves removed and explicitly reversed transaction 
       reason: 'provider-deleted',
     }],
     providerName: 'mock-bank',
+    connectionId: connection.id,
     syncedAt: '2026-09-17T12:00:00.000Z',
   });
   await saveUserPortfolio('banking-lifecycle-cold-load-user', {

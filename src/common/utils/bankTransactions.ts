@@ -7,7 +7,6 @@ import type {
 } from '../types';
 import type { DisplayCurrency } from '../types/settings';
 import { convertCurrencyWithCoverage, type CurrencyRates } from './currency';
-import { getLinkedCashAccountIdentity } from './cashAccounts';
 
 export interface ProviderTransactionRecord {
   externalTransactionId: string;
@@ -58,6 +57,19 @@ export interface BankTransactionNormalizationContext {
 
 export const getBankTransactionIdentity = (
   transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'> &
+    Partial<Pick<BankTransaction, 'cashAccountId' | 'connectionId'>>
+) => {
+  const accountIdentity = transaction.externalAccountId
+    ? `external:${transaction.externalAccountId}`
+    : `cash:${transaction.cashAccountId ?? 'unknown-account'}`;
+  const connectionIdentity = transaction.connectionId
+    ? `connection:${transaction.connectionId}`
+    : 'legacy-connection';
+  return `${connectionIdentity}:${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
+};
+
+const getLegacyBankTransactionIdentity = (
+  transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'> &
     Partial<Pick<BankTransaction, 'cashAccountId'>>
 ) => {
   const accountIdentity = transaction.externalAccountId
@@ -67,10 +79,11 @@ export const getBankTransactionIdentity = (
 };
 
 const buildTransactionId = (
+  connectionId: string,
   providerName: OpenBankingProviderName,
   externalAccountId: string,
   externalTransactionId: string
-) => `bank-tx:${encodeURIComponent(providerName)}:${encodeURIComponent(externalAccountId)}:${encodeURIComponent(externalTransactionId)}`;
+) => `bank-tx:${encodeURIComponent(connectionId)}:${encodeURIComponent(providerName)}:${encodeURIComponent(externalAccountId)}:${encodeURIComponent(externalTransactionId)}`;
 
 export const normalizeProviderTransactions = (
   records: ProviderTransactionRecord[],
@@ -79,16 +92,16 @@ export const normalizeProviderTransactions = (
   const accountsByExternalIdentity = new Map(
     context.accounts
       .filter((account) =>
-        account.connectionId === context.connectionId && account.status === 'active'
+        account.connectionId === context.connectionId &&
+        account.providerName === context.providerName &&
+        account.status === 'active'
       )
-      .map((account) => [getLinkedCashAccountIdentity(account), account] as const)
+      .map((account) => [account.externalAccountId, account] as const)
       .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
   );
 
   return records.map((record) => {
-    const account = accountsByExternalIdentity.get(
-      `${context.providerName}:${record.externalAccountId}`
-    );
+    const account = accountsByExternalIdentity.get(record.externalAccountId);
     if (!account) {
       throw new Error(`Provider transaction references an unknown linked account: ${record.externalAccountId}`);
     }
@@ -110,7 +123,12 @@ export const normalizeProviderTransactions = (
     const sameCurrency = record.currency === context.reportingCurrency;
 
     return {
-      id: buildTransactionId(context.providerName, record.externalAccountId, record.externalTransactionId),
+      id: buildTransactionId(
+        context.connectionId,
+        context.providerName,
+        record.externalAccountId,
+        record.externalTransactionId
+      ),
       providerName: context.providerName,
       connectionId: context.connectionId,
       externalTransactionId: record.externalTransactionId,
@@ -159,11 +177,34 @@ export const upsertBankTransactions = (
   const existingByIdentity = new Map(
     existingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
+  const legacyExistingByIdentity = new Map(
+    existingTransactions
+      .filter((transaction) => !transaction.connectionId)
+      .map((transaction) => [getLegacyBankTransactionIdentity(transaction), transaction])
+  );
   const incomingByIdentity = new Map(
     deduplicatedIncomingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
   const incomingIdentities = new Set(
     deduplicatedIncomingTransactions.map(getBankTransactionIdentity)
+  );
+  const claimedLegacyTransactionIds = new Set<string>();
+  const matchedExistingByIncomingIdentity = new Map<string, BankTransaction>();
+  for (const transaction of deduplicatedIncomingTransactions) {
+    const identity = getBankTransactionIdentity(transaction);
+    const exact = existingByIdentity.get(identity);
+    if (exact) {
+      matchedExistingByIncomingIdentity.set(identity, exact);
+      continue;
+    }
+    const legacy = legacyExistingByIdentity.get(getLegacyBankTransactionIdentity(transaction));
+    if (legacy && !claimedLegacyTransactionIds.has(legacy.id)) {
+      claimedLegacyTransactionIds.add(legacy.id);
+      matchedExistingByIncomingIdentity.set(identity, legacy);
+    }
+  }
+  const matchedExistingIds = new Set(
+    [...matchedExistingByIncomingIdentity.values()].map((transaction) => transaction.id)
   );
   const explicitlyReplacedPendingIdentities = new Set(
     deduplicatedIncomingTransactions.flatMap((transaction) => {
@@ -172,32 +213,54 @@ export const upsertBankTransactions = (
         providerName: transaction.providerName,
         externalAccountId: transaction.externalAccountId,
         cashAccountId: transaction.cashAccountId,
+        connectionId: transaction.connectionId,
         externalTransactionId: transaction.pendingExternalTransactionId,
       });
-      const pendingTransaction = existingByIdentity.get(pendingIdentity) ?? incomingByIdentity.get(pendingIdentity);
-      return pendingTransaction?.pending ? [pendingIdentity] : [];
+      const pendingTransaction = existingByIdentity.get(pendingIdentity) ??
+        legacyExistingByIdentity.get(getLegacyBankTransactionIdentity({
+          providerName: transaction.providerName,
+          externalAccountId: transaction.externalAccountId,
+          cashAccountId: transaction.cashAccountId,
+          externalTransactionId: transaction.pendingExternalTransactionId,
+        })) ??
+        incomingByIdentity.get(pendingIdentity);
+      return pendingTransaction?.pending
+        ? [getBankTransactionIdentity(pendingTransaction)]
+        : [];
     })
   );
   const retained = existingTransactions.filter(
     (transaction) => {
       const identity = getBankTransactionIdentity(transaction);
-      return !incomingIdentities.has(identity) && !explicitlyReplacedPendingIdentities.has(identity);
+      return !incomingIdentities.has(identity) &&
+        !explicitlyReplacedPendingIdentities.has(identity) &&
+        !matchedExistingIds.has(transaction.id);
     }
   );
   const upserted = deduplicatedIncomingTransactions
     .filter((transaction) => !explicitlyReplacedPendingIdentities.has(getBankTransactionIdentity(transaction)))
     .map((transaction) => {
-      const exactExisting = existingByIdentity.get(getBankTransactionIdentity(transaction));
+      const exactExisting = matchedExistingByIncomingIdentity.get(
+        getBankTransactionIdentity(transaction)
+      );
       const linkedPendingIdentity = !transaction.pending && transaction.pendingExternalTransactionId
         ? getBankTransactionIdentity({
           providerName: transaction.providerName,
           externalAccountId: transaction.externalAccountId,
           cashAccountId: transaction.cashAccountId,
+          connectionId: transaction.connectionId,
           externalTransactionId: transaction.pendingExternalTransactionId,
         })
         : null;
       const linkedPending = linkedPendingIdentity
-        ? existingByIdentity.get(linkedPendingIdentity) ?? incomingByIdentity.get(linkedPendingIdentity)
+        ? existingByIdentity.get(linkedPendingIdentity) ??
+          legacyExistingByIdentity.get(getLegacyBankTransactionIdentity({
+            providerName: transaction.providerName,
+            externalAccountId: transaction.externalAccountId,
+            cashAccountId: transaction.cashAccountId,
+            externalTransactionId: transaction.pendingExternalTransactionId!,
+          })) ??
+          incomingByIdentity.get(linkedPendingIdentity)
         : undefined;
       const existing = exactExisting ?? (linkedPending?.pending ? linkedPending : undefined);
       const preserveTerminalLifecycle = exactExisting &&
@@ -231,6 +294,7 @@ export const applyBankTransactionProviderLifecycle = (args: {
   incomingTransactions: BankTransaction[];
   removedTransactions?: ProviderRemovedTransactionRecord[];
   providerName: OpenBankingProviderName;
+  connectionId: string;
   syncedAt: string;
 }): { transactions: BankTransaction[]; lifecycleEvents: BankTransactionLifecycleEvent[] } => {
   let transactions = upsertBankTransactions(args.existingTransactions, args.incomingTransactions);
@@ -239,10 +303,19 @@ export const applyBankTransactionProviderLifecycle = (args: {
   for (const removed of args.removedTransactions ?? []) {
     const identity = getBankTransactionIdentity({
       providerName: args.providerName,
+      connectionId: args.connectionId,
       externalAccountId: removed.externalAccountId,
       externalTransactionId: removed.externalTransactionId,
     });
-    const existing = transactions.find((transaction) => getBankTransactionIdentity(transaction) === identity);
+    const existing = transactions.find((transaction) =>
+      getBankTransactionIdentity(transaction) === identity ||
+      (!transaction.connectionId &&
+        getLegacyBankTransactionIdentity(transaction) === getLegacyBankTransactionIdentity({
+          providerName: args.providerName,
+          externalAccountId: removed.externalAccountId,
+          externalTransactionId: removed.externalTransactionId,
+        }))
+    );
     if (!existing) continue;
     transactions = transactions.map((transaction) => transaction.id === existing.id ? {
       ...transaction,
@@ -265,12 +338,22 @@ export const applyBankTransactionProviderLifecycle = (args: {
   for (const reversal of reversalTransactions) {
     const originalIdentity = getBankTransactionIdentity({
       providerName: reversal.providerName,
+      connectionId: reversal.connectionId,
+      externalAccountId: reversal.externalAccountId,
+      cashAccountId: reversal.cashAccountId,
+      externalTransactionId: reversal.reversesExternalTransactionId!,
+    });
+    const originalLegacyIdentity = getLegacyBankTransactionIdentity({
+      providerName: reversal.providerName,
       externalAccountId: reversal.externalAccountId,
       cashAccountId: reversal.cashAccountId,
       externalTransactionId: reversal.reversesExternalTransactionId!,
     });
     const original = transactions.find((transaction) =>
-      transaction.id !== reversal.id && getBankTransactionIdentity(transaction) === originalIdentity
+      transaction.id !== reversal.id &&
+      (getBankTransactionIdentity(transaction) === originalIdentity ||
+        (!transaction.connectionId &&
+          getLegacyBankTransactionIdentity(transaction) === originalLegacyIdentity))
     );
     if (!original) continue;
     transactions = transactions.map((transaction) => {

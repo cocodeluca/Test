@@ -177,6 +177,13 @@ export const groupCashAccountsByCurrency = (accounts: CashAccount[]) =>
   }, {} as Record<DisplayCurrency, number>);
 
 export const getLinkedCashAccountIdentity = (
+  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'externalAccountId' | 'connectionId'>
+): string | null =>
+  account.sourceType === 'linked' && account.providerName && account.externalAccountId
+    ? `${account.connectionId ? `connection:${account.connectionId}` : 'legacy-connection'}:${account.providerName}:${account.externalAccountId}`
+    : null;
+
+const getLegacyLinkedCashAccountIdentity = (
   account: Pick<CashAccount, 'sourceType' | 'providerName' | 'externalAccountId'>
 ): string | null =>
   account.sourceType === 'linked' && account.providerName && account.externalAccountId
@@ -206,13 +213,34 @@ export const upsertLinkedCashAccounts = (
       .map((account) => [getLinkedCashAccountIdentity(account), account] as const)
       .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
   );
+  const legacyExistingByIdentity = new Map(
+    existingAccounts
+      .filter((account) => !account.connectionId)
+      .map((account) => [getLegacyLinkedCashAccountIdentity(account), account] as const)
+      .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
+  );
+  const claimedLegacyAccountIds = new Set<string>();
+  const matchedExistingAccounts = deduplicatedIncomingAccounts.map((account) => {
+    const identity = getLinkedCashAccountIdentity(account);
+    const exact = identity ? existingByIdentity.get(identity) : undefined;
+    if (exact) return exact;
+    const legacyIdentity = getLegacyLinkedCashAccountIdentity(account);
+    const legacy = legacyIdentity ? legacyExistingByIdentity.get(legacyIdentity) : undefined;
+    if (!legacy || claimedLegacyAccountIds.has(legacy.id)) return undefined;
+    claimedLegacyAccountIds.add(legacy.id);
+    return legacy;
+  });
+  const matchedExistingIds = new Set(
+    matchedExistingAccounts
+      .filter((account): account is CashAccount => Boolean(account))
+      .map((account) => account.id)
+  );
   const retained = existingAccounts.filter((account) => {
     const identity = getLinkedCashAccountIdentity(account);
-    return identity === null || !incomingIdentities.has(identity);
+    return (identity === null || !incomingIdentities.has(identity)) && !matchedExistingIds.has(account.id);
   });
-  const upserted = deduplicatedIncomingAccounts.map((account) => {
-    const identity = getLinkedCashAccountIdentity(account);
-    const existing = identity ? existingByIdentity.get(identity) : undefined;
+  const upserted = deduplicatedIncomingAccounts.map((account, index) => {
+    const existing = matchedExistingAccounts[index];
     return normalizeCashAccount({
       ...existing,
       ...account,
@@ -223,6 +251,10 @@ export const upsertLinkedCashAccounts = (
 
   return [...retained, ...upserted];
 };
+
+export const canRefreshBankConnection = (
+  connection: Pick<BankConnection, 'connectionStatus'>
+) => connection.connectionStatus !== 'disconnected';
 
 export const deactivateLinkedCashAccountsForConnection = (
   accounts: CashAccount[],

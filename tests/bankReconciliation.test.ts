@@ -832,6 +832,7 @@ test('cold load preserves removed transaction and reversed reconciliation audit 
       reason: 'provider-deleted',
     }],
     providerName: bankTransaction.providerName,
+    connectionId: bankTransaction.connectionId,
     syncedAt: '2026-09-17T12:00:00.000Z',
   });
   const reversed = applyBankTransactionLifecycleToReconciliation({
@@ -866,6 +867,48 @@ test('cold load preserves removed transaction and reversed reconciliation audit 
   );
   assert.equal(reloaded.bankTransactionReconciliations?.[0].lifecycleReason, 'provider-removed');
   assert.deepEqual(reloaded.rentPayments, []);
+});
+
+test('cold load preserves an active matched bank-sync payment and obligation allocation', async () => {
+  const bankTransaction = transaction();
+  const confirmed = confirmBankTransactionMatch({
+    transaction: bankTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context(),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  await saveUserPortfolio('active-bank-sync-cold-load-user', {
+    ...structuredClone(emptyPortfolioData),
+    properties: [property],
+    rentReceivables: [receivable],
+    rentPayments: confirmed.rentPayments,
+    bankTransactions: [bankTransaction],
+    bankTransactionReconciliations: confirmed.reconciliations,
+  });
+  const reloaded = await loadUserPortfolio('active-bank-sync-cold-load-user');
+  const reloadedPayment = reloaded.rentPayments?.[0];
+  const reloadedReconciliation = reloaded.bankTransactionReconciliations?.[0];
+  const reloadedView = buildRentReceivableViews(
+    reloaded.rentReceivables ?? [],
+    reloaded.rentPayments ?? [],
+    reloaded.properties,
+    new Date('2026-09-16T12:00:00Z')
+  )[0];
+
+  assert.deepEqual(reloaded.bankTransactions, [bankTransaction]);
+  assert.equal(reloadedReconciliation?.status, 'matched');
+  assert.equal(reloadedReconciliation?.paymentId, reloadedPayment?.id);
+  assert.equal(reloadedReconciliation?.paymentLinkType, 'created-bank-sync');
+  assert.equal(reloadedPayment?.source, 'bank_sync');
+  assert.deepEqual(reloadedPayment?.allocations, [{
+    receivableId: receivable.id,
+    amount: receivable.expectedAmount,
+  }]);
+  assert.equal(reloadedView.outstandingAmount, 0);
+  assert.equal(reloadedView.status, 'PAID');
 });
 
 test('exact existing manual rent payment is linked without duplication or mutation', () => {
@@ -929,6 +972,84 @@ test('exact existing manual expense payment is linked without duplication or mut
   assert.equal(confirmed.expensePayments[0].source, 'manual');
   assert.equal(confirmed.reconciliations[0].paymentId, manualPayment.id);
   assert.equal(confirmed.reconciliations[0].paymentLinkType, 'linked-manual');
+});
+
+test('provider removal and reversal preserve a linked manual payment and coherent provenance', () => {
+  const manualPayment = {
+    id: 'manual-rent-lifecycle',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const bankTransaction = transaction();
+  const confirmed = confirmBankTransactionMatch({
+    transaction: bankTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context({ rentPayments: [manualPayment] }),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const removedLifecycle = applyBankTransactionProviderLifecycle({
+    existingTransactions: [bankTransaction],
+    incomingTransactions: [],
+    removedTransactions: [{
+      externalTransactionId: bankTransaction.externalTransactionId,
+      externalAccountId: bankTransaction.externalAccountId!,
+      reason: 'provider-deleted',
+    }],
+    providerName: bankTransaction.providerName,
+    connectionId: bankTransaction.connectionId,
+    syncedAt: '2026-09-17T12:00:00.000Z',
+  });
+  const removed = applyBankTransactionLifecycleToReconciliation({
+    lifecycleEvents: removedLifecycle.lifecycleEvents,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+    timestamp: '2026-09-17T12:00:00.000Z',
+  });
+  const reversalTransaction = transaction({
+    id: 'bank-tx-manual-link-reversal',
+    externalTransactionId: 'provider-manual-link-reversal',
+    reversesExternalTransactionId: bankTransaction.externalTransactionId,
+    amount: -1450,
+    lifecycleStatus: 'reversal',
+  });
+  const reversedLifecycle = applyBankTransactionProviderLifecycle({
+    existingTransactions: [bankTransaction],
+    incomingTransactions: [reversalTransaction],
+    providerName: bankTransaction.providerName,
+    connectionId: bankTransaction.connectionId,
+    syncedAt: '2026-09-17T13:00:00.000Z',
+  });
+  const reversed = applyBankTransactionLifecycleToReconciliation({
+    lifecycleEvents: reversedLifecycle.lifecycleEvents,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+    timestamp: '2026-09-17T13:00:00.000Z',
+  });
+
+  for (const result of [removed, reversed]) {
+    assert.deepEqual(result.rentPayments, [manualPayment]);
+    assert.equal(result.reconciliations[0].paymentId, manualPayment.id);
+    assert.equal(result.reconciliations[0].paymentLinkType, 'linked-manual');
+    assert.equal(result.reconciliations[0].historicalPaymentId, undefined);
+  }
+  assert.equal(removed.reconciliations[0].status, 'removed');
+  assert.equal(removed.reconciliations[0].lifecycleReason, 'provider-removed');
+  assert.equal(reversed.reconciliations[0].status, 'reversed');
+  assert.equal(reversed.reconciliations[0].lifecycleReason, 'provider-reversed');
+  assert.equal(
+    reversed.reconciliations[0].lifecycleTransactionId,
+    reversalTransaction.id
+  );
 });
 
 test('undo removes a manual-payment reconciliation link but preserves the manual payment', () => {

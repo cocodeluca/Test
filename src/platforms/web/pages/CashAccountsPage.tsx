@@ -30,6 +30,7 @@ import type {
 } from '../../../common/types';
 import {
   calculateCashAccountSummary,
+  canRefreshBankConnection,
   cashAccountTypeLabels,
   createManualCashAccount,
   deactivateLinkedCashAccountsForConnection,
@@ -252,6 +253,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         incomingTransactions: normalized,
         removedTransactions: page.removedTransactions,
         providerName: connection.providerName,
+        connectionId: connection.id,
         syncedAt,
       });
       const reconciliationLifecycle = applyBankTransactionLifecycleToReconciliation({
@@ -396,6 +398,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleRefreshConnection = async (connection: BankConnection) => {
+    if (!canRefreshBankConnection(connection)) return;
     setIsRefreshingConnectionId(connection.id);
     setConnectionMessage(null);
     try {
@@ -650,7 +653,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                       <p className={`mt-2 text-sm ${appTextMutedClass}`}>{providerLabels[connection.providerName]} · {connection.linkedAccountIds.length} linked account{connection.linkedAccountIds.length === 1 ? '' : 's'}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isRefreshingConnectionId === connection.id} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
+                      <button type="button" disabled={isRefreshingConnectionId === connection.id || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
                       <button type="button" disabled={isRefreshingConnectionId === connection.id} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t('common.reconnect')}</button>
                       <button type="button" disabled={isRefreshingConnectionId === connection.id} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
                     </div>
