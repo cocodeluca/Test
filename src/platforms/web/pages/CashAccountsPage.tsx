@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2,
   Landmark,
@@ -33,25 +33,25 @@ import {
   canRefreshBankConnection,
   cashAccountTypeLabels,
   createManualCashAccount,
-  deactivateLinkedCashAccountsForConnection,
-  getLinkedCashAccountIdentity,
   getCashAccountBalance,
   getCashAccountDisplayName,
   providerLabels,
   syncStatusLabels,
-  upsertLinkedCashAccounts,
 } from '../../../common/utils/cashAccounts';
+import { normalizeProviderTransactions } from '../../../common/utils/bankTransactions';
 import {
-  applyBankTransactionProviderLifecycle,
-  normalizeProviderTransactions,
-  upsertBankTransactionSyncState,
-} from '../../../common/utils/bankTransactions';
-import {
-  applyBankTransactionLifecycleToReconciliation,
   confirmBankTransactionMatch,
   ignoreBankTransaction,
   unmatchBankTransaction,
 } from '../../../common/utils/bankReconciliation';
+import {
+  applyBankConnectionAccountResult,
+  applyBankConnectionDisconnect,
+  applyBankConnectionSyncFailure,
+  applyBankConnectionTransactionResult,
+  canRunBankConnectionRefresh,
+  type BankingConnectionOperationState,
+} from '../../../common/utils/bankingConnectionOperations';
 import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
 import { currencyOptions } from '../../../common/utils/currency';
 import { formatCurrencyValue, getLocalizedCurrencyLabel } from '../../../common/utils/formatting';
@@ -148,11 +148,77 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   const [manualEditorSection, setManualEditorSection] = useState<ManualAccountEditorSection>('basic');
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isRefreshingConnectionId, setIsRefreshingConnectionId] = useState<string | null>(null);
+  const [refreshingConnectionIds, setRefreshingConnectionIds] = useState<Set<string>>(() => new Set());
   const [providerName, setProviderName] = useState<OpenBankingProviderName>('mock-bank');
   const [institutionName, setInstitutionName] = useState('Linked institution');
   const [mockScenario, setMockScenario] = useState<'success' | 'needs-reauth' | 'error'>('success');
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const connectionOperationQueuesRef = useRef(new Map<string, Promise<void>>());
+  const bankingStateRef = useRef<BankingConnectionOperationState>({
+    cashAccounts,
+    bankConnections,
+    bankTransactions,
+    bankTransactionReconciliations,
+    bankTransactionSyncStates,
+    rentPayments,
+    expensePayments,
+  });
+  bankingStateRef.current = {
+    cashAccounts,
+    bankConnections,
+    bankTransactions,
+    bankTransactionReconciliations,
+    bankTransactionSyncStates,
+    rentPayments,
+    expensePayments,
+  };
+
+  const commitBankingState = (
+    update: (current: BankingConnectionOperationState) => BankingConnectionOperationState
+  ) => {
+    const current = bankingStateRef.current;
+    const next = update(current);
+    bankingStateRef.current = next;
+    if (next.cashAccounts !== current.cashAccounts) onUpdateCashAccounts(next.cashAccounts);
+    if (next.bankConnections !== current.bankConnections) onUpdateBankConnections(next.bankConnections);
+    if (next.bankTransactions !== current.bankTransactions) onUpdateBankTransactions(next.bankTransactions);
+    if (next.bankTransactionReconciliations !== current.bankTransactionReconciliations) {
+      onUpdateBankTransactionReconciliations(next.bankTransactionReconciliations);
+    }
+    if (next.bankTransactionSyncStates !== current.bankTransactionSyncStates) {
+      onUpdateBankTransactionSyncStates(next.bankTransactionSyncStates);
+    }
+    if (next.rentPayments !== current.rentPayments) {
+      onUpdateRentCollection(rentReceivables, next.rentPayments);
+    }
+    if (next.expensePayments !== current.expensePayments) {
+      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, next.expensePayments);
+    }
+    return next;
+  };
+
+  const runConnectionOperation = async (
+    connectionId: string,
+    operation: () => Promise<void>
+  ) => {
+    setRefreshingConnectionIds((current) => new Set(current).add(connectionId));
+    const previous = connectionOperationQueuesRef.current.get(connectionId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tracked = result.then(() => undefined, () => undefined);
+    connectionOperationQueuesRef.current.set(connectionId, tracked);
+    try {
+      await result;
+    } finally {
+      if (connectionOperationQueuesRef.current.get(connectionId) === tracked) {
+        connectionOperationQueuesRef.current.delete(connectionId);
+        setRefreshingConnectionIds((current) => {
+          const next = new Set(current);
+          next.delete(connectionId);
+          return next;
+        });
+      }
+    }
+  };
 
   const summary = useMemo(() => calculateCashAccountSummary(cashAccounts), [cashAccounts]);
   const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? cashAccounts[0] ?? null;
@@ -166,134 +232,105 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     expenseObligations,
     expensePayments,
   };
-
   const handleConfirmTransaction = (
     transaction: BankTransaction,
     targetType: BankReconciliationTargetType,
     targetId: string
   ) => {
+    const current = bankingStateRef.current;
     const result = confirmBankTransactionMatch({
       transaction,
       targetType,
       targetId,
-      reconciliations: bankTransactionReconciliations,
-      context: reconciliationContext,
+      reconciliations: current.bankTransactionReconciliations,
+      context: {
+        properties,
+        rentReceivables,
+        rentPayments: current.rentPayments,
+        expenseObligations,
+        expensePayments: current.expensePayments,
+      },
     });
     if (!result) return;
-    onUpdateBankTransactionReconciliations(result.reconciliations);
-    if (targetType === 'rent-receivable') {
-      onUpdateRentCollection(rentReceivables, result.rentPayments);
-    } else {
-      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, result.expensePayments);
-    }
+    commitBankingState((latest) => ({
+      ...latest,
+      bankTransactionReconciliations: result.reconciliations,
+      rentPayments: result.rentPayments,
+      expensePayments: result.expensePayments,
+    }));
   };
 
   const handleIgnoreTransaction = (transaction: BankTransaction) => {
-    onUpdateBankTransactionReconciliations(
-      ignoreBankTransaction(bankTransactionReconciliations, transaction.id)
-    );
+    commitBankingState((current) => ({
+      ...current,
+      bankTransactionReconciliations: ignoreBankTransaction(
+        current.bankTransactionReconciliations,
+        transaction.id
+      ),
+    }));
   };
 
   const handleUnmatchTransaction = (transaction: BankTransaction) => {
-    const reconciliation = bankTransactionReconciliations.find(
+    const current = bankingStateRef.current;
+    const reconciliation = current.bankTransactionReconciliations.find(
       (item) => item.bankTransactionId === transaction.id && item.status === 'matched'
     );
     const result = unmatchBankTransaction({
       bankTransactionId: transaction.id,
-      reconciliations: bankTransactionReconciliations,
-      rentPayments,
-      expensePayments,
+      reconciliations: current.bankTransactionReconciliations,
+      rentPayments: current.rentPayments,
+      expensePayments: current.expensePayments,
     });
-    onUpdateBankTransactionReconciliations(result.reconciliations);
-    if (reconciliation?.targetType === 'rent-receivable' && result.rentPayments !== rentPayments) {
-      onUpdateRentCollection(rentReceivables, result.rentPayments);
-    }
-    if (reconciliation?.targetType === 'expense-obligation' && result.expensePayments !== expensePayments) {
-      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, result.expensePayments);
-    }
+    commitBankingState((latest) => ({
+      ...latest,
+      bankTransactionReconciliations: result.reconciliations,
+      rentPayments: reconciliation?.targetType === 'rent-receivable'
+        ? result.rentPayments
+        : latest.rentPayments,
+      expensePayments: reconciliation?.targetType === 'expense-obligation'
+        ? result.expensePayments
+        : latest.expensePayments,
+    }));
   };
 
-  const mergeProviderAccounts = (connection: BankConnection, incoming: CashAccount[]) => {
-    const accounts = upsertLinkedCashAccounts(cashAccounts, incoming);
-    const linkedAccountIds = incoming
-      .map((candidate) => {
-        const identity = getLinkedCashAccountIdentity(candidate);
-        return accounts.find((account) => getLinkedCashAccountIdentity(account) === identity)?.id;
-      })
-      .filter((id): id is string => Boolean(id));
-    return {
-      accounts,
-      connection: { ...connection, linkedAccountIds },
-    };
-  };
-
-  const syncMockTransactions = async (connection: BankConnection, accounts: CashAccount[]) => {
+  const syncMockTransactions = async (connection: BankConnection) => {
     const adapter = openBankingAdapters[connection.providerName];
     if (!adapter.fetchTransactions || connection.providerName !== 'mock-bank') {
       return;
     }
-    const previousState = bankTransactionSyncStates.find(
+    const beforeFetch = bankingStateRef.current;
+    const previousState = beforeFetch.bankTransactionSyncStates.find(
       (state) => state.connectionId === connection.id
     );
     const syncedAt = new Date().toISOString();
     try {
-      const page = await adapter.fetchTransactions(connection, accounts, previousState?.cursor);
+      const connectionAccounts = beforeFetch.cashAccounts.filter(
+        (account) => account.connectionId === connection.id
+      );
+      const page = await adapter.fetchTransactions(connection, connectionAccounts, previousState?.cursor);
       const snapshot = getActiveFxSnapshot(settings);
       const normalized = normalizeProviderTransactions(page.transactions, {
         providerName: connection.providerName,
         connectionId: connection.id,
-        accounts,
+        accounts: bankingStateRef.current.cashAccounts,
         reportingCurrency: settings.currency,
         fxRates: getSettingsCurrencyRates(settings),
         fxRateTimestamp: snapshot?.lastSuccessfulUpdateAt ?? null,
         syncedAt,
       });
-      const lifecycle = applyBankTransactionProviderLifecycle({
-        existingTransactions: bankTransactions,
+      commitBankingState((current) => applyBankConnectionTransactionResult(current, {
+        connection,
         incomingTransactions: normalized,
         removedTransactions: page.removedTransactions,
-        providerName: connection.providerName,
-        connectionId: connection.id,
+        cursor: page.nextCursor,
         syncedAt,
-      });
-      const reconciliationLifecycle = applyBankTransactionLifecycleToReconciliation({
-        lifecycleEvents: lifecycle.lifecycleEvents,
-        reconciliations: bankTransactionReconciliations,
-        rentPayments,
-        expensePayments,
-        timestamp: syncedAt,
-      });
-      onUpdateBankTransactions(lifecycle.transactions);
-      onUpdateBankTransactionReconciliations(reconciliationLifecycle.reconciliations);
-      if (reconciliationLifecycle.rentPayments !== rentPayments) {
-        onUpdateRentCollection(rentReceivables, reconciliationLifecycle.rentPayments);
-      }
-      if (reconciliationLifecycle.expensePayments !== expensePayments) {
-        onUpdatePropertyExpenses(
-          propertyExpenseRules,
-          expenseObligations,
-          reconciliationLifecycle.expensePayments
-        );
-      }
-      onUpdateBankTransactionSyncStates(
-        upsertBankTransactionSyncState(bankTransactionSyncStates, {
-          connectionId: connection.id,
-          providerName: connection.providerName,
-          cursor: page.nextCursor,
-          syncStatus: 'success',
-          syncedAt,
-        })
-      );
+      }));
     } catch (error) {
-      onUpdateBankTransactionSyncStates(
-        upsertBankTransactionSyncState(bankTransactionSyncStates, {
-          connectionId: connection.id,
-          providerName: connection.providerName,
-          syncStatus: 'error',
-          errorMessage: error instanceof Error ? error.message : 'Mock transaction sync failed.',
-          syncedAt,
-        })
-      );
+      commitBankingState((current) => applyBankConnectionSyncFailure(current, {
+        connection,
+        errorMessage: error instanceof Error ? error.message : 'Mock transaction sync failed.',
+        syncedAt,
+      }));
       throw error;
     }
   };
@@ -348,20 +385,26 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       isManual: true,
     };
 
-    onUpdateCashAccounts(
-      cashAccounts.some((account) => account.id === editingAccount.id)
-        ? cashAccounts.map((account) => (account.id === editingAccount.id ? nextAccount : account))
-        : [...cashAccounts, nextAccount]
-    );
+    commitBankingState((current) => ({
+      ...current,
+      cashAccounts: current.cashAccounts.some((account) => account.id === editingAccount.id)
+        ? current.cashAccounts.map((account) => (
+          account.id === editingAccount.id ? nextAccount : account
+        ))
+        : [...current.cashAccounts, nextAccount],
+    }));
     setSelectedAccountId(editingAccount.id);
     setShowManualModal(false);
     setEditingAccount(null);
   };
 
   const handleDeleteManualAccount = (accountId: string) => {
-    onUpdateCashAccounts(cashAccounts.filter((account) => account.id !== accountId));
+    const next = commitBankingState((current) => ({
+      ...current,
+      cashAccounts: current.cashAccounts.filter((account) => account.id !== accountId),
+    }));
     if (selectedAccountId === accountId) {
-      setSelectedAccountId(cashAccounts.find((account) => account.id !== accountId)?.id ?? null);
+      setSelectedAccountId(next.cashAccounts[0]?.id ?? null);
     }
   };
 
@@ -381,11 +424,18 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         scenario: mockScenario,
       });
 
-      const merged = mergeProviderAccounts(result.connection, result.accounts);
-      onUpdateBankConnections([...bankConnections, merged.connection]);
-      onUpdateCashAccounts(merged.accounts);
-      await syncMockTransactions(merged.connection, merged.accounts);
-      setSelectedAccountId(merged.connection.linkedAccountIds[0] ?? selectedAccountId);
+      let connectedAccountId: string | null = null;
+      await runConnectionOperation(result.connection.id, async () => {
+        const next = commitBankingState((current) => applyBankConnectionAccountResult(
+          current,
+          result.connection,
+          result.accounts
+        ));
+        const connected = next.bankConnections.find((item) => item.id === result.connection.id)!;
+        connectedAccountId = connected.linkedAccountIds[0] ?? null;
+        await syncMockTransactions(connected);
+      });
+      setSelectedAccountId(connectedAccountId ?? selectedAccountId);
       setActiveTab('connections');
       setShowConnectModal(false);
     } catch (error) {
@@ -399,84 +449,89 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 
   const handleRefreshConnection = async (connection: BankConnection) => {
     if (!canRefreshBankConnection(connection)) return;
-    setIsRefreshingConnectionId(connection.id);
     setConnectionMessage(null);
     try {
-      const adapter = openBankingAdapters[connection.providerName];
-      const linkedAccounts = cashAccounts.filter((account) => account.connectionId === connection.id);
-      const result = await adapter.refreshConnection(connection, linkedAccounts);
-
-      const merged = mergeProviderAccounts(result.connection, result.accounts);
-      onUpdateBankConnections(
-        bankConnections.map((item) => (item.id === connection.id ? merged.connection : item))
-      );
-      onUpdateCashAccounts(merged.accounts);
-      await syncMockTransactions(merged.connection, merged.accounts);
+      await runConnectionOperation(connection.id, async () => {
+        if (!canRunBankConnectionRefresh(bankingStateRef.current, connection.id)) return;
+        const currentConnection = bankingStateRef.current.bankConnections.find(
+          (item) => item.id === connection.id
+        );
+        if (!currentConnection) return;
+        const adapter = openBankingAdapters[currentConnection.providerName];
+        const linkedAccounts = bankingStateRef.current.cashAccounts.filter(
+          (account) => account.connectionId === currentConnection.id
+        );
+        const result = await adapter.refreshConnection(currentConnection, linkedAccounts);
+        const next = commitBankingState((current) => applyBankConnectionAccountResult(
+          current,
+          result.connection,
+          result.accounts
+        ));
+        const refreshed = next.bankConnections.find((item) => item.id === connection.id)!;
+        await syncMockTransactions(refreshed);
+      });
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.refreshUnavailable')
       );
-    } finally {
-      setIsRefreshingConnectionId(null);
     }
   };
 
   const handleReconnectConnection = async (connection: BankConnection) => {
-    setIsRefreshingConnectionId(connection.id);
     setConnectionMessage(null);
     try {
-      const adapter = openBankingAdapters[connection.providerName];
-      const session = await adapter.createConnectionSession({
-        userId,
-        institutionName: connection.institutionName,
-        institutionId: connection.institutionId,
-        scenario: 'success',
+      await runConnectionOperation(connection.id, async () => {
+        const currentConnection = bankingStateRef.current.bankConnections.find(
+          (item) => item.id === connection.id
+        );
+        if (!currentConnection) return;
+        const adapter = openBankingAdapters[currentConnection.providerName];
+        const session = await adapter.createConnectionSession({
+          userId,
+          institutionName: currentConnection.institutionName,
+          institutionId: currentConnection.institutionId,
+          scenario: 'success',
+        });
+        const result = await adapter.completeConnection(session, {
+          userId,
+          institutionName: currentConnection.institutionName,
+          institutionId: currentConnection.institutionId,
+          scenario: 'success',
+        });
+        const next = commitBankingState((current) => applyBankConnectionAccountResult(
+          current,
+          { ...result.connection, id: connection.id },
+          result.accounts.map((account) => ({ ...account, connectionId: connection.id }))
+        ));
+        const reconnected = next.bankConnections.find((item) => item.id === connection.id)!;
+        await syncMockTransactions(reconnected);
       });
-      const result = await adapter.completeConnection(session, {
-        userId,
-        institutionName: connection.institutionName,
-        institutionId: connection.institutionId,
-        scenario: 'success',
-      });
-
-      const merged = mergeProviderAccounts(
-        { ...result.connection, id: connection.id },
-        result.accounts.map((account) => ({ ...account, connectionId: connection.id }))
-      );
-      onUpdateBankConnections([
-        ...bankConnections.filter((item) => item.id !== connection.id),
-        merged.connection,
-      ]);
-      onUpdateCashAccounts(merged.accounts);
-      await syncMockTransactions(merged.connection, merged.accounts);
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.reconnectUnavailable')
       );
-    } finally {
-      setIsRefreshingConnectionId(null);
     }
   };
 
   const handleDisconnectConnection = async (connection: BankConnection) => {
-    setIsRefreshingConnectionId(connection.id);
     setConnectionMessage(null);
     try {
-      const adapter = openBankingAdapters[connection.providerName];
-      const disconnected = await adapter.disconnectConnection(connection);
-
-      onUpdateBankConnections(
-        bankConnections.map((item) => (item.id === connection.id ? disconnected : item))
-      );
-      onUpdateCashAccounts(
-        deactivateLinkedCashAccountsForConnection(cashAccounts, connection.id)
-      );
+      await runConnectionOperation(connection.id, async () => {
+        const currentConnection = bankingStateRef.current.bankConnections.find(
+          (item) => item.id === connection.id
+        );
+        if (!currentConnection) return;
+        const adapter = openBankingAdapters[currentConnection.providerName];
+        const disconnected = await adapter.disconnectConnection(currentConnection);
+        commitBankingState((current) => applyBankConnectionDisconnect(
+          current,
+          disconnected
+        ));
+      });
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.disconnectUnavailable')
       );
-    } finally {
-      setIsRefreshingConnectionId(null);
     }
   };
 
@@ -653,9 +708,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                       <p className={`mt-2 text-sm ${appTextMutedClass}`}>{providerLabels[connection.providerName]} · {connection.linkedAccountIds.length} linked account{connection.linkedAccountIds.length === 1 ? '' : 's'}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={isRefreshingConnectionId === connection.id || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
-                      <button type="button" disabled={isRefreshingConnectionId === connection.id} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t('common.reconnect')}</button>
-                      <button type="button" disabled={isRefreshingConnectionId === connection.id} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
+                      <button type="button" disabled={refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
+                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t('common.reconnect')}</button>
+                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-4">
@@ -677,7 +732,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
               selectedAccountId={transactionAccountId}
               onSelectedAccountIdChange={setTransactionAccountId}
               onSyncMock={mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
-              isSyncing={isRefreshingConnectionId === mockConnection?.id}
+              isSyncing={Boolean(mockConnection && refreshingConnectionIds.has(mockConnection.id))}
               onConfirmMatch={handleConfirmTransaction}
               onIgnore={handleIgnoreTransaction}
               onUnmatch={handleUnmatchTransaction}
