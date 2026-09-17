@@ -641,6 +641,8 @@ export interface BankTransactionReconciliation {
   targetId?: string | null;
   paymentId?: string | null;
   paymentLinkType?: BankReconciliationPaymentLinkType | null;
+  historicalPaymentId?: string | null;
+  historicalPaymentLinkType?: BankReconciliationPaymentLinkType | null;
   lifecycleReason?: BankReconciliationLifecycleReason | null;
   lifecycleTransactionId?: string | null;
   createdAt: string;

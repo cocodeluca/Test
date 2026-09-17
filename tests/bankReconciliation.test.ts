@@ -622,7 +622,16 @@ test('provider removal reverses only the matched rent bank payment and preserves
   assert.equal(restored.outstandingAmount, 1250);
   assert.equal(restored.status, 'OVERDUE');
   assert.equal(removed.reconciliations[0].status, 'removed');
-  assert.equal(removed.reconciliations[0].paymentId, confirmed.reconciliations[0].paymentId);
+  assert.equal(removed.reconciliations[0].paymentId, null);
+  assert.equal(removed.reconciliations[0].paymentLinkType, null);
+  assert.equal(
+    removed.reconciliations[0].historicalPaymentId,
+    confirmed.reconciliations[0].paymentId
+  );
+  assert.equal(
+    removed.reconciliations[0].historicalPaymentLinkType,
+    'created-bank-sync'
+  );
   assert.equal(removed.reconciliations[0].targetId, receivable.id);
   assert.equal(removed.reconciliations[0].lifecycleReason, 'provider-removed');
 
@@ -707,9 +716,73 @@ test('explicit reversal removes one matched payment once and preserves reconcili
 
   assert.deepEqual(reversed.rentPayments, []);
   assert.equal(reversed.reconciliations[0].status, 'reversed');
-  assert.equal(reversed.reconciliations[0].paymentId, confirmed.reconciliations[0].paymentId);
+  assert.equal(reversed.reconciliations[0].paymentId, null);
+  assert.equal(reversed.reconciliations[0].paymentLinkType, null);
+  assert.equal(
+    reversed.reconciliations[0].historicalPaymentId,
+    confirmed.reconciliations[0].paymentId
+  );
+  assert.equal(
+    reversed.reconciliations[0].historicalPaymentLinkType,
+    'created-bank-sync'
+  );
   assert.equal(reversed.reconciliations[0].lifecycleReason, 'provider-reversed');
   assert.equal(reversed.reconciliations[0].lifecycleTransactionId, 'bank-tx-reversal-1');
+  assert.deepEqual(repeated, reversed);
+});
+
+test('explicit reversal clears an expense payment link and retains historical provenance', () => {
+  const outgoing = transaction({
+    id: 'bank-tx-expense-reversal',
+    externalTransactionId: 'provider-expense-reversal',
+    amount: -185,
+    bookingDate: '2026-09-09',
+  });
+  const confirmed = confirmBankTransactionMatch({
+    transaction: outgoing,
+    targetType: 'expense-obligation',
+    targetId: expenseObligation.id,
+    reconciliations: [],
+    context: context(),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  const lifecycleEvent = {
+    bankTransactionId: outgoing.id,
+    reason: 'provider-reversed' as const,
+    relatedBankTransactionId: 'bank-tx-expense-reversal-record',
+  };
+  const reversed = applyBankTransactionLifecycleToReconciliation({
+    lifecycleEvents: [lifecycleEvent],
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+    timestamp: '2026-09-17T12:00:00.000Z',
+  });
+  const repeated = applyBankTransactionLifecycleToReconciliation({
+    lifecycleEvents: [lifecycleEvent],
+    reconciliations: reversed.reconciliations,
+    rentPayments: reversed.rentPayments,
+    expensePayments: reversed.expensePayments,
+    timestamp: '2026-09-18T12:00:00.000Z',
+  });
+  const restored = buildExpenseObligationViews(
+    [expenseObligation], reversed.expensePayments, new Date('2026-09-18T12:00:00Z')
+  )[0];
+
+  assert.deepEqual(reversed.expensePayments, []);
+  assert.equal(restored.outstandingAmount, expenseObligation.expectedAmount);
+  assert.equal(reversed.reconciliations[0].status, 'reversed');
+  assert.equal(reversed.reconciliations[0].paymentId, null);
+  assert.equal(reversed.reconciliations[0].paymentLinkType, null);
+  assert.equal(
+    reversed.reconciliations[0].historicalPaymentId,
+    confirmed.reconciliations[0].paymentId
+  );
+  assert.equal(
+    reversed.reconciliations[0].historicalPaymentLinkType,
+    'created-bank-sync'
+  );
   assert.deepEqual(repeated, reversed);
 });
 
@@ -781,7 +854,16 @@ test('cold load preserves removed transaction and reversed reconciliation audit 
   assert.equal(reloaded.bankTransactions?.[0].lifecycleStatus, 'removed');
   assert.equal(reloaded.bankTransactions?.[0].removalReason, 'provider-deleted');
   assert.equal(reloaded.bankTransactionReconciliations?.[0].status, 'removed');
-  assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentId, confirmed.reconciliations[0].paymentId);
+  assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentId, null);
+  assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentLinkType, null);
+  assert.equal(
+    reloaded.bankTransactionReconciliations?.[0].historicalPaymentId,
+    confirmed.reconciliations[0].paymentId
+  );
+  assert.equal(
+    reloaded.bankTransactionReconciliations?.[0].historicalPaymentLinkType,
+    'created-bank-sync'
+  );
   assert.equal(reloaded.bankTransactionReconciliations?.[0].lifecycleReason, 'provider-removed');
   assert.deepEqual(reloaded.rentPayments, []);
 });

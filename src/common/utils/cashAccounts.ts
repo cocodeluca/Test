@@ -187,8 +187,19 @@ export const upsertLinkedCashAccounts = (
   existingAccounts: CashAccount[],
   incomingAccounts: CashAccount[]
 ): CashAccount[] => {
+  const lastIncomingIndexByIdentity = new Map<string, number>();
+  incomingAccounts.forEach((account, index) => {
+    const identity = getLinkedCashAccountIdentity(account);
+    if (identity) lastIncomingIndexByIdentity.set(identity, index);
+  });
+  const deduplicatedIncomingAccounts = incomingAccounts.filter((account, index) => {
+    const identity = getLinkedCashAccountIdentity(account);
+    return identity === null || lastIncomingIndexByIdentity.get(identity) === index;
+  });
   const incomingIdentities = new Set(
-    incomingAccounts.map(getLinkedCashAccountIdentity).filter((identity): identity is string => Boolean(identity))
+    deduplicatedIncomingAccounts
+      .map(getLinkedCashAccountIdentity)
+      .filter((identity): identity is string => Boolean(identity))
   );
   const existingByIdentity = new Map(
     existingAccounts
@@ -199,7 +210,7 @@ export const upsertLinkedCashAccounts = (
     const identity = getLinkedCashAccountIdentity(account);
     return identity === null || !incomingIdentities.has(identity);
   });
-  const upserted = incomingAccounts.map((account) => {
+  const upserted = deduplicatedIncomingAccounts.map((account) => {
     const identity = getLinkedCashAccountIdentity(account);
     const existing = identity ? existingByIdentity.get(identity) : undefined;
     return normalizeCashAccount({

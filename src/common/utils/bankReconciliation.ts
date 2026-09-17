@@ -466,11 +466,12 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
     );
     if (!reconciliation) continue;
 
-    if (
+    const removesCreatedBankPayment = Boolean(
       reconciliation.status === 'matched' &&
       reconciliation.paymentId &&
       reconciliation.paymentLinkType !== 'linked-manual'
-    ) {
+    );
+    if (removesCreatedBankPayment) {
       if (reconciliation.targetType === 'rent-receivable') {
         rentPayments = rentPayments.filter(
           (payment) => payment.id !== reconciliation.paymentId || payment.source !== 'bank_sync'
@@ -492,6 +493,15 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
     reconciliations = reconciliations.map((item) => item.bankTransactionId === event.bankTransactionId ? {
       ...item,
       status: nextStatus,
+      ...(removesCreatedBankPayment ? {
+        paymentId: null,
+        paymentLinkType: null,
+        historicalPaymentId: reconciliation.historicalPaymentId ?? reconciliation.paymentId,
+        historicalPaymentLinkType:
+          reconciliation.historicalPaymentLinkType ??
+          reconciliation.paymentLinkType ??
+          'created-bank-sync',
+      } : {}),
       lifecycleReason: event.reason,
       lifecycleTransactionId: event.relatedBankTransactionId ?? null,
       updatedAt: timestamp,

@@ -148,15 +148,25 @@ export const upsertBankTransactions = (
   existingTransactions: BankTransaction[],
   incomingTransactions: BankTransaction[]
 ): BankTransaction[] => {
+  const lastIncomingIndexByIdentity = new Map<string, number>();
+  incomingTransactions.forEach((transaction, index) => {
+    lastIncomingIndexByIdentity.set(getBankTransactionIdentity(transaction), index);
+  });
+  const deduplicatedIncomingTransactions = incomingTransactions.filter(
+    (transaction, index) =>
+      lastIncomingIndexByIdentity.get(getBankTransactionIdentity(transaction)) === index
+  );
   const existingByIdentity = new Map(
     existingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
   const incomingByIdentity = new Map(
-    incomingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
+    deduplicatedIncomingTransactions.map((transaction) => [getBankTransactionIdentity(transaction), transaction])
   );
-  const incomingIdentities = new Set(incomingTransactions.map(getBankTransactionIdentity));
+  const incomingIdentities = new Set(
+    deduplicatedIncomingTransactions.map(getBankTransactionIdentity)
+  );
   const explicitlyReplacedPendingIdentities = new Set(
-    incomingTransactions.flatMap((transaction) => {
+    deduplicatedIncomingTransactions.flatMap((transaction) => {
       if (transaction.pending || !transaction.pendingExternalTransactionId) return [];
       const pendingIdentity = getBankTransactionIdentity({
         providerName: transaction.providerName,
@@ -174,7 +184,7 @@ export const upsertBankTransactions = (
       return !incomingIdentities.has(identity) && !explicitlyReplacedPendingIdentities.has(identity);
     }
   );
-  const upserted = incomingTransactions
+  const upserted = deduplicatedIncomingTransactions
     .filter((transaction) => !explicitlyReplacedPendingIdentities.has(getBankTransactionIdentity(transaction)))
     .map((transaction) => {
       const exactExisting = existingByIdentity.get(getBankTransactionIdentity(transaction));

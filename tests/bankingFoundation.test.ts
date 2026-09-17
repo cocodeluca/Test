@@ -103,7 +103,49 @@ test('repeated linked-account sync preserves internal IDs and leaves manual acco
   assert.strictEqual(second.find((account) => account.id === manual.id), manual);
 });
 
-test('same external transaction ID on two accounts remains account-scoped and idempotent', () => {
+test('duplicate linked-account identities in one payload collapse to the later provider record', () => {
+  const existing = linkedAccount({ id: 'cash-account-canonical', currentBalance: 900 });
+  const earlier = linkedAccount({
+    id: 'provider-account-earlier',
+    nickname: 'Earlier payload account',
+    currentBalance: 1000,
+  });
+  const later = linkedAccount({
+    id: 'provider-account-later',
+    nickname: 'Canonical payload account',
+    currentBalance: 1200,
+  });
+  const result = upsertLinkedCashAccounts([existing], [earlier, later]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, existing.id);
+  assert.equal(result[0].nickname, 'Canonical payload account');
+  assert.equal(result[0].currentBalance, 1200);
+});
+
+test('duplicate transaction identities in one payload collapse to the later record idempotently', () => {
+  const earlier = normalize([providerRecord({
+    amount: 100,
+    description: 'Earlier provider data',
+  })])[0];
+  const later = normalize([providerRecord({
+    amount: 125,
+    description: 'Canonical provider data',
+  })], undefined, '2026-09-16T13:00:00.000Z')[0];
+  const first = upsertBankTransactions([], [earlier, later]);
+  const repeated = upsertBankTransactions(first, [earlier, later]);
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0].id, later.id);
+  assert.equal(first[0].amount, 125);
+  assert.equal(first[0].description, 'Canonical provider data');
+  assert.equal(repeated.length, 1);
+  assert.equal(repeated[0].id, first[0].id);
+  assert.equal(repeated[0].createdAt, first[0].createdAt);
+  assert.equal(repeated[0].description, 'Canonical provider data');
+});
+
+test('different-account transactions with the same external ID are not collapsed and remain idempotent', () => {
   const checking = linkedAccount({ id: 'cash-checking', externalAccountId: 'shared-bank:checking' });
   const savings = linkedAccount({ id: 'cash-savings', externalAccountId: 'shared-bank:savings' });
   const records = [
