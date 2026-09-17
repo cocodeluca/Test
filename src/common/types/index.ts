@@ -632,6 +632,7 @@ export interface BankTransactionSyncState {
 export type BankReconciliationStatus = 'unmatched' | 'suggested' | 'matched' | 'ignored' | 'removed' | 'reversed';
 export type BankReconciliationLifecycleReason = 'provider-removed' | 'provider-reversed';
 export type BankReconciliationTargetType = 'rent-receivable' | 'expense-obligation';
+export type BankReconciliationPaymentLinkType = 'created-bank-sync' | 'linked-manual';
 
 export interface BankTransactionReconciliation {
   bankTransactionId: string;
@@ -639,6 +640,7 @@ export interface BankTransactionReconciliation {
   targetType?: BankReconciliationTargetType | null;
   targetId?: string | null;
   paymentId?: string | null;
+  paymentLinkType?: BankReconciliationPaymentLinkType | null;
   lifecycleReason?: BankReconciliationLifecycleReason | null;
   lifecycleTransactionId?: string | null;
   createdAt: string;

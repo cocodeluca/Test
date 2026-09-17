@@ -131,6 +131,7 @@ test('confirm creates one linked canonical rent payment', () => {
   assert.equal(result.reconciliations[0].status, 'matched');
   assert.equal(result.reconciliations[0].targetId, receivable.id);
   assert.equal(result.reconciliations[0].paymentId, result.rentPayments[0].id);
+  assert.equal(result.reconciliations[0].paymentLinkType, 'created-bank-sync');
 });
 
 test('repeated confirm is idempotent and does not duplicate the payment', () => {
@@ -712,4 +713,301 @@ test('cold load preserves removed transaction and reversed reconciliation audit 
   assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentId, confirmed.reconciliations[0].paymentId);
   assert.equal(reloaded.bankTransactionReconciliations?.[0].lifecycleReason, 'provider-removed');
   assert.deepEqual(reloaded.rentPayments, []);
+});
+
+test('exact existing manual rent payment is linked without duplication or mutation', () => {
+  const manualPayment = {
+    id: 'manual-rent-existing',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const paymentContext = context({ rentPayments: [manualPayment] });
+  const suggestion = suggestBankTransactionMatch(transaction(), paymentContext);
+  assert.equal(suggestion?.targetId, receivable.id);
+  assert.equal(suggestion?.existingPaymentId, manualPayment.id);
+  assert.ok(suggestion?.reasons.includes('existing-manual-payment'));
+
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(),
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: paymentContext,
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  assert.deepEqual(confirmed.rentPayments, [manualPayment]);
+  assert.equal(confirmed.rentPayments[0].source, 'manual');
+  assert.equal(confirmed.reconciliations[0].paymentId, manualPayment.id);
+  assert.equal(confirmed.reconciliations[0].paymentLinkType, 'linked-manual');
+});
+
+test('exact existing manual expense payment is linked without duplication or mutation', () => {
+  const manualPayment = {
+    id: 'manual-expense-existing',
+    propertyId: property.id,
+    paidDate: '2026-09-09',
+    amount: 185,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ obligationId: expenseObligation.id, amount: 185 }],
+  };
+  const outgoing = transaction({ amount: -185, bookingDate: '2026-09-09' });
+  const paymentContext = context({ expensePayments: [manualPayment] });
+  const suggestion = suggestBankTransactionMatch(outgoing, paymentContext);
+  assert.equal(suggestion?.targetId, expenseObligation.id);
+  assert.equal(suggestion?.existingPaymentId, manualPayment.id);
+
+  const confirmed = confirmBankTransactionMatch({
+    transaction: outgoing,
+    targetType: 'expense-obligation',
+    targetId: expenseObligation.id,
+    reconciliations: [],
+    context: paymentContext,
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  assert.deepEqual(confirmed.expensePayments, [manualPayment]);
+  assert.equal(confirmed.expensePayments[0].source, 'manual');
+  assert.equal(confirmed.reconciliations[0].paymentId, manualPayment.id);
+  assert.equal(confirmed.reconciliations[0].paymentLinkType, 'linked-manual');
+});
+
+test('undo removes a manual-payment reconciliation link but preserves the manual payment', () => {
+  const manualPayment = {
+    id: 'manual-rent-undo',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(),
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context({ rentPayments: [manualPayment] }),
+  });
+  assert.ok(confirmed);
+  const unmatched = unmatchBankTransaction({
+    bankTransactionId: transaction().id,
+    reconciliations: confirmed.reconciliations,
+    rentPayments: confirmed.rentPayments,
+    expensePayments: confirmed.expensePayments,
+  });
+
+  assert.deepEqual(unmatched.reconciliations, []);
+  assert.deepEqual(unmatched.rentPayments, [manualPayment]);
+});
+
+test('repeated confirm against an existing manual payment remains idempotent', () => {
+  const manualPayment = {
+    id: 'manual-rent-repeat',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const first = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: [], context: context({ rentPayments: [manualPayment] }),
+  });
+  assert.ok(first);
+  const second = confirmBankTransactionMatch({
+    transaction: transaction(), targetType: 'rent-receivable', targetId: receivable.id,
+    reconciliations: first.reconciliations,
+    context: context({ rentPayments: first.rentPayments }),
+  });
+  assert.ok(second);
+  assert.deepEqual(second.rentPayments, [manualPayment]);
+  assert.deepEqual(second.reconciliations, first.reconciliations);
+});
+
+test('multiple matching manual payments are not guessed', () => {
+  const makePayment = (id: string, receivedDate: string) => ({
+    id,
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate,
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  });
+  const suggestion = suggestBankTransactionMatch(transaction(), context({
+    rentPayments: [
+      makePayment('manual-rent-ambiguous-1', '2026-09-03'),
+      makePayment('manual-rent-ambiguous-2', '2026-09-04'),
+    ],
+  }));
+  assert.equal(suggestion, null);
+});
+
+test('different manual amount does not falsely link', () => {
+  const manualPayment = {
+    id: 'manual-rent-different-amount',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1400,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1400 }],
+  };
+  const suggestion = suggestBankTransactionMatch(
+    transaction(), context({ rentPayments: [manualPayment] })
+  );
+  assert.notEqual(suggestion?.existingPaymentId, manualPayment.id);
+});
+
+test('manual payment allocated to a different obligation does not falsely link', () => {
+  const manualPayment = {
+    id: 'manual-rent-different-obligation',
+    propertyId: property.id,
+    leaseId: 'other-lease',
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: 'other-receivable', amount: 1450 }],
+  };
+  const suggestion = suggestBankTransactionMatch(
+    transaction(), context({ rentPayments: [manualPayment] })
+  );
+  assert.equal(suggestion?.targetId, receivable.id);
+  assert.equal(suggestion?.existingPaymentId, undefined);
+});
+
+test('an existing manual payment already linked to another transaction is not reused', () => {
+  const manualPayment = {
+    id: 'manual-rent-already-linked',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const reconciliation: BankTransactionReconciliation = {
+    bankTransactionId: 'other-bank-transaction',
+    status: 'matched',
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    paymentId: manualPayment.id,
+    paymentLinkType: 'linked-manual',
+    createdAt: '2026-09-16T12:00:00.000Z',
+    updatedAt: '2026-09-16T12:00:00.000Z',
+  };
+  const suggestion = suggestBankTransactionMatch(
+    transaction(),
+    context({ rentPayments: [manualPayment] }),
+    [reconciliation]
+  );
+  assert.notEqual(suggestion?.existingPaymentId, manualPayment.id);
+});
+
+test('partial manual payment links without changing canonical outstanding balance', () => {
+  const manualPayment = {
+    id: 'manual-rent-partial-existing',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 800,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 800 }],
+  };
+  const bankTransaction = transaction({ amount: 800 });
+  const paymentContext = context({
+    rentPayments: [manualPayment],
+    today: new Date('2026-09-05T12:00:00Z'),
+  });
+  const confirmed = confirmBankTransactionMatch({
+    transaction: bankTransaction,
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: paymentContext,
+  });
+  assert.ok(confirmed);
+  const view = buildRentReceivableViews(
+    [receivable], confirmed.rentPayments, [property], new Date('2026-09-05T12:00:00Z')
+  )[0];
+
+  assert.deepEqual(confirmed.rentPayments, [manualPayment]);
+  assert.equal(confirmed.reconciliations[0].paymentLinkType, 'linked-manual');
+  assert.equal(view.outstandingAmount, 650);
+  assert.equal(view.status, 'PARTIAL');
+});
+
+test('different currency or distant payment date does not link a manual payment', () => {
+  const makePayment = (id: string, currency: 'EUR' | 'USD', receivedDate: string) => ({
+    id,
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate,
+    amount: 1450,
+    currency,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  });
+  const wrongCurrency = makePayment('manual-rent-wrong-currency', 'USD', '2026-09-03');
+  const distantDate = makePayment('manual-rent-distant-date', 'EUR', '2026-08-01');
+
+  assert.notEqual(
+    suggestBankTransactionMatch(transaction(), context({ rentPayments: [wrongCurrency] }))?.existingPaymentId,
+    wrongCurrency.id
+  );
+  assert.notEqual(
+    suggestBankTransactionMatch(transaction(), context({ rentPayments: [distantDate] }))?.existingPaymentId,
+    distantDate.id
+  );
+});
+
+test('manual payment link provenance survives an IndexedDB cold load', async () => {
+  const manualPayment = {
+    id: 'manual-rent-persisted-link',
+    propertyId: property.id,
+    leaseId: receivable.leaseId,
+    receivedDate: '2026-09-03',
+    amount: 1450,
+    currency: 'EUR' as const,
+    source: 'manual' as const,
+    allocations: [{ receivableId: receivable.id, amount: 1450 }],
+  };
+  const confirmed = confirmBankTransactionMatch({
+    transaction: transaction(),
+    targetType: 'rent-receivable',
+    targetId: receivable.id,
+    reconciliations: [],
+    context: context({ rentPayments: [manualPayment] }),
+    timestamp: '2026-09-16T12:00:00.000Z',
+  });
+  assert.ok(confirmed);
+  await saveUserPortfolio('manual-payment-link-cold-load-user', {
+    ...structuredClone(emptyPortfolioData),
+    properties: [property],
+    rentReceivables: [receivable],
+    rentPayments: confirmed.rentPayments,
+    bankTransactions: [transaction()],
+    bankTransactionReconciliations: confirmed.reconciliations,
+  });
+  const reloaded = await loadUserPortfolio('manual-payment-link-cold-load-user');
+
+  assert.deepEqual(reloaded.rentPayments, [manualPayment]);
+  assert.equal(reloaded.rentPayments?.[0].source, 'manual');
+  assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentId, manualPayment.id);
+  assert.equal(reloaded.bankTransactionReconciliations?.[0].paymentLinkType, 'linked-manual');
 });

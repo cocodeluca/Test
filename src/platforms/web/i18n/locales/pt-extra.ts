@@ -49,6 +49,7 @@ export const ptExtra: TranslationTree = {
       'exact-amount': 'Montante exato',
       'similar-amount': 'Montante semelhante',
       'partial-amount': 'Montante parcial',
+      'existing-manual-payment': 'Pagamento manual existente',
       'date-proximity': 'Data próxima',
       'property-context': 'Mesma propriedade',
     },

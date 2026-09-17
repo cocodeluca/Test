@@ -317,6 +317,7 @@ export const enExtra = {
       'exact-amount': 'Exact amount',
       'similar-amount': 'Similar amount',
       'partial-amount': 'Partial amount',
+      'existing-manual-payment': 'Existing manual payment',
       'date-proximity': 'Nearby date',
       'property-context': 'Same property',
     },

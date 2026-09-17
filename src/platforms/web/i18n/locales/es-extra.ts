@@ -317,6 +317,7 @@ export const esExtra = {
       'exact-amount': 'Importe exacto',
       'similar-amount': 'Importe similar',
       'partial-amount': 'Importe parcial',
+      'existing-manual-payment': 'Pago manual existente',
       'date-proximity': 'Fecha cercana',
       'property-context': 'Misma propiedad',
     },

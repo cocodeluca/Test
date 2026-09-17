@@ -13,7 +13,7 @@ import { buildExpenseObligationViews, createManualExpensePayment } from './prope
 import { buildRentReceivableViews, createManualRentPayment } from './rentCollection';
 import type { BankTransactionLifecycleEvent } from './bankTransactions';
 
-export type BankReconciliationReason = 'exact-amount' | 'similar-amount' | 'partial-amount' | 'date-proximity' | 'property-context';
+export type BankReconciliationReason = 'exact-amount' | 'similar-amount' | 'partial-amount' | 'existing-manual-payment' | 'date-proximity' | 'property-context';
 
 export interface BankReconciliationSuggestion {
   targetType: BankReconciliationTargetType;
@@ -24,6 +24,7 @@ export interface BankReconciliationSuggestion {
   outstandingAmount: number;
   currency: BankTransaction['currency'];
   reasons: BankReconciliationReason[];
+  existingPaymentId?: string | null;
 }
 
 export interface BankReconciliationView {
@@ -96,7 +97,8 @@ const selectConservativeCandidate = (candidates: Candidate[]): BankReconciliatio
 
 export const suggestBankTransactionMatch = (
   transaction: BankTransaction,
-  context: BankReconciliationContext
+  context: BankReconciliationContext,
+  reconciliations: BankTransactionReconciliation[] = []
 ): BankReconciliationSuggestion | null => {
   if (
     transaction.pending ||
@@ -106,14 +108,59 @@ export const suggestBankTransactionMatch = (
   const amount = Math.abs(transaction.amount);
   const propertyContextId = getPropertyContextId(transaction);
   const propertyNames = new Map(context.properties.map((property) => [property.id, property.name]));
+  const linkedPaymentIds = new Set(
+    reconciliations
+      .filter((item) => item.status === 'matched' && item.paymentId)
+      .map((item) => item.paymentId!)
+  );
 
   if (transaction.amount > 0) {
-    const candidates = buildRentReceivableViews(
+    const receivableViews = buildRentReceivableViews(
       context.rentReceivables,
       context.rentPayments,
       context.properties,
       context.today
-    ).flatMap<Candidate>((receivable) => {
+    );
+    const manualPaymentCandidates = receivableViews.flatMap<BankReconciliationSuggestion>((receivable) => {
+      if (
+        receivable.currency !== transaction.currency ||
+        (propertyContextId && receivable.propertyId !== propertyContextId) ||
+        daysBetween(transaction.bookingDate, receivable.dueDate) > MAX_DATE_DISTANCE_DAYS
+      ) return [];
+      return context.rentPayments.flatMap((payment) => {
+        const allocation = payment.allocations[0];
+        if (
+          payment.source !== 'manual' ||
+          linkedPaymentIds.has(payment.id) ||
+          payment.currency !== transaction.currency ||
+          payment.allocations.length !== 1 ||
+          allocation?.receivableId !== receivable.id ||
+          Math.abs(payment.amount - amount) > 0.01 ||
+          Math.abs(allocation.amount - amount) > 0.01 ||
+          daysBetween(transaction.bookingDate, payment.receivedDate) > MAX_DATE_DISTANCE_DAYS
+        ) return [];
+        return [{
+          targetType: 'rent-receivable',
+          targetId: receivable.id,
+          propertyId: receivable.propertyId,
+          propertyName: propertyNames.get(receivable.propertyId) ?? receivable.propertyId,
+          targetLabel: receivable.period,
+          outstandingAmount: receivable.outstandingAmount,
+          currency: receivable.currency,
+          existingPaymentId: payment.id,
+          reasons: [
+            'existing-manual-payment',
+            'exact-amount',
+            'date-proximity',
+            ...(propertyContextId ? ['property-context' as const] : []),
+          ],
+        }];
+      });
+    });
+    if (manualPaymentCandidates.length > 1) return null;
+    if (manualPaymentCandidates.length === 1) return manualPaymentCandidates[0];
+
+    const candidates = receivableViews.flatMap<Candidate>((receivable) => {
       if (
         receivable.currency !== transaction.currency ||
         receivable.outstandingAmount <= 0 ||
@@ -147,11 +194,51 @@ export const suggestBankTransactionMatch = (
     return selectConservativeCandidate(candidates);
   }
 
-  const candidates = buildExpenseObligationViews(
+  const obligationViews = buildExpenseObligationViews(
     context.expenseObligations,
     context.expensePayments,
     context.today
-  ).flatMap<Candidate>((obligation) => {
+  );
+  const manualPaymentCandidates = obligationViews.flatMap<BankReconciliationSuggestion>((obligation) => {
+    if (
+      obligation.currency !== transaction.currency ||
+      (propertyContextId && obligation.propertyId !== propertyContextId) ||
+      daysBetween(transaction.bookingDate, obligation.dueDate) > MAX_DATE_DISTANCE_DAYS
+    ) return [];
+    return context.expensePayments.flatMap((payment) => {
+      const allocation = payment.allocations[0];
+      if (
+        payment.source !== 'manual' ||
+        linkedPaymentIds.has(payment.id) ||
+        payment.currency !== transaction.currency ||
+        payment.allocations.length !== 1 ||
+        allocation?.obligationId !== obligation.id ||
+        Math.abs(payment.amount - amount) > 0.01 ||
+        Math.abs(allocation.amount - amount) > 0.01 ||
+        daysBetween(transaction.bookingDate, payment.paidDate) > MAX_DATE_DISTANCE_DAYS
+      ) return [];
+      return [{
+        targetType: 'expense-obligation',
+        targetId: obligation.id,
+        propertyId: obligation.propertyId,
+        propertyName: propertyNames.get(obligation.propertyId) ?? obligation.propertyId,
+        targetLabel: obligation.label,
+        outstandingAmount: obligation.outstandingAmount,
+        currency: obligation.currency,
+        existingPaymentId: payment.id,
+        reasons: [
+          'existing-manual-payment',
+          'exact-amount',
+          'date-proximity',
+          ...(propertyContextId ? ['property-context' as const] : []),
+        ],
+      }];
+    });
+  });
+  if (manualPaymentCandidates.length > 1) return null;
+  if (manualPaymentCandidates.length === 1) return manualPaymentCandidates[0];
+
+  const candidates = obligationViews.flatMap<Candidate>((obligation) => {
     if (
       obligation.currency !== transaction.currency ||
       obligation.outstandingAmount <= 0 ||
@@ -205,7 +292,7 @@ export const getBankReconciliationView = (
   if (transaction.lifecycleStatus === 'reversal') {
     return { status: 'reversed', suggestion: null, reconciliation };
   }
-  const suggestion = suggestBankTransactionMatch(transaction, context);
+  const suggestion = suggestBankTransactionMatch(transaction, context, reconciliations);
   return {
     status: suggestion ? 'suggested' : 'unmatched',
     suggestion,
@@ -246,20 +333,20 @@ export const confirmBankTransactionMatch = (args: {
       expensePayments: args.context.expensePayments,
     };
   }
-  const suggestion = suggestBankTransactionMatch(args.transaction, args.context);
+  const suggestion = suggestBankTransactionMatch(args.transaction, args.context, args.reconciliations);
   if (!suggestion || suggestion.targetType !== args.targetType || suggestion.targetId !== args.targetId) {
     return null;
   }
 
   const timestamp = args.timestamp ?? new Date().toISOString();
-  const paymentId = `bank-payment:${encodeURIComponent(args.transaction.id)}`;
+  const paymentId = suggestion.existingPaymentId ?? `bank-payment:${encodeURIComponent(args.transaction.id)}`;
   let rentPayments = args.context.rentPayments;
   let expensePayments = args.context.expensePayments;
 
   if (suggestion.targetType === 'rent-receivable') {
     const receivable = args.context.rentReceivables.find((item) => item.id === suggestion.targetId);
     if (!receivable) return null;
-    if (!rentPayments.some((payment) => payment.id === paymentId)) {
+    if (!suggestion.existingPaymentId && !rentPayments.some((payment) => payment.id === paymentId)) {
       rentPayments = [...rentPayments, {
         ...createManualRentPayment({
           id: paymentId,
@@ -276,7 +363,7 @@ export const confirmBankTransactionMatch = (args: {
   } else {
     const obligation = args.context.expenseObligations.find((item) => item.id === suggestion.targetId);
     if (!obligation) return null;
-    if (!expensePayments.some((payment) => payment.id === paymentId)) {
+    if (!suggestion.existingPaymentId && !expensePayments.some((payment) => payment.id === paymentId)) {
       expensePayments = [...expensePayments, {
         ...createManualExpensePayment({
           id: paymentId,
@@ -299,6 +386,7 @@ export const confirmBankTransactionMatch = (args: {
       targetType: suggestion.targetType,
       targetId: suggestion.targetId,
       paymentId,
+      paymentLinkType: suggestion.existingPaymentId ? 'linked-manual' : 'created-bank-sync',
     }, timestamp),
     rentPayments,
     expensePayments,
@@ -335,12 +423,14 @@ export const unmatchBankTransaction = (args: {
   }
 
   const paymentId = reconciliation.paymentId;
-  const filteredRentPayments = reconciliation.targetType === 'rent-receivable' && paymentId
+  const filteredRentPayments = reconciliation.paymentLinkType !== 'linked-manual' &&
+    reconciliation.targetType === 'rent-receivable' && paymentId
     ? args.rentPayments.filter(
         (payment) => payment.id !== paymentId || payment.source !== 'bank_sync'
       )
     : args.rentPayments;
-  const filteredExpensePayments = reconciliation.targetType === 'expense-obligation' && paymentId
+  const filteredExpensePayments = reconciliation.paymentLinkType !== 'linked-manual' &&
+    reconciliation.targetType === 'expense-obligation' && paymentId
     ? args.expensePayments.filter(
         (payment) => payment.id !== paymentId || payment.source !== 'bank_sync'
       )
@@ -376,7 +466,11 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
     );
     if (!reconciliation) continue;
 
-    if (reconciliation.status === 'matched' && reconciliation.paymentId) {
+    if (
+      reconciliation.status === 'matched' &&
+      reconciliation.paymentId &&
+      reconciliation.paymentLinkType !== 'linked-manual'
+    ) {
       if (reconciliation.targetType === 'rent-receivable') {
         rentPayments = rentPayments.filter(
           (payment) => payment.id !== reconciliation.paymentId || payment.source !== 'bank_sync'
