@@ -6,6 +6,7 @@ import {
   createBankConnection,
   createLinkedCashAccount,
   createManualCashAccount,
+  calculateCashAccountSummary,
   canRefreshBankConnection,
   deactivateLinkedCashAccountsForConnection,
   getBankConnectionReconnectMode,
@@ -103,6 +104,42 @@ test('repeated linked-account sync preserves internal IDs and leaves manual acco
   assert.equal(synced?.currentBalance, 1200);
   assert.equal(second.filter((account) => account.sourceType === 'linked').length, 1);
   assert.strictEqual(second.find((account) => account.id === manual.id), manual);
+});
+
+test('cash-account summaries include active accounts and preserve inactive history', () => {
+  const accounts = [
+    linkedAccount({ id: 'active-checking', currency: 'USD', currentBalance: 110 }),
+    linkedAccount({ id: 'active-saving', currency: 'USD', currentBalance: 210 }),
+    linkedAccount({ id: 'active-cash-management', currency: 'USD', currentBalance: 12_060 }),
+    linkedAccount({ id: 'inactive-checking', currency: 'USD', currentBalance: 110, status: 'inactive' }),
+    linkedAccount({ id: 'inactive-saving', currency: 'USD', currentBalance: 210, status: 'inactive' }),
+    linkedAccount({ id: 'inactive-cash-management', currency: 'USD', currentBalance: 12_060, status: 'inactive' }),
+    createManualCashAccount({
+      id: 'active-manual',
+      currency: 'EUR',
+      currentBalance: 80_000,
+    }),
+    createManualCashAccount({
+      id: 'inactive-manual',
+      currency: 'EUR',
+      currentBalance: 40_000,
+      status: 'inactive',
+    }),
+  ];
+  const persistedHistory = structuredClone(accounts);
+
+  const summary = calculateCashAccountSummary(accounts);
+
+  assert.deepEqual(summary, {
+    totalAccounts: 4,
+    manualCount: 1,
+    linkedCount: 3,
+    totalsByCurrency: { USD: 12_380, EUR: 80_000 },
+    manualTotalsByCurrency: { EUR: 80_000 },
+    linkedTotalsByCurrency: { USD: 12_380 },
+  });
+  assert.deepEqual(accounts, persistedHistory);
+  assert.equal(accounts.filter((account) => account.status === 'inactive').length, 4);
 });
 
 test('duplicate linked-account identities in one payload collapse to the later provider record', () => {
@@ -674,10 +711,14 @@ test('disconnected account preserves transaction and reconciliation history', as
     bankTransactionReconciliations: [reconciliation],
   });
   const reloaded = await loadUserPortfolio('banking-disconnected-history-user');
+  const summary = calculateCashAccountSummary(reloaded.cashAccounts ?? []);
 
   assert.equal(reloaded.cashAccounts?.length, 2);
   assert.equal(reloaded.cashAccounts?.find((item) => item.id === activeLinked.id)?.status, 'inactive');
   assert.equal(reloaded.cashAccounts?.find((item) => item.id === manual.id)?.status, 'active');
+  assert.equal(summary.totalAccounts, 1);
+  assert.equal(summary.linkedCount, 0);
+  assert.equal(summary.manualCount, 1);
   assert.equal(reloaded.bankTransactions?.[0].cashAccountId, activeLinked.id);
   assert.deepEqual(reloaded.bankTransactionReconciliations, [reconciliation]);
 });

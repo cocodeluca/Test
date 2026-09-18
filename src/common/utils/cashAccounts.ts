@@ -293,14 +293,15 @@ export const deactivateLinkedCashAccountsForConnection = (
   );
 
 export const calculateCashAccountSummary = (accounts: CashAccount[]) => {
-  const manualAccounts = accounts.filter((account) => account.sourceType === 'manual');
-  const linkedAccounts = accounts.filter((account) => account.sourceType === 'linked');
+  const activeAccounts = accounts.filter((account) => account.status === 'active');
+  const manualAccounts = activeAccounts.filter((account) => account.sourceType === 'manual');
+  const linkedAccounts = activeAccounts.filter((account) => account.sourceType === 'linked');
 
   return {
-    totalAccounts: accounts.length,
+    totalAccounts: activeAccounts.length,
     manualCount: manualAccounts.length,
     linkedCount: linkedAccounts.length,
-    totalsByCurrency: groupCashAccountsByCurrency(accounts),
+    totalsByCurrency: groupCashAccountsByCurrency(activeAccounts),
     manualTotalsByCurrency: groupCashAccountsByCurrency(manualAccounts),
     linkedTotalsByCurrency: groupCashAccountsByCurrency(linkedAccounts),
   };

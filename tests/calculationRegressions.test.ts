@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { Lease, Mortgage, Property, RecurringExpense } from '../src/common/types';
+import type { CashAccount, Lease, Mortgage, Property, RecurringExpense } from '../src/common/types';
 import {
   calculateMortgageDebtPaydown,
   calculateMortgageProjection,
@@ -703,6 +703,19 @@ test('uses one explicit FX snapshot throughout portfolio calculations', () => {
   assert.ok(metrics.totalDebtIn1Year < metrics.totalDebt);
   assert.equal(metrics.totalMonthlyRent, 500);
   assert.equal(metrics.estimatedAnnualTax, 600);
+});
+
+test('legacy portfolio cash includes active accounts and ignores inactive accounts', () => {
+  const cashAccounts = [
+    { id: 'active-cash', currency: 'EUR', currentBalance: 500, status: 'active' },
+    { id: 'inactive-cash', currency: 'EUR', currentBalance: 900, status: 'inactive' },
+  ] as CashAccount[];
+  const persistedAccounts = structuredClone(cashAccounts);
+
+  const metrics = calculatePortfolioMetrics([], [], cashAccounts, [], 'EUR');
+
+  assert.equal(metrics.availableCash, 500);
+  assert.deepEqual(cashAccounts, persistedAccounts);
 });
 
 test('merges recurring and legacy expense categories without loss or duplication', () => {

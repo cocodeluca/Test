@@ -2052,7 +2052,7 @@ export const calculatePortfolioMetrics = (
     rateOverrides
   );
   const equityChangeIn1Year = totalEquityIn1Year - totalEquity;
-  const availableCash = cashAccounts.reduce(
+  const availableCash = cashAccounts.filter((account) => account.status === 'active').reduce(
     (sum, account) =>
       sum +
       convertCurrency(
