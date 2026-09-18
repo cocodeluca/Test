@@ -4,6 +4,9 @@ import type { AuthenticatedOpenBankingPrincipal } from './openBankingAuth';
 import type { OpenBankingLinkSessionStore } from './openBankingLinkSessions';
 import {
   OpenBankingConfigurationError,
+  inspectPlaidPilotConfiguration,
+  type PlaidPilotConfigurationStatus,
+  type PlaidPreflightIssue,
   readPlaidPilotConfiguration,
   SANTANDER_SPAIN_INSTITUTION_ID,
   validateSantanderSpainInstitution,
@@ -32,6 +35,7 @@ export interface PlaidPilotGateway {
     name: string;
     countryCodes: string[];
     products: string[];
+    oauth?: boolean;
   }>;
   fetchBalances(accessToken: string): Promise<PlaidAccountsBalanceResponse>;
   removeItem(accessToken: string): Promise<unknown>;
@@ -48,6 +52,22 @@ export interface PlaidPilotGateway {
 }
 
 export interface OpenBankingService {
+  getSantanderPreflight(
+    principal: AuthenticatedOpenBankingPrincipal
+  ): Promise<{
+    ready: boolean;
+    configuration: PlaidPilotConfigurationStatus;
+    institution: {
+      institutionId: typeof SANTANDER_SPAIN_INSTITUTION_ID;
+      countryCode: 'ES';
+      clientAccessConfirmed: boolean;
+      name: string | null;
+      accountsSupported: boolean;
+      balancesSupported: boolean;
+      oauthSupported: boolean;
+    };
+    issues: Array<PlaidPreflightIssue | 'PLAID_INSTITUTION_LOOKUP_FAILED' | 'SANTANDER_CAPABILITIES_INVALID'>;
+  }>;
   createConnectionSession(
     principal: AuthenticatedOpenBankingPrincipal,
     input: { providerName?: string; connectionId?: string | null }
@@ -123,6 +143,75 @@ export const createOpenBankingService = (dependencies: {
   const createConnectionId = dependencies.createConnectionId ?? (() => `connection-${randomUUID()}`);
 
   return {
+    async getSantanderPreflight(_principal) {
+      const configuration = inspectPlaidPilotConfiguration();
+      const unavailableInstitution = {
+        institutionId: SANTANDER_SPAIN_INSTITUTION_ID as typeof SANTANDER_SPAIN_INSTITUTION_ID,
+        countryCode: 'ES' as const,
+        clientAccessConfirmed: false,
+        name: null,
+        accountsSupported: false,
+        balancesSupported: false,
+        oauthSupported: false,
+      };
+      if (!configuration.ready) {
+        return {
+          ready: false,
+          configuration,
+          institution: unavailableInstitution,
+          issues: configuration.issues,
+        };
+      }
+
+      try {
+        const institution = await dependencies.plaid.fetchInstitution(
+          SANTANDER_SPAIN_INSTITUTION_ID
+        );
+        const accountsSupported = institution.products.includes('auth');
+        const balancesSupported = institution.products.includes('balance');
+        const oauthSupported = institution.oauth === true;
+        try {
+          validateSantanderSpainInstitution(institution);
+        } catch {
+          return {
+            ready: false,
+            configuration,
+            institution: {
+              institutionId: SANTANDER_SPAIN_INSTITUTION_ID,
+              countryCode: 'ES',
+              clientAccessConfirmed: true,
+              name: institution.name,
+              accountsSupported,
+              balancesSupported,
+              oauthSupported,
+            },
+            issues: ['SANTANDER_CAPABILITIES_INVALID'],
+          };
+        }
+        return {
+          ready: true,
+          configuration,
+          institution: {
+            institutionId: SANTANDER_SPAIN_INSTITUTION_ID,
+            countryCode: 'ES',
+            clientAccessConfirmed: true,
+            name: institution.name,
+            accountsSupported,
+            balancesSupported,
+            oauthSupported,
+          },
+          issues: [],
+        };
+      } catch {
+        return {
+          ready: false,
+          configuration,
+          institution: unavailableInstitution,
+          issues: ['PLAID_INSTITUTION_LOOKUP_FAILED'],
+        };
+      }
+    },
+
     async createConnectionSession(principal, input) {
       readPlaidPilotConfiguration();
       if (input.providerName !== 'plaid') {

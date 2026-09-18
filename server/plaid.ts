@@ -29,6 +29,7 @@ interface PlaidInstitutionResponse {
     name: string;
     country_codes: string[];
     products: string[];
+    oauth?: boolean;
   };
 }
 
@@ -141,9 +142,7 @@ export const createPlaidLinkToken = async (input: {
     body.products = products;
   }
 
-  if (process.env.PLAID_REDIRECT_URI) {
-    body.redirect_uri = process.env.PLAID_REDIRECT_URI;
-  }
+  body.redirect_uri = configuration.redirectUri;
 
   const result = await plaidRequest<PlaidLinkTokenResponse>('/link/token/create', body);
   return {
@@ -173,6 +172,7 @@ export const fetchPlaidInstitution = async (institutionId: string) => {
     name: result.institution.name,
     countryCodes: result.institution.country_codes,
     products: result.institution.products,
+    oauth: result.institution.oauth === true,
   };
 };
 

@@ -1,8 +1,10 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import type { CashAccount } from '../src/common/types';
 import {
   applyBankConnectionAccountResult,
@@ -19,10 +21,12 @@ import {
 } from '../server/openBankingLinkSessions';
 import {
   OpenBankingConfigurationError,
+  inspectPlaidPilotConfiguration,
   readPlaidPilotConfiguration,
 } from '../server/openBankingPolicy';
 import {
   createOpenBankingService,
+  type OpenBankingService,
   type PlaidPilotGateway,
 } from '../server/openBankingService';
 import {
@@ -32,20 +36,36 @@ import {
   type OpenBankingConnectionStore,
   type StoredOpenBankingConnection,
 } from '../server/openBankingStore';
+import { brokerApiPlugin } from '../server/brokerApiPlugin';
 
 const TEST_MASTER_KEY = Buffer.alloc(32, 17).toString('base64');
 const FIXED_NOW = '2026-09-17T15:00:00.000Z';
+
+interface TestResponse {
+  statusCode: number;
+  body: string;
+  setHeader(name: string, value: string): void;
+  end(value?: string): void;
+}
 
 const priorPlaidEnvironment = {
   PLAID_ENV: process.env.PLAID_ENV,
   PLAID_PRODUCTS: process.env.PLAID_PRODUCTS,
   PLAID_COUNTRY_CODES: process.env.PLAID_COUNTRY_CODES,
+  PLAID_CLIENT_ID: process.env.PLAID_CLIENT_ID,
+  PLAID_SECRET: process.env.PLAID_SECRET,
+  OPEN_BANKING_VAULT_KEY: process.env.OPEN_BANKING_VAULT_KEY,
+  PLAID_REDIRECT_URI: process.env.PLAID_REDIRECT_URI,
 };
 
 test.before(() => {
   process.env.PLAID_ENV = 'sandbox';
   process.env.PLAID_PRODUCTS = 'auth';
   process.env.PLAID_COUNTRY_CODES = 'ES';
+  process.env.PLAID_CLIENT_ID = 'test-client-id';
+  process.env.PLAID_SECRET = 'test-secret';
+  process.env.OPEN_BANKING_VAULT_KEY = TEST_MASTER_KEY;
+  process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
 });
 
 test.after(() => {
@@ -129,6 +149,7 @@ const makeGateway = (
       name: 'Banco Santander',
       countryCodes: ['ES'],
       products: ['auth', 'balance'],
+      oauth: true,
     };
   },
   async fetchBalances() {
@@ -238,17 +259,24 @@ test('server Link sessions reject wrong owners, expiry, and replay', () => {
 });
 
 test('pilot configuration rejects missing, non-ES, and write-capable products', () => {
-  assert.deepEqual(readPlaidPilotConfiguration({
+  const validEnvironment = {
     PLAID_ENV: 'sandbox',
     PLAID_PRODUCTS: 'auth',
     PLAID_COUNTRY_CODES: 'ES',
-  }), {
+    PLAID_CLIENT_ID: 'client-id',
+    PLAID_SECRET: 'secret',
+    OPEN_BANKING_VAULT_KEY: TEST_MASTER_KEY,
+    PLAID_REDIRECT_URI: 'http://localhost:8081/plaid-oauth',
+  };
+  assert.deepEqual(readPlaidPilotConfiguration(validEnvironment), {
     environment: 'sandbox',
     products: ['auth'],
     countryCodes: ['ES'],
+    redirectUri: 'http://localhost:8081/plaid-oauth',
   });
   assert.throws(() => readPlaidPilotConfiguration({}), OpenBankingConfigurationError);
   assert.throws(() => readPlaidPilotConfiguration({
+    ...validEnvironment,
     PLAID_ENV: 'sandbox',
     PLAID_PRODUCTS: 'auth',
     PLAID_COUNTRY_CODES: 'US',
@@ -261,11 +289,150 @@ test('pilot configuration rejects missing, non-ES, and write-capable products', 
     'auth,transfer',
   ]) {
     assert.throws(() => readPlaidPilotConfiguration({
+      ...validEnvironment,
       PLAID_ENV: 'sandbox',
       PLAID_PRODUCTS: products,
       PLAID_COUNTRY_CODES: 'ES',
     }), OpenBankingConfigurationError);
   }
+});
+
+test('preflight configuration reports missing secrets without returning secret values', () => {
+  const status = inspectPlaidPilotConfiguration({
+    PLAID_ENV: 'production',
+    PLAID_PRODUCTS: 'auth',
+    PLAID_COUNTRY_CODES: 'ES',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+  });
+
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.issues, [
+    'PLAID_CLIENT_ID_MISSING',
+    'PLAID_SECRET_MISSING',
+    'OPEN_BANKING_VAULT_KEY_MISSING',
+  ]);
+  assert.equal(JSON.stringify(status).includes('portfolio.example.com'), false);
+});
+
+test('OAuth redirect validation fails closed for unsafe production URLs', () => {
+  const base = {
+    PLAID_ENV: 'production',
+    PLAID_PRODUCTS: 'auth',
+    PLAID_COUNTRY_CODES: 'ES',
+    PLAID_CLIENT_ID: 'client-id',
+    PLAID_SECRET: 'secret',
+    OPEN_BANKING_VAULT_KEY: TEST_MASTER_KEY,
+  };
+  for (const redirectUri of [
+    undefined,
+    'http://portfolio.example.com/plaid-oauth',
+    'https://user:password@portfolio.example.com/plaid-oauth',
+    'https://portfolio.example.com/plaid-oauth?token=secret',
+    'https://portfolio.example.com/plaid-oauth#token',
+  ]) {
+    const status = inspectPlaidPilotConfiguration({
+      ...base,
+      PLAID_REDIRECT_URI: redirectUri,
+    });
+    assert.equal(status.ready, false);
+    assert.equal(status.oauth.redirectUriSafe, false);
+  }
+});
+
+test('Santander preflight confirms only sanitized Accounts and Balance readiness', async (context) => {
+  const { store } = await createStoreFixture(context);
+  const service = makeService(store);
+  const result = await service.getSantanderPreflight({ userId: 'owner-a' });
+
+  assert.equal(result.ready, true);
+  assert.equal(result.institution.institutionId, 'ins_65');
+  assert.equal(result.institution.countryCode, 'ES');
+  assert.equal(result.institution.clientAccessConfirmed, true);
+  assert.equal(result.institution.accountsSupported, true);
+  assert.equal(result.institution.balancesSupported, true);
+  assert.equal(result.institution.oauthSupported, true);
+  assert.equal(result.configuration.scope.transactionsEnabled, false);
+  assert.equal(result.configuration.scope.transferEnabled, false);
+  assert.equal(result.configuration.scope.paymentInitiationEnabled, false);
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes(process.env.PLAID_CLIENT_ID!), false);
+  assert.equal(serialized.includes(process.env.PLAID_SECRET!), false);
+  assert.equal(serialized.includes(process.env.OPEN_BANKING_VAULT_KEY!), false);
+  assert.equal(serialized.includes(process.env.PLAID_REDIRECT_URI!), false);
+});
+
+test('Santander preflight rejects missing capabilities and provider lookup failures', async (context) => {
+  const { store } = await createStoreFixture(context);
+  const missingCapability = await makeService(store, makeGateway({
+    async fetchInstitution() {
+      return {
+        institutionId: 'ins_65',
+        name: 'Banco Santander',
+        countryCodes: ['ES'],
+        products: ['auth'],
+        oauth: true,
+      };
+    },
+  })).getSantanderPreflight({ userId: 'owner-a' });
+  assert.equal(missingCapability.ready, false);
+  assert.deepEqual(missingCapability.issues, ['SANTANDER_CAPABILITIES_INVALID']);
+
+  const lookupFailure = await makeService(store, makeGateway({
+    async fetchInstitution() {
+      throw new Error('credential details must stay server-side');
+    },
+  })).getSantanderPreflight({ userId: 'owner-a' });
+  assert.equal(lookupFailure.ready, false);
+  assert.deepEqual(lookupFailure.issues, ['PLAID_INSTITUTION_LOOKUP_FAILED']);
+  assert.equal(JSON.stringify(lookupFailure).includes('credential details'), false);
+});
+
+test('Santander preflight route requires a backend-authenticated owner', async () => {
+  let preflightCalls = 0;
+  const handlers = new Map<string, (request: IncomingMessage, response: TestResponse) => Promise<void>>();
+  const plugin = brokerApiPlugin({
+    openBankingAuthenticator: unavailableOpenBankingAuthenticator,
+    openBankingService: {
+      async getSantanderPreflight() {
+        preflightCalls += 1;
+        throw new Error('must not be reached');
+      },
+    } as unknown as OpenBankingService,
+  });
+  (plugin.configureServer as (server: unknown) => void)({
+    middlewares: {
+      use(pathname: string, handler: (request: IncomingMessage, response: TestResponse) => Promise<void>) {
+        handlers.set(pathname, handler);
+      },
+    },
+  });
+  const request = Readable.from(['{}']) as unknown as IncomingMessage;
+  Object.assign(request, {
+    method: 'POST',
+    headers: {
+      origin: 'http://127.0.0.1:8081',
+      host: '127.0.0.1:8081',
+      'content-type': 'application/json',
+    },
+    socket: { remoteAddress: '127.0.0.1' },
+  });
+  const response: TestResponse = {
+    statusCode: 0,
+    body: '',
+    setHeader() {},
+    end(value) { this.body = value ?? ''; },
+  };
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    await handlers.get('/api/open-banking/preflight')!(request, response);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(preflightCalls, 0);
+  assert.equal(JSON.parse(response.body).code, 'OPEN_BANKING_AUTHENTICATION_REQUIRED');
 });
 
 test('browser-local identity cannot authenticate open banking requests', async () => {

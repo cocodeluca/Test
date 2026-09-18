@@ -9,6 +9,46 @@ export interface PlaidPilotConfiguration {
   environment: PlaidEnvironment;
   products: ['auth'];
   countryCodes: ['ES'];
+  redirectUri: string;
+}
+
+export type PlaidPreflightIssue =
+  | 'PLAID_CLIENT_ID_MISSING'
+  | 'PLAID_SECRET_MISSING'
+  | 'OPEN_BANKING_VAULT_KEY_MISSING'
+  | 'OPEN_BANKING_VAULT_KEY_INVALID'
+  | 'PLAID_ENV_INVALID'
+  | 'PLAID_PRODUCTS_INVALID'
+  | 'PLAID_COUNTRY_CODES_INVALID'
+  | 'PLAID_REDIRECT_URI_MISSING'
+  | 'PLAID_REDIRECT_URI_UNSAFE';
+
+export interface PlaidPilotConfigurationStatus {
+  ready: boolean;
+  environment: PlaidEnvironment | null;
+  credentials: {
+    clientIdConfigured: boolean;
+    secretConfigured: boolean;
+  };
+  vault: {
+    configured: boolean;
+    valid: boolean;
+  };
+  scope: {
+    countryCodes: ['ES'];
+    linkProducts: ['auth'];
+    accountsEnabled: true;
+    balancesEnabled: true;
+    transactionsEnabled: false;
+    transferEnabled: false;
+    paymentInitiationEnabled: false;
+  };
+  oauth: {
+    required: true;
+    redirectUriConfigured: boolean;
+    redirectUriSafe: boolean;
+  };
+  issues: PlaidPreflightIssue[];
 }
 
 export class OpenBankingConfigurationError extends Error {
@@ -26,41 +66,113 @@ const parseCsv = (value: string | undefined) =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+const isConfigured = (value: string | undefined) => Boolean(value?.trim());
+
+const isValidVaultKey = (value: string | undefined) => {
+  const normalized = value?.trim();
+  if (!normalized || !/^[A-Za-z0-9+/]{43}=$/.test(normalized)) return false;
+  const key = Buffer.from(normalized, 'base64');
+  return key.length === 32 && key.toString('base64') === normalized;
+};
+
+const isSafeRedirectUri = (
+  value: string | undefined,
+  plaidEnvironment: PlaidEnvironment | null
+) => {
+  const normalized = value?.trim();
+  if (!normalized) return false;
+
+  try {
+    const redirectUri = new URL(normalized);
+    const sandboxLocalhost =
+      plaidEnvironment === 'sandbox' &&
+      redirectUri.protocol === 'http:' &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(redirectUri.hostname);
+    return (
+      (redirectUri.protocol === 'https:' || sandboxLocalhost) &&
+      !redirectUri.username &&
+      !redirectUri.password &&
+      !redirectUri.search &&
+      !redirectUri.hash
+    );
+  } catch {
+    return false;
+  }
+};
+
+export const inspectPlaidPilotConfiguration = (
+  environment: NodeJS.ProcessEnv = process.env
+): PlaidPilotConfigurationStatus => {
+  const issues: PlaidPreflightIssue[] = [];
+  const rawEnvironment = environment.PLAID_ENV?.trim().toLowerCase();
+  const plaidEnvironment: PlaidEnvironment | null =
+    rawEnvironment === 'sandbox' ||
+    rawEnvironment === 'development' ||
+    rawEnvironment === 'production'
+      ? rawEnvironment
+      : null;
+  const clientIdConfigured = isConfigured(environment.PLAID_CLIENT_ID);
+  const secretConfigured = isConfigured(environment.PLAID_SECRET);
+  const vaultConfigured = isConfigured(environment.OPEN_BANKING_VAULT_KEY);
+  const vaultValid = isValidVaultKey(environment.OPEN_BANKING_VAULT_KEY);
+  const products = parseCsv(environment.PLAID_PRODUCTS).map((value) => value.toLowerCase());
+  const productsValid =
+    products.length === PLAID_READ_ONLY_PRODUCTS.length &&
+    products.every((value, index) => value === PLAID_READ_ONLY_PRODUCTS[index]);
+  const countryCodes = parseCsv(environment.PLAID_COUNTRY_CODES).map((value) => value.toUpperCase());
+  const countryCodesValid =
+    countryCodes.length === 1 && countryCodes[0] === SANTANDER_SPAIN_COUNTRY_CODE;
+  const redirectUriConfigured = isConfigured(environment.PLAID_REDIRECT_URI);
+  const redirectUriSafe = isSafeRedirectUri(environment.PLAID_REDIRECT_URI, plaidEnvironment);
+
+  if (!clientIdConfigured) issues.push('PLAID_CLIENT_ID_MISSING');
+  if (!secretConfigured) issues.push('PLAID_SECRET_MISSING');
+  if (!vaultConfigured) issues.push('OPEN_BANKING_VAULT_KEY_MISSING');
+  else if (!vaultValid) issues.push('OPEN_BANKING_VAULT_KEY_INVALID');
+  if (!plaidEnvironment) issues.push('PLAID_ENV_INVALID');
+  if (!productsValid) issues.push('PLAID_PRODUCTS_INVALID');
+  if (!countryCodesValid) issues.push('PLAID_COUNTRY_CODES_INVALID');
+  if (!redirectUriConfigured) issues.push('PLAID_REDIRECT_URI_MISSING');
+  else if (!redirectUriSafe) issues.push('PLAID_REDIRECT_URI_UNSAFE');
+
+  return {
+    ready: issues.length === 0,
+    environment: plaidEnvironment,
+    credentials: { clientIdConfigured, secretConfigured },
+    vault: { configured: vaultConfigured, valid: vaultValid },
+    scope: {
+      countryCodes: ['ES'],
+      linkProducts: ['auth'],
+      accountsEnabled: true,
+      balancesEnabled: true,
+      transactionsEnabled: false,
+      transferEnabled: false,
+      paymentInitiationEnabled: false,
+    },
+    oauth: {
+      required: true,
+      redirectUriConfigured,
+      redirectUriSafe,
+    },
+    issues,
+  };
+};
+
 export const readPlaidPilotConfiguration = (
   environment: NodeJS.ProcessEnv = process.env
 ): PlaidPilotConfiguration => {
-  const plaidEnvironment = environment.PLAID_ENV?.trim().toLowerCase();
-  if (
-    plaidEnvironment !== 'sandbox' &&
-    plaidEnvironment !== 'development' &&
-    plaidEnvironment !== 'production'
-  ) {
+  const status = inspectPlaidPilotConfiguration(environment);
+  if (!status.ready || !status.environment) {
     throw new OpenBankingConfigurationError(
-      'PLAID_ENV must explicitly be sandbox, development, or production.'
-    );
-  }
-
-  const products = parseCsv(environment.PLAID_PRODUCTS).map((value) => value.toLowerCase());
-  if (
-    products.length !== PLAID_READ_ONLY_PRODUCTS.length ||
-    products.some((value, index) => value !== PLAID_READ_ONLY_PRODUCTS[index])
-  ) {
-    throw new OpenBankingConfigurationError(
-      'The Santander pilot permits only the read-only Plaid auth bootstrap product.'
-    );
-  }
-
-  const countryCodes = parseCsv(environment.PLAID_COUNTRY_CODES).map((value) => value.toUpperCase());
-  if (countryCodes.length !== 1 || countryCodes[0] !== SANTANDER_SPAIN_COUNTRY_CODE) {
-    throw new OpenBankingConfigurationError(
-      'The Santander pilot permits only the ES country code.'
+      `Santander Plaid configuration is not ready: ${status.issues.join(', ')}.`
     );
   }
 
   return {
-    environment: plaidEnvironment,
+    environment: status.environment,
     products: ['auth'],
     countryCodes: ['ES'],
+    redirectUri: environment.PLAID_REDIRECT_URI!.trim(),
   };
 };
 
@@ -69,12 +181,14 @@ export const validateSantanderSpainInstitution = (institution: {
   name: string;
   countryCodes: string[];
   products: string[];
+  oauth?: boolean;
 }) => {
   if (
     institution.institutionId !== SANTANDER_SPAIN_INSTITUTION_ID ||
     !institution.countryCodes.includes(SANTANDER_SPAIN_COUNTRY_CODE) ||
     !institution.products.includes('balance') ||
-    !institution.products.includes('auth')
+    !institution.products.includes('auth') ||
+    institution.oauth !== true
   ) {
     throw new OpenBankingConfigurationError(
       'The connected institution is not approved for the Santander Spain balance pilot.'

@@ -393,6 +393,19 @@ const handleCreateOpenBankingSession = async (
   json(response, 200, result);
 };
 
+const handleOpenBankingPreflight = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
+) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
+  const principal = await authenticator.authenticate(request);
+  const result = await service.getSantanderPreflight(principal);
+  json(response, 200, result);
+};
+
 const handleCompleteOpenBankingConnection = async (
   request: IncomingMessage,
   response: ServerResponse,
@@ -638,6 +651,23 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
         );
       } catch (error) {
         jsonOpenBankingError(response, error, 'connection-disconnect');
+      }
+    });
+
+    server.middlewares.use('/api/open-banking/preflight', async (request, response) => {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response);
+      }
+
+      try {
+        await handleOpenBankingPreflight(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
+      } catch (error) {
+        jsonOpenBankingError(response, error, 'preflight');
       }
     });
     },
