@@ -1,13 +1,20 @@
 import React, { Suspense, lazy } from 'react'
 import ReactDOM from 'react-dom/client'
 import './platforms/web/styles/index.css'
+import { bootstrapOnCanonicalDevelopmentOrigin } from './platforms/web/utils/canonicalDevelopmentOrigin'
 
-const WebApp = lazy(() => import('./platforms/web/App'))
+bootstrapOnCanonicalDevelopmentOrigin({
+  isDevelopment: import.meta.env.DEV,
+  location: window.location,
+  start: () => {
+    const WebApp = lazy(() => import('./platforms/web/App'))
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <Suspense fallback={null}>
-      <WebApp />
-    </Suspense>
-  </React.StrictMode>,
-)
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <Suspense fallback={null}>
+          <WebApp />
+        </Suspense>
+      </React.StrictMode>,
+    )
+  },
+})

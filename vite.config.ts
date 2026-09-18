@@ -24,7 +24,9 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), brokerApiPlugin()],
     server: {
+      host: 'localhost',
       port: 5173,
+      strictPort: true,
       open: true,
       allowedHosts: true,
     },
