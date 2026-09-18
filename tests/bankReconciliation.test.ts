@@ -21,6 +21,7 @@ import {
   applyBankTransactionProviderLifecycle,
   upsertBankTransactions,
 } from '../src/common/utils/bankTransactions';
+import { createLinkedCashAccount } from '../src/common/utils/cashAccounts';
 import { buildExpenseObligationViews } from '../src/common/utils/propertyExpenses';
 import { buildRentReceivableViews } from '../src/common/utils/rentCollection';
 import {
@@ -105,6 +106,23 @@ test('an incoming transaction suggests one relevant unpaid rent receivable', () 
   assert.equal(suggestion?.targetType, 'rent-receivable');
   assert.equal(suggestion?.targetId, receivable.id);
   assert.deepEqual(suggestion?.reasons, ['exact-amount', 'date-proximity']);
+});
+
+test('an excluded linked account keeps transactions but receives no reconciliation suggestion', () => {
+  const bankTransaction = transaction();
+  const snapshot = structuredClone(bankTransaction);
+  const suggestion = suggestBankTransactionMatch(bankTransaction, context({
+    cashAccounts: [createLinkedCashAccount({
+      id: bankTransaction.cashAccountId,
+      connectionId: bankTransaction.connectionId,
+      providerName: bankTransaction.providerName,
+      externalAccountId: bankTransaction.externalAccountId,
+      isIncludedInPortfolio: false,
+    })],
+  }));
+
+  assert.equal(suggestion, null);
+  assert.deepEqual(bankTransaction, snapshot);
 });
 
 test('an outgoing transaction only suggests an existing canonical expense obligation', () => {

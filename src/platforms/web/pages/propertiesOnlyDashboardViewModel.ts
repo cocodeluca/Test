@@ -2,6 +2,7 @@ import type { CashAccount, Property, PropertyMetrics } from '../../../common/typ
 import type { DisplayCurrency } from '../../../common/types/settings';
 import type { PortfolioAlert } from '../../../common/utils/alerts';
 import type { MortgageDebtPaydownSummary } from '../../../common/utils/calculations';
+import { isActiveCashAccountIncludedInPortfolio } from '../../../common/utils/cashAccounts';
 import {
   convertCurrencyWithCoverage,
   type CurrencyRates,
@@ -267,7 +268,7 @@ export const buildPropertiesOnlyDashboardViewModel = ({
   );
   const valuation = aggregateCoveredAmounts(rows.map((row) => row.currentEstimatedValue));
   const ownCapitalInvested = aggregateCoveredAmounts(rows.map((row) => row.investedCapital));
-  const activeCashAccounts = cashAccounts.filter((account) => account.status === 'active');
+  const activeCashAccounts = cashAccounts.filter(isActiveCashAccountIncludedInPortfolio);
   const liquidity = aggregateCoveredAmounts(
     activeCashAccounts.map((account) => {
       const balance =

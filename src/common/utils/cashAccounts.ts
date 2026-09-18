@@ -61,6 +61,7 @@ export const normalizeCashAccount = (account: Partial<CashAccount> & { id: strin
     institutionId: account.institutionId ?? null,
     maskedReference: account.maskedReference ?? null,
     connectionId: account.connectionId ?? null,
+    isIncludedInPortfolio: account.isIncludedInPortfolio ?? true,
     status: account.status ?? 'active',
     syncStatus: account.syncStatus ?? (sourceType === 'manual' ? 'idle' : 'success'),
     lastSyncedAt: account.lastSyncedAt ?? null,
@@ -109,6 +110,7 @@ export const createManualCashAccount = (overrides: Partial<CashAccount> = {}): C
     currency: overrides.currency ?? 'EUR',
     currentBalance: overrides.currentBalance ?? overrides.balance ?? 0,
     availableBalance: overrides.availableBalance ?? null,
+    isIncludedInPortfolio: overrides.isIncludedInPortfolio,
     status: overrides.status ?? 'active',
     syncStatus: overrides.syncStatus ?? 'idle',
     notes: overrides.notes ?? '',
@@ -129,6 +131,7 @@ export const createLinkedCashAccount = (overrides: Partial<CashAccount> = {}): C
     currency: overrides.currency ?? 'EUR',
     currentBalance: overrides.currentBalance ?? overrides.balance ?? 0,
     availableBalance: overrides.availableBalance ?? null,
+    isIncludedInPortfolio: overrides.isIncludedInPortfolio,
     status: overrides.status ?? 'active',
     syncStatus: overrides.syncStatus ?? 'success',
     providerName: overrides.providerName ?? 'mock-bank',
@@ -168,6 +171,30 @@ export const getCashAccountDisplayName = (account: CashAccount) =>
 
 export const getCashAccountBalance = (account: CashAccount) =>
   normalizeBalance(account.currentBalance ?? account.balance);
+
+export const isCashAccountIncludedInPortfolio = (
+  account: Pick<CashAccount, 'sourceType' | 'isIncludedInPortfolio'>
+) => account.sourceType === 'manual' || account.isIncludedInPortfolio !== false;
+
+export const isActiveCashAccountIncludedInPortfolio = (
+  account: Pick<CashAccount, 'sourceType' | 'isIncludedInPortfolio' | 'status'>
+) => account.status === 'active' && isCashAccountIncludedInPortfolio(account);
+
+export const setLinkedCashAccountPortfolioInclusion = (
+  accounts: CashAccount[],
+  accountId: string,
+  isIncludedInPortfolio: boolean,
+  timestamp = new Date().toISOString()
+): CashAccount[] =>
+  accounts.map((account) =>
+    account.id === accountId && account.sourceType === 'linked' && account.status === 'active'
+      ? normalizeCashAccount({
+          ...account,
+          isIncludedInPortfolio,
+          updatedAt: timestamp,
+        })
+      : account
+  );
 
 export const groupCashAccountsByCurrency = (accounts: CashAccount[]) =>
   accounts.reduce<Record<DisplayCurrency, number>>((totals, account) => {
@@ -261,6 +288,8 @@ export const upsertLinkedCashAccounts = (
       ...account,
       id: existing?.id ?? account.id,
       createdAt: existing?.createdAt ?? account.createdAt,
+      isIncludedInPortfolio:
+        existing?.isIncludedInPortfolio ?? account.isIncludedInPortfolio ?? true,
     });
   });
 
@@ -293,7 +322,7 @@ export const deactivateLinkedCashAccountsForConnection = (
   );
 
 export const calculateCashAccountSummary = (accounts: CashAccount[]) => {
-  const activeAccounts = accounts.filter((account) => account.status === 'active');
+  const activeAccounts = accounts.filter(isActiveCashAccountIncludedInPortfolio);
   const manualAccounts = activeAccounts.filter((account) => account.sourceType === 'manual');
   const linkedAccounts = activeAccounts.filter((account) => account.sourceType === 'linked');
 

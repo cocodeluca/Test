@@ -388,6 +388,7 @@ test('uses informed zero available balances, FX-converts before summing, and ign
       cashAccount({ id: 'zero', currency: 'EUR', currentBalance: 900, availableBalance: 0 }),
       cashAccount({ id: 'fallback', currency: 'USD', currentBalance: 200, availableBalance: null }),
       cashAccount({ id: 'undefined-fallback', currency: 'USD', currentBalance: 100, availableBalance: undefined }),
+      cashAccount({ id: 'excluded', currency: 'EUR', currentBalance: 4_000, availableBalance: 3_000, sourceType: 'linked', isIncludedInPortfolio: false }),
       cashAccount({ id: 'inactive', currency: 'EUR', currentBalance: 5_000, status: 'inactive' }),
     ],
     alerts: [],

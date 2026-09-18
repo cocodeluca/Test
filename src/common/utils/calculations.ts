@@ -12,6 +12,7 @@ import { convertCurrency, convertCurrencyWithCoverage, sumInCurrency } from './c
 import { getActiveLease, syncPropertyLeaseData } from './leaseUpdates';
 import { calculateRecurringExpensePortfolioSummary, ensureRecurringExpenses } from './recurringExpenses';
 import { compareCivilDates, parseCivilDate, toCivilDate } from './civilDate';
+import { isActiveCashAccountIncludedInPortfolio } from './cashAccounts';
 import {
   getMortgageFinancialValidationIssues,
   getPropertyFinancialValidationIssues,
@@ -2052,7 +2053,7 @@ export const calculatePortfolioMetrics = (
     rateOverrides
   );
   const equityChangeIn1Year = totalEquityIn1Year - totalEquity;
-  const availableCash = cashAccounts.filter((account) => account.status === 'active').reduce(
+  const availableCash = cashAccounts.filter(isActiveCashAccountIncludedInPortfolio).reduce(
     (sum, account) =>
       sum +
       convertCurrency(

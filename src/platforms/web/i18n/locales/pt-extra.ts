@@ -9,6 +9,12 @@ export const ptExtra: TranslationTree = {
   },
   cashAccounts: {
     ...(esExtra.cashAccounts as TranslationTree),
+    excludeFromPortfolio: 'Excluir da carteira',
+    excludeFromPortfolioConfirm: 'Excluir {{account}} dos totais da carteira e das sugestoes de conciliacao? A ligacao ao fornecedor e o historico serao preservados.',
+    includeInPortfolio: 'Incluir na carteira',
+    excludedAccounts: 'Contas excluidas',
+    excludedAccountsHelp: 'Continuam ligadas ao fornecedor e a ser atualizadas, mas ficam fora dos totais da carteira e das sugestoes de conciliacao.',
+    excludedFromPortfolio: 'Excluida da carteira',
     deleteConnection: 'Eliminar ligação',
     deleteConnectionConfirm: 'Eliminar esta ligação desligada e as respetivas contas ligadas inativas? Esta ação não pode ser anulada.',
     deleteConnectionRequiresDisconnected: 'Apenas uma ligação bancária desligada pode ser eliminada.',

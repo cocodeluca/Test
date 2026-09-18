@@ -3,12 +3,14 @@ import type {
   BankReconciliationTargetType,
   BankTransaction,
   BankTransactionReconciliation,
+  CashAccount,
   ExpenseObligation,
   ExpensePayment,
   Property,
   RentPayment,
   RentReceivable,
 } from '../types';
+import { isCashAccountIncludedInPortfolio } from './cashAccounts';
 import { buildExpenseObligationViews, createManualExpensePayment } from './propertyExpenses';
 import { buildRentReceivableViews, createManualRentPayment } from './rentCollection';
 import type { BankTransactionLifecycleEvent } from './bankTransactions';
@@ -39,6 +41,7 @@ export interface BankReconciliationContext {
   rentPayments: RentPayment[];
   expenseObligations: ExpenseObligation[];
   expensePayments: ExpensePayment[];
+  cashAccounts?: CashAccount[];
   today?: Date;
 }
 
@@ -100,7 +103,11 @@ export const suggestBankTransactionMatch = (
   context: BankReconciliationContext,
   reconciliations: BankTransactionReconciliation[] = []
 ): BankReconciliationSuggestion | null => {
+  const cashAccount = context.cashAccounts?.find(
+    (account) => account.id === transaction.cashAccountId
+  );
   if (
+    (cashAccount && !isCashAccountIncludedInPortfolio(cashAccount)) ||
     transaction.pending ||
     transaction.amount === 0 ||
     (transaction.lifecycleStatus && transaction.lifecycleStatus !== 'active')

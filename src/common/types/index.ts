@@ -553,6 +553,8 @@ export interface CashAccount {
   institutionId?: string | null;
   maskedReference?: string | null;
   connectionId?: string | null;
+  /** Linked accounts default to included when absent for backward compatibility. */
+  isIncludedInPortfolio?: boolean;
   status: CashAccountStatus;
   syncStatus: SyncStatus;
   lastSyncedAt?: string | null;

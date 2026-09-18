@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2,
+  Eye,
+  EyeOff,
   Landmark,
   Link2,
   PencilLine,
@@ -36,7 +38,9 @@ import {
   getCashAccountBalance,
   getCashAccountDisplayName,
   getBankConnectionReconnectMode,
+  isCashAccountIncludedInPortfolio,
   providerLabels,
+  setLinkedCashAccountPortfolioInclusion,
   syncStatusLabels,
 } from '../../../common/utils/cashAccounts';
 import { normalizeProviderTransactions } from '../../../common/utils/bankTransactions';
@@ -224,7 +228,15 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const summary = useMemo(() => calculateCashAccountSummary(cashAccounts), [cashAccounts]);
-  const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? cashAccounts[0] ?? null;
+  const portfolioAccounts = useMemo(
+    () => cashAccounts.filter(isCashAccountIncludedInPortfolio),
+    [cashAccounts]
+  );
+  const excludedLinkedAccounts = useMemo(
+    () => cashAccounts.filter((account) => !isCashAccountIncludedInPortfolio(account)),
+    [cashAccounts]
+  );
+  const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? portfolioAccounts[0] ?? excludedLinkedAccounts[0] ?? null;
   const selectedAccountConnection = selectedAccount?.connectionId
     ? bankConnections.find((connection) => connection.id === selectedAccount.connectionId) ?? null
     : null;
@@ -237,6 +249,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     rentPayments,
     expenseObligations,
     expensePayments,
+    cashAccounts,
   };
   const handleConfirmTransaction = (
     transaction: BankTransaction,
@@ -412,6 +425,28 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     if (selectedAccountId === accountId) {
       setSelectedAccountId(next.cashAccounts[0]?.id ?? null);
     }
+  };
+
+  const handleSetPortfolioInclusion = (
+    account: CashAccount,
+    isIncludedInPortfolio: boolean
+  ) => {
+    if (
+      !isIncludedInPortfolio &&
+      !window.confirm(t('cashAccounts.excludeFromPortfolioConfirm', {
+        account: getCashAccountDisplayName(account),
+      }))
+    ) {
+      return;
+    }
+    commitBankingState((current) => ({
+      ...current,
+      cashAccounts: setLinkedCashAccountPortfolioInclusion(
+        current.cashAccounts,
+        account.id,
+        isIncludedInPortfolio
+      ),
+    }));
   };
 
   const handleConnectProvider = async () => {
@@ -672,7 +707,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             ) : (
               <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
                 <div className="space-y-3">
-                  {cashAccounts.map((account) => {
+                  {portfolioAccounts.map((account) => {
                     const connection = bankConnections.find((item) => item.id === account.connectionId);
                     return (
                       <button
@@ -702,6 +737,33 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                       </button>
                     );
                   })}
+                  {excludedLinkedAccounts.length > 0 ? (
+                    <div className={`rounded-[24px] border border-dashed p-4 ${appBorderClass}`}>
+                      <div className="flex items-start gap-3">
+                        <EyeOff className="mt-0.5 h-4 w-4 text-slate-500 dark:text-slate-400" />
+                        <div>
+                          <h3 className={`text-sm font-semibold ${appTextStrongClass}`}>{t('cashAccounts.excludedAccounts')}</h3>
+                          <p className={`mt-1 text-xs leading-5 ${appTextMutedClass}`}>{t('cashAccounts.excludedAccountsHelp')}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {excludedLinkedAccounts.map((account) => (
+                          <button
+                            key={account.id}
+                            type="button"
+                            onClick={() => setSelectedAccountId(account.id)}
+                            className={`flex w-full items-center justify-between gap-3 rounded-[18px] border px-3 py-3 text-left ${selectedAccountId === account.id ? 'border-amber-400/55 bg-amber-500/8' : appPanelInsetClass}`}
+                          >
+                            <span className="min-w-0">
+                              <span className={`block truncate text-sm font-semibold ${appTextStrongClass}`}>{getCashAccountDisplayName(account)}</span>
+                              <span className={`mt-1 block text-xs ${appTextMutedClass}`}>{account.institutionName}</span>
+                            </span>
+                            <span className={`shrink-0 text-sm font-semibold ${appTextMutedClass}`}>{formatNativeCurrency(getCashAccountBalance(account), account.currency)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <aside className={`${appPanelInsetClass} rounded-[26px] p-5`}>
                   {selectedAccount ? (
@@ -711,6 +773,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                           <p className={`text-xs font-semibold uppercase tracking-[0.18em] ${appTextSoftClass}`}>{t('cashAccounts.accountDetail')}</p>
                           <h3 className={`mt-2 text-xl font-semibold ${appTextStrongClass}`}>{getCashAccountDisplayName(selectedAccount)}</h3>
                           <p className={`mt-2 text-sm ${appTextMutedClass}`}>{selectedAccount.institutionName}</p>
+                          {!isCashAccountIncludedInPortfolio(selectedAccount) ? <span className="mt-3 inline-flex rounded-full border border-amber-300/70 bg-amber-50/80 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">{t('cashAccounts.excludedFromPortfolio')}</span> : null}
                         </div>
                         <div className={`${appPanelClass} rounded-[18px] p-3`}>
                           {selectedAccount.sourceType === 'manual' ? <Wallet className="h-5 w-5 text-cyan-600 dark:text-cyan-300" /> : <Landmark className="h-5 w-5 text-cyan-600 dark:text-cyan-300" />}
@@ -738,7 +801,15 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                             <button type="button" onClick={() => handleDeleteManualAccount(selectedAccount.id)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('common.delete')}</button>
                           </>
                         ) : (
-                          <button type="button" disabled={!selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
+                          <>
+                            <button type="button" disabled={!selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
+                            {selectedAccount.status === 'active' ? (
+                              <button type="button" onClick={() => handleSetPortfolioInclusion(selectedAccount, !isCashAccountIncludedInPortfolio(selectedAccount))} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${isCashAccountIncludedInPortfolio(selectedAccount) ? 'text-amber-700 dark:text-amber-300' : appTextStrongClass}`}>
+                                {isCashAccountIncludedInPortfolio(selectedAccount) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                {t(isCashAccountIncludedInPortfolio(selectedAccount) ? 'cashAccounts.excludeFromPortfolio' : 'cashAccounts.includeInPortfolio')}
+                              </button>
+                            ) : null}
+                          </>
                         )}
                       </div>
                     </>

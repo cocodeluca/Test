@@ -10,6 +10,8 @@ import {
   canRefreshBankConnection,
   deactivateLinkedCashAccountsForConnection,
   getBankConnectionReconnectMode,
+  normalizeCashAccount,
+  setLinkedCashAccountPortfolioInclusion,
   upsertLinkedCashAccounts,
 } from '../src/common/utils/cashAccounts';
 import {
@@ -140,6 +142,88 @@ test('cash-account summaries include active accounts and preserve inactive histo
   });
   assert.deepEqual(accounts, persistedHistory);
   assert.equal(accounts.filter((account) => account.status === 'inactive').length, 4);
+});
+
+test('linked account exclusion preserves provider identity, refreshes balances, and restores the same account', () => {
+  const manual = createManualCashAccount({ id: 'manual-unaffected', currentBalance: 500 });
+  const linked = linkedAccount({ id: 'linked-excluded', currentBalance: 1_000 });
+  const otherLinked = linkedAccount({
+    id: 'linked-unaffected',
+    externalAccountId: `${connection.institutionId}:savings`,
+    currentBalance: 2_000,
+  });
+  const excluded = setLinkedCashAccountPortfolioInclusion(
+    [manual, linked, otherLinked],
+    linked.id,
+    false,
+    '2026-09-18T20:00:00.000Z'
+  );
+  const excludedLinked = excluded.find((account) => account.id === linked.id)!;
+
+  assert.equal(excludedLinked.status, 'active');
+  assert.equal(excludedLinked.isIncludedInPortfolio, false);
+  assert.equal(excludedLinked.connectionId, linked.connectionId);
+  assert.equal(excludedLinked.externalAccountId, linked.externalAccountId);
+  assert.strictEqual(excluded.find((account) => account.id === manual.id), manual);
+  assert.strictEqual(excluded.find((account) => account.id === otherLinked.id), otherLinked);
+  assert.deepEqual(calculateCashAccountSummary(excluded), {
+    totalAccounts: 2,
+    manualCount: 1,
+    linkedCount: 1,
+    totalsByCurrency: { EUR: 2_500 },
+    manualTotalsByCurrency: { EUR: 500 },
+    linkedTotalsByCurrency: { EUR: 2_000 },
+  });
+
+  const refreshed = upsertLinkedCashAccounts(excluded, [linkedAccount({
+    id: 'provider-refresh-id',
+    currentBalance: 1_250,
+    availableBalance: 1_200,
+  })]);
+  const refreshedLinked = refreshed.find((account) => account.id === linked.id)!;
+  assert.equal(refreshedLinked.id, linked.id);
+  assert.equal(refreshedLinked.isIncludedInPortfolio, false);
+  assert.equal(refreshedLinked.currentBalance, 1_250);
+  assert.equal(refreshedLinked.availableBalance, 1_200);
+
+  const restored = setLinkedCashAccountPortfolioInclusion(refreshed, linked.id, true);
+  assert.equal(restored.find((account) => account.id === linked.id)?.id, linked.id);
+  assert.equal(restored.find((account) => account.id === linked.id)?.isIncludedInPortfolio, true);
+  assert.equal(calculateCashAccountSummary(restored).linkedCount, 2);
+});
+
+test('legacy cash accounts default to included during normalization', () => {
+  const normalized = normalizeCashAccount({
+    id: 'legacy-linked-account',
+    sourceType: 'linked',
+    status: 'active',
+  });
+
+  assert.equal(normalized.isIncludedInPortfolio, true);
+});
+
+test('excluded linked account and its historical transactions persist without deletion', async () => {
+  const linked = setLinkedCashAccountPortfolioInclusion(
+    [linkedAccount({ id: 'persisted-excluded' })],
+    'persisted-excluded',
+    false
+  )[0];
+  const historicalTransaction = normalize([providerRecord()], [linked])[0];
+
+  await saveUserPortfolio('excluded-history-user', {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: [linked],
+    bankConnections: [{ ...connection, linkedAccountIds: [linked.id] }],
+    bankTransactions: [historicalTransaction],
+  });
+  const reloaded = await loadUserPortfolio('excluded-history-user');
+
+  assert.equal(reloaded.cashAccounts[0].id, linked.id);
+  assert.equal(reloaded.cashAccounts[0].isIncludedInPortfolio, false);
+  assert.equal(reloaded.cashAccounts[0].status, 'active');
+  assert.equal(reloaded.bankTransactions?.[0].id, historicalTransaction.id);
+  assert.equal(reloaded.bankTransactions?.[0].cashAccountId, linked.id);
+  assert.deepEqual(reloaded.bankConnections[0].linkedAccountIds, [linked.id]);
 });
 
 test('duplicate linked-account identities in one payload collapse to the later provider record', () => {

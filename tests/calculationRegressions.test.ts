@@ -708,6 +708,7 @@ test('uses one explicit FX snapshot throughout portfolio calculations', () => {
 test('legacy portfolio cash includes active accounts and ignores inactive accounts', () => {
   const cashAccounts = [
     { id: 'active-cash', currency: 'EUR', currentBalance: 500, status: 'active' },
+    { id: 'excluded-linked-cash', currency: 'EUR', currentBalance: 700, status: 'active', sourceType: 'linked', isIncludedInPortfolio: false },
     { id: 'inactive-cash', currency: 'EUR', currentBalance: 900, status: 'inactive' },
   ] as CashAccount[];
   const persistedAccounts = structuredClone(cashAccounts);
