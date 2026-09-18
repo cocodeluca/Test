@@ -74,6 +74,7 @@ export interface ProviderAdapter {
   ) => Promise<ProviderTransactionPage>;
   refreshConnection: (connection: BankConnection, accounts: CashAccount[]) => Promise<ProviderConnectionResult>;
   disconnectConnection: (connection: BankConnection) => Promise<BankConnection>;
+  deleteConnection: (connection: BankConnection) => Promise<void>;
 }
 
 const buildId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -451,6 +452,7 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
       updatedAt: new Date().toISOString(),
     });
   },
+  async deleteConnection() {},
 });
 
 const plaidAdapter: ProviderAdapter = {
@@ -504,6 +506,12 @@ const plaidAdapter: ProviderAdapter = {
       linkedAccountIds: [],
       updatedAt: new Date().toISOString(),
     });
+  },
+  async deleteConnection(connection) {
+    await jsonRequest<{ ok: boolean; connectionId: string; deleted: boolean }>(
+      '/api/open-banking/connection/delete',
+      { connectionId: connection.id }
+    );
   },
 };
 

@@ -30,6 +30,26 @@ export interface BankingConnectionOperationState {
   expensePayments: ExpensePayment[];
 }
 
+export type BankConnectionDeletionBlockReason =
+  | 'not-found'
+  | 'not-disconnected'
+  | 'dependent-history';
+
+export type BankConnectionDeletionEligibility =
+  | { eligible: true; connection: BankConnection }
+  | {
+    eligible: false;
+    reason: BankConnectionDeletionBlockReason;
+    connection: BankConnection | null;
+    dependencies?: {
+      activeLinkedAccounts: number;
+      bankTransactions: number;
+      reconciliations: number;
+      rentPayments: number;
+      expensePayments: number;
+    };
+  };
+
 const upsertConnection = (
   connections: BankConnection[],
   connection: BankConnection
@@ -137,6 +157,99 @@ export const applyBankConnectionDisconnect = (
     timestamp
   ),
 });
+
+export const getBankConnectionDeletionEligibility = (
+  state: BankingConnectionOperationState,
+  connectionId: string
+): BankConnectionDeletionEligibility => {
+  const connection = state.bankConnections.find((item) => item.id === connectionId) ?? null;
+  if (!connection) return { eligible: false, reason: 'not-found', connection };
+  if (connection.connectionStatus !== 'disconnected') {
+    return { eligible: false, reason: 'not-disconnected', connection };
+  }
+
+  const connectionAccountIds = new Set(
+    state.cashAccounts
+      .filter((account) => account.sourceType === 'linked' && account.connectionId === connectionId)
+      .map((account) => account.id)
+  );
+  const activeLinkedAccountCount = state.cashAccounts.filter(
+    (account) =>
+      account.sourceType === 'linked' &&
+      account.connectionId === connectionId &&
+      account.status !== 'inactive'
+  ).length;
+  const dependentTransactions = state.bankTransactions.filter(
+    (transaction) =>
+      transaction.connectionId === connectionId || connectionAccountIds.has(transaction.cashAccountId)
+  );
+  const dependentTransactionIds = new Set(dependentTransactions.map((transaction) => transaction.id));
+  const dependentReconciliations = state.bankTransactionReconciliations.filter(
+    (reconciliation) =>
+      dependentTransactionIds.has(reconciliation.bankTransactionId) ||
+      (reconciliation.lifecycleTransactionId
+        ? dependentTransactionIds.has(reconciliation.lifecycleTransactionId)
+        : false)
+  );
+  const dependentPaymentIds = new Set(
+    dependentReconciliations.flatMap((reconciliation) =>
+      [reconciliation.paymentId, reconciliation.historicalPaymentId]
+        .filter((paymentId): paymentId is string => Boolean(paymentId))
+    )
+  );
+  const dependentRentPaymentCount = state.rentPayments.filter(
+    (payment) => dependentPaymentIds.has(payment.id)
+  ).length;
+  const dependentExpensePaymentCount = state.expensePayments.filter(
+    (payment) => dependentPaymentIds.has(payment.id)
+  ).length;
+
+  if (
+    activeLinkedAccountCount > 0 ||
+    dependentTransactions.length > 0 ||
+    dependentReconciliations.length > 0 ||
+    dependentRentPaymentCount > 0 ||
+    dependentExpensePaymentCount > 0
+  ) {
+    return {
+      eligible: false,
+      reason: 'dependent-history',
+      connection,
+      dependencies: {
+        activeLinkedAccounts: activeLinkedAccountCount,
+        bankTransactions: dependentTransactions.length,
+        reconciliations: dependentReconciliations.length,
+        rentPayments: dependentRentPaymentCount,
+        expensePayments: dependentExpensePaymentCount,
+      },
+    };
+  }
+
+  return { eligible: true, connection };
+};
+
+export const applyBankConnectionDeletion = (
+  state: BankingConnectionOperationState,
+  connectionId: string
+): BankingConnectionOperationState => {
+  if (!getBankConnectionDeletionEligibility(state, connectionId).eligible) return state;
+
+  return {
+    ...state,
+    bankConnections: state.bankConnections.filter((connection) => connection.id !== connectionId),
+    cashAccounts: state.cashAccounts.filter(
+      (account) =>
+        !(
+          account.sourceType === 'linked' &&
+          account.connectionId === connectionId &&
+          account.status === 'inactive'
+        )
+    ),
+    bankTransactionSyncStates: state.bankTransactionSyncStates.filter(
+      (syncState) => syncState.connectionId !== connectionId
+    ),
+  };
+};
 
 export const canRunBankConnectionRefresh = (
   state: BankingConnectionOperationState,

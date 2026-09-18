@@ -840,6 +840,52 @@ test('repeated disconnect is idempotent and does not revoke the same Item twice'
   assert.equal(retained?.revokedItems.length, 1);
 });
 
+test('only a disconnected owner-scoped provider record can be deleted', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const service = makeService(store);
+
+  await assert.rejects(
+    service.deleteDisconnectedConnection({ userId: 'owner-a' }, 'connection-santander-1'),
+    OpenBankingConnectionStateError
+  );
+  assert.ok(await store.loadOwned('owner-a', 'connection-santander-1'));
+
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  assert.deepEqual(
+    await service.deleteDisconnectedConnection({ userId: 'owner-b' }, 'connection-santander-1'),
+    { ok: true, connectionId: 'connection-santander-1', deleted: false }
+  );
+  assert.ok(await store.loadOwned('owner-a', 'connection-santander-1'));
+  const result = await service.deleteDisconnectedConnection(
+    { userId: 'owner-a' },
+    'connection-santander-1'
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    connectionId: 'connection-santander-1',
+    deleted: true,
+  });
+  assert.equal(await store.loadOwned('owner-a', 'connection-santander-1'), null);
+});
+
+test('deleting a missing disconnected provider record is idempotent for pre-fix connections', async (context) => {
+  const { store } = await createStoreFixture(context);
+  const service = makeService(store);
+
+  const result = await service.deleteDisconnectedConnection(
+    { userId: 'owner-a' },
+    'connection-pre-fix'
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    connectionId: 'connection-pre-fix',
+    deleted: false,
+  });
+});
+
 test('refresh is blocked while disconnected without calling Plaid', async (context) => {
   const { store } = await createStoreFixture(context);
   await store.save(storedConnection());

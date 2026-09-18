@@ -47,10 +47,12 @@ import {
 } from '../../../common/utils/bankReconciliation';
 import {
   applyBankConnectionAccountResult,
+  applyBankConnectionDeletion,
   applyBankConnectionDisconnect,
   applyBankConnectionSyncFailure,
   applyBankConnectionTransactionResult,
   canRunBankConnectionRefresh,
+  getBankConnectionDeletionEligibility,
   type BankingConnectionOperationState,
 } from '../../../common/utils/bankingConnectionOperations';
 import { getActiveFxSnapshot, getSettingsCurrencyRates } from '../../../common/utils/fxRates';
@@ -542,6 +544,61 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     }
   };
 
+  const handleDeleteConnection = async (connection: BankConnection) => {
+    setConnectionMessage(null);
+    const initialEligibility = getBankConnectionDeletionEligibility(
+      bankingStateRef.current,
+      connection.id
+    );
+    if (!initialEligibility.eligible) {
+      setConnectionMessage(t(
+        initialEligibility.reason === 'not-disconnected'
+          ? 'cashAccounts.deleteConnectionRequiresDisconnected'
+          : 'cashAccounts.deleteConnectionBlockedHistory'
+      ));
+      return;
+    }
+    if (
+      typeof window === 'undefined' ||
+      !window.confirm(t('cashAccounts.deleteConnectionConfirm'))
+    ) return;
+
+    try {
+      await runConnectionOperation(connection.id, async () => {
+        const currentEligibility = getBankConnectionDeletionEligibility(
+          bankingStateRef.current,
+          connection.id
+        );
+        if (!currentEligibility.eligible) {
+          setConnectionMessage(t(
+            currentEligibility.reason === 'not-disconnected'
+              ? 'cashAccounts.deleteConnectionRequiresDisconnected'
+              : 'cashAccounts.deleteConnectionBlockedHistory'
+          ));
+          return;
+        }
+        const adapter = openBankingAdapters[currentEligibility.connection.providerName];
+        await adapter.deleteConnection(currentEligibility.connection);
+        const next = commitBankingState((current) =>
+          applyBankConnectionDeletion(current, connection.id)
+        );
+        if (next.bankConnections.some((item) => item.id === connection.id)) {
+          setConnectionMessage(t('cashAccounts.deleteConnectionBlockedHistory'));
+          return;
+        }
+        setSelectedAccountId((current) =>
+          current && next.cashAccounts.some((account) => account.id === current)
+            ? current
+            : next.cashAccounts[0]?.id ?? null
+        );
+      });
+    } catch (error) {
+      setConnectionMessage(
+        error instanceof Error ? error.message : t('cashAccounts.errors.deleteConnectionUnavailable')
+      );
+    }
+  };
+
   return (
     <>
       <div className="space-y-5">
@@ -718,6 +775,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t(getBankConnectionReconnectMode(connection) === 'connect-again' ? 'common.connectAgain' : 'common.reconnect')}</button>
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
+                      {connection.connectionStatus === 'disconnected' ? <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDeleteConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('cashAccounts.deleteConnection')}</button> : null}
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-4">

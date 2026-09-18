@@ -4,13 +4,16 @@ import { IDBFactory } from 'fake-indexeddb';
 import type { BankConnection, BankTransaction, CashAccount } from '../src/common/types';
 import {
   applyBankConnectionAccountResult,
+  applyBankConnectionDeletion,
   applyBankConnectionDisconnect,
   applyBankConnectionTransactionResult,
+  getBankConnectionDeletionEligibility,
   type BankingConnectionOperationState,
 } from '../src/common/utils/bankingConnectionOperations';
 import {
   createBankConnection,
   createLinkedCashAccount,
+  createManualCashAccount,
 } from '../src/common/utils/cashAccounts';
 import {
   normalizeProviderTransactions,
@@ -241,6 +244,168 @@ test('a refresh on one connection preserves reconciliation data owned by another
 
   assert.deepEqual(refreshed.bankTransactionReconciliations, [reconciliation]);
   assert.ok(refreshed.bankTransactions.some((item) => item.id === transactionB.id));
+});
+
+test('a disconnected empty-history connection deletes only its inactive linked accounts', () => {
+  const disconnectedA = {
+    ...connectionA,
+    connectionStatus: 'disconnected' as const,
+    linkedAccountIds: [],
+  };
+  const inactiveA = accountFor(disconnectedA, { status: 'inactive' });
+  const unrelatedAccount = accountFor(connectionB);
+  const manualAccount = createManualCashAccount({ id: 'manual-cash', currentBalance: 500 });
+  const state: BankingConnectionOperationState = {
+    ...initialState(),
+    cashAccounts: [inactiveA, unrelatedAccount, manualAccount],
+    bankConnections: [disconnectedA, connectionB],
+    bankTransactionSyncStates: [
+      {
+        connectionId: disconnectedA.id,
+        providerName: disconnectedA.providerName,
+        syncStatus: 'success',
+        updatedAt: '2026-09-17T12:00:00.000Z',
+      },
+      {
+        connectionId: connectionB.id,
+        providerName: connectionB.providerName,
+        syncStatus: 'success',
+        updatedAt: '2026-09-17T12:00:00.000Z',
+      },
+    ],
+  };
+
+  assert.equal(getBankConnectionDeletionEligibility(state, disconnectedA.id).eligible, true);
+  const deleted = applyBankConnectionDeletion(state, disconnectedA.id);
+
+  assert.deepEqual(deleted.bankConnections, [connectionB]);
+  assert.deepEqual(deleted.cashAccounts, [unrelatedAccount, manualAccount]);
+  assert.deepEqual(
+    deleted.bankTransactionSyncStates.map((syncState) => syncState.connectionId),
+    [connectionB.id]
+  );
+  assert.strictEqual(deleted.bankTransactions, state.bankTransactions);
+  assert.strictEqual(deleted.bankTransactionReconciliations, state.bankTransactionReconciliations);
+  assert.strictEqual(deleted.rentPayments, state.rentPayments);
+  assert.strictEqual(deleted.expensePayments, state.expensePayments);
+});
+
+test('an active connection cannot be deleted', () => {
+  const state = initialState();
+  const eligibility = getBankConnectionDeletionEligibility(state, connectionA.id);
+
+  assert.deepEqual(eligibility, {
+    eligible: false,
+    reason: 'not-disconnected',
+    connection: connectionA,
+  });
+  assert.strictEqual(applyBankConnectionDeletion(state, connectionA.id), state);
+});
+
+test('a disconnected connection with transactions cannot be deleted', () => {
+  const disconnectedA = {
+    ...connectionA,
+    connectionStatus: 'disconnected' as const,
+    linkedAccountIds: [],
+  };
+  const inactiveA = accountFor(disconnectedA, { status: 'inactive' });
+  const transaction = transactionFor(disconnectedA, accountFor(disconnectedA));
+  const state: BankingConnectionOperationState = {
+    ...initialState(),
+    cashAccounts: [inactiveA, accountFor(connectionB)],
+    bankConnections: [disconnectedA, connectionB],
+    bankTransactions: [transaction],
+  };
+
+  const eligibility = getBankConnectionDeletionEligibility(state, disconnectedA.id);
+
+  assert.equal(eligibility.eligible, false);
+  assert.equal(eligibility.eligible ? null : eligibility.reason, 'dependent-history');
+  assert.deepEqual(eligibility.eligible ? null : eligibility.dependencies, {
+    activeLinkedAccounts: 0,
+    bankTransactions: 1,
+    reconciliations: 0,
+    rentPayments: 0,
+    expensePayments: 0,
+  });
+  assert.strictEqual(applyBankConnectionDeletion(state, disconnectedA.id), state);
+});
+
+test('reconciliation and rent or expense payment provenance block connection deletion', () => {
+  const disconnectedA = {
+    ...connectionA,
+    connectionStatus: 'disconnected' as const,
+    linkedAccountIds: [],
+  };
+  const inactiveA = accountFor(disconnectedA, { status: 'inactive' });
+  const activeA = accountFor(disconnectedA);
+  const rentTransaction = transactionFor(disconnectedA, activeA);
+  const expenseTransaction = transactionFor(disconnectedA, activeA, {
+    externalTransactionId: 'expense-transaction',
+    direction: 'debit',
+  });
+  const state: BankingConnectionOperationState = {
+    ...initialState(),
+    cashAccounts: [inactiveA, accountFor(connectionB)],
+    bankConnections: [disconnectedA, connectionB],
+    bankTransactions: [rentTransaction, expenseTransaction],
+    bankTransactionReconciliations: [
+      {
+        bankTransactionId: rentTransaction.id,
+        status: 'matched',
+        targetType: 'rent-receivable',
+        targetId: 'receivable-1',
+        paymentId: 'rent-payment-1',
+        paymentLinkType: 'created-bank-sync',
+        createdAt: '2026-09-17T12:00:00.000Z',
+        updatedAt: '2026-09-17T12:00:00.000Z',
+      },
+      {
+        bankTransactionId: expenseTransaction.id,
+        status: 'matched',
+        targetType: 'expense-obligation',
+        targetId: 'expense-obligation-1',
+        paymentId: 'expense-payment-1',
+        paymentLinkType: 'created-bank-sync',
+        createdAt: '2026-09-17T12:00:00.000Z',
+        updatedAt: '2026-09-17T12:00:00.000Z',
+      },
+    ],
+    rentPayments: [{
+      id: 'rent-payment-1',
+      propertyId: 'property-1',
+      leaseId: 'lease-1',
+      receivedDate: '2026-09-17',
+      amount: 100,
+      currency: 'EUR',
+      source: 'bank_sync',
+      allocations: [{ receivableId: 'receivable-1', amount: 100 }],
+    }],
+    expensePayments: [{
+      id: 'expense-payment-1',
+      propertyId: 'property-1',
+      paidDate: '2026-09-17',
+      amount: 100,
+      currency: 'EUR',
+      source: 'bank_sync',
+      allocations: [{ obligationId: 'expense-obligation-1', amount: 100 }],
+    }],
+  };
+
+  const eligibility = getBankConnectionDeletionEligibility(state, disconnectedA.id);
+
+  assert.equal(eligibility.eligible, false);
+  assert.equal(eligibility.eligible ? null : eligibility.reason, 'dependent-history');
+  assert.deepEqual(eligibility.eligible ? null : eligibility.dependencies, {
+    activeLinkedAccounts: 0,
+    bankTransactions: 2,
+    reconciliations: 2,
+    rentPayments: 1,
+    expensePayments: 1,
+  });
+  assert.strictEqual(applyBankConnectionDeletion(state, disconnectedA.id), state);
+  assert.equal(state.rentPayments.length, 1);
+  assert.equal(state.expensePayments.length, 1);
 });
 
 test('disconnect and connect again preserve logical history and another concurrent refresh', async () => {

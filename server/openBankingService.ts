@@ -93,6 +93,10 @@ export interface OpenBankingService {
     principal: AuthenticatedOpenBankingPrincipal,
     connectionId: string
   ): Promise<{ ok: true; connectionId: string }>;
+  deleteDisconnectedConnection(
+    principal: AuthenticatedOpenBankingPrincipal,
+    connectionId: string
+  ): Promise<{ ok: true; connectionId: string; deleted: boolean }>;
 }
 
 export class OpenBankingConnectionStateError extends Error {
@@ -473,6 +477,18 @@ export const createOpenBankingService = (dependencies: {
         expectedItemId: liveItem.itemId,
       });
       return { ok: true, connectionId: stored.id };
+    },
+
+    async deleteDisconnectedConnection(principal, connectionId) {
+      const stored = await dependencies.store.loadOwned(principal.userId, connectionId);
+      if (!stored) return { ok: true, connectionId, deleted: false };
+      if (stored.providerItemStatus !== 'disconnected') {
+        throw new OpenBankingConnectionStateError(
+          'Only a disconnected open banking connection can be deleted.'
+        );
+      }
+      const deleted = await dependencies.store.deleteOwned(principal.userId, connectionId);
+      return { ok: true, connectionId, deleted };
     },
   };
 };

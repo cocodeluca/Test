@@ -331,11 +331,16 @@ export const esExtra = {
     providerError: 'Error del proveedor',
     connecting: 'Conectando...',
     startSecureConnection: 'Iniciar conexion segura',
+    deleteConnection: 'Eliminar conexion',
+    deleteConnectionConfirm: 'Eliminar esta conexion desconectada y sus cuentas vinculadas inactivas? Esta accion no se puede deshacer.',
+    deleteConnectionRequiresDisconnected: 'Solo se puede eliminar una conexion bancaria desconectada.',
+    deleteConnectionBlockedHistory: 'Esta conexion debe conservarse porque hay historial bancario o procedencia de pagos vinculada a ella.',
     errors: {
       connectUnavailable: 'No se puede conectar la entidad en este momento.',
       refreshUnavailable: 'No se puede actualizar esta conexion en este momento.',
       reconnectUnavailable: 'No se puede reconectar esta entidad en este momento.',
       disconnectUnavailable: 'No se puede desconectar esta entidad en este momento.',
+      deleteConnectionUnavailable: 'No se puede eliminar esta conexion en este momento.',
     },
     sourceOptions: {
       manual: 'Manual',

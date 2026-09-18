@@ -467,6 +467,24 @@ const handleDisconnectOpenBankingConnection = async (
   json(response, 200, result);
 };
 
+const handleDeleteOpenBankingConnection = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
+) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
+  const principal = await authenticator.authenticate(request);
+  const body = await readJsonBody<{ connectionId?: string }>(request);
+  if (!body.connectionId) {
+    json(response, 400, { error: 'connectionId is required.' });
+    return;
+  }
+  const result = await service.deleteDisconnectedConnection(principal, body.connectionId);
+  json(response, 200, result);
+};
+
 export interface BrokerApiPluginOptions {
   accountBackupStore?: AccountBackupStore;
   authService?: ServerAuthService;
@@ -659,6 +677,23 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
         );
       } catch (error) {
         jsonOpenBankingError(response, error, 'connection-disconnect');
+      }
+    });
+
+    server.middlewares.use('/api/open-banking/connection/delete', async (request, response) => {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response);
+      }
+
+      try {
+        await handleDeleteOpenBankingConnection(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
+      } catch (error) {
+        jsonOpenBankingError(response, error, 'connection-delete');
       }
     });
 

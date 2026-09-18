@@ -9,6 +9,14 @@ export const ptExtra: TranslationTree = {
   },
   cashAccounts: {
     ...(esExtra.cashAccounts as TranslationTree),
+    deleteConnection: 'Eliminar ligação',
+    deleteConnectionConfirm: 'Eliminar esta ligação desligada e as respetivas contas ligadas inativas? Esta ação não pode ser anulada.',
+    deleteConnectionRequiresDisconnected: 'Apenas uma ligação bancária desligada pode ser eliminada.',
+    deleteConnectionBlockedHistory: 'Esta ligação deve ser mantida porque existe histórico bancário ou proveniência de pagamentos dependente dela.',
+    errors: {
+      ...((esExtra.cashAccounts as TranslationTree).errors as TranslationTree),
+      deleteConnectionUnavailable: 'Não foi possível eliminar esta ligação agora.',
+    },
     transactionsTab: 'Transações',
     transactionsTitle: 'Transações bancárias',
     transactionsDescription: 'Consulte as transações já sincronizadas das contas simuladas ligadas.',

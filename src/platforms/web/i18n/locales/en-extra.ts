@@ -331,11 +331,16 @@ export const enExtra = {
     providerError: 'Provider error',
     connecting: 'Connecting...',
     startSecureConnection: 'Start secure connection',
+    deleteConnection: 'Delete connection',
+    deleteConnectionConfirm: 'Delete this disconnected connection and its inactive linked accounts? This cannot be undone.',
+    deleteConnectionRequiresDisconnected: 'Only a disconnected bank connection can be deleted.',
+    deleteConnectionBlockedHistory: 'This connection must be retained because Banking history or linked payment provenance depends on it.',
     errors: {
       connectUnavailable: 'Unable to connect the institution right now.',
       refreshUnavailable: 'Unable to refresh this connection right now.',
       reconnectUnavailable: 'Unable to reconnect this institution right now.',
       disconnectUnavailable: 'Unable to disconnect this institution right now.',
+      deleteConnectionUnavailable: 'Unable to delete this connection right now.',
     },
     sourceOptions: {
       manual: 'Manual',
