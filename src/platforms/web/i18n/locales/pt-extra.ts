@@ -3,6 +3,10 @@ import { esExtra } from './es-extra';
 
 export const ptExtra: TranslationTree = {
   ...esExtra,
+  common: {
+    ...(esExtra.common as TranslationTree),
+    connectAgain: 'Conectar novamente',
+  },
   cashAccounts: {
     ...(esExtra.cashAccounts as TranslationTree),
     transactionsTab: 'Transações',

@@ -35,6 +35,7 @@ import {
   createManualCashAccount,
   getCashAccountBalance,
   getCashAccountDisplayName,
+  getBankConnectionReconnectMode,
   providerLabels,
   syncStatusLabels,
 } from '../../../common/utils/cashAccounts';
@@ -222,6 +223,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
 
   const summary = useMemo(() => calculateCashAccountSummary(cashAccounts), [cashAccounts]);
   const selectedAccount = cashAccounts.find((account) => account.id === selectedAccountId) ?? cashAccounts[0] ?? null;
+  const selectedAccountConnection = selectedAccount?.connectionId
+    ? bankConnections.find((connection) => connection.id === selectedAccount.connectionId) ?? null
+    : null;
   const mockConnection = bankConnections.find(
     (connection) => connection.providerName === 'mock-bank' && connection.connectionStatus !== 'disconnected'
   );
@@ -492,6 +496,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           institutionId: currentConnection.institutionId,
           scenario: 'success',
           connectionId: currentConnection.id,
+          connectionStatus: currentConnection.connectionStatus,
         });
         const result = await adapter.completeConnection(session, {
           userId,
@@ -676,7 +681,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                             <button type="button" onClick={() => handleDeleteManualAccount(selectedAccount.id)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('common.delete')}</button>
                           </>
                         ) : (
-                          <button type="button" onClick={() => { const connection = bankConnections.find((item) => item.id === selectedAccount.connectionId); if (connection) { void handleRefreshConnection(connection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
+                          <button type="button" disabled={!selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
                         )}
                       </div>
                     </>
@@ -711,7 +716,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
-                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t('common.reconnect')}</button>
+                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t(getBankConnectionReconnectMode(connection) === 'connect-again' ? 'common.connectAgain' : 'common.reconnect')}</button>
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
                     </div>
                   </div>

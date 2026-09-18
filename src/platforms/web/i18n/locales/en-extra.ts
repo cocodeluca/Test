@@ -35,6 +35,7 @@ export const enExtra = {
     back: 'Back',
     refresh: 'Refresh',
     reconnect: 'Reconnect',
+    connectAgain: 'Connect again',
     review: 'Review',
     accounts: 'Accounts',
     connections: 'Connections',

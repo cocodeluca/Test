@@ -26,6 +26,7 @@ import {
 } from '../server/openBankingPolicy';
 import {
   createOpenBankingService,
+  OpenBankingConnectionStateError,
   type OpenBankingService,
   type PlaidPilotGateway,
 } from '../server/openBankingService';
@@ -101,6 +102,9 @@ const storedConnection = (
   institutionId: 'ins_65',
   accessToken: 'access-production-secret-value',
   itemId: 'item-santander-1',
+  providerItemStatus: 'active',
+  disconnectedAt: null,
+  revokedItems: [],
   selectedAccountIds: ['plaid-account-1'],
   consentExpirationTime: null,
   createdAt: FIXED_NOW,
@@ -210,7 +214,7 @@ test('encrypted vault round-trips tokens without storing plaintext', async (cont
   await store.save(connection);
 
   const fileContent = await readFile(filePath, 'utf8');
-  assert.equal(fileContent.includes(connection.accessToken), false);
+  assert.equal(fileContent.includes(connection.accessToken!), false);
   assert.equal(fileContent.includes('"accessToken"'), false);
   assert.match(fileContent, /"algorithm": "aes-256-gcm"/);
   assert.equal((await store.loadOwned(connection.userId, connection.id))?.accessToken, connection.accessToken);
@@ -643,7 +647,219 @@ test('wrong-owner and replayed Link completion are rejected before token exchang
   assert.equal(exchangeCalls, 1);
 });
 
-test('reconnect uses update mode, preserves connection ID, and keeps canonical account identity', async (context) => {
+test('connect then disconnect revokes the Plaid Item and retains owner-scoped audit metadata', async (context) => {
+  const { store, filePath } = await createStoreFixture(context);
+  const removedTokens: string[] = [];
+  const service = makeService(store, makeGateway({
+    async removeItem(accessToken) {
+      removedTokens.push(accessToken);
+      return { removed: true };
+    },
+  }));
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid' }
+  );
+  const connected = await service.completeConnection(
+    { userId: 'owner-a' },
+    { sessionId: session.sessionId, publicToken: 'public-token' }
+  );
+
+  await service.disconnectConnection({ userId: 'owner-a' }, connected.connection.id);
+
+  const retained = await store.loadOwned('owner-a', connected.connection.id);
+  assert.deepEqual(removedTokens, ['access-from-exchange']);
+  assert.equal(retained?.providerItemStatus, 'disconnected');
+  assert.equal(retained?.accessToken, null);
+  assert.equal(retained?.itemId, null);
+  assert.equal(retained?.disconnectedAt, FIXED_NOW);
+  assert.deepEqual(retained?.revokedItems, [
+    { itemId: 'item-from-exchange', revokedAt: FIXED_NOW },
+  ]);
+  assert.equal(retained?.createdAt, connected.connection.createdAt);
+  const persisted = await readFile(filePath, 'utf8');
+  assert.equal(persisted.includes('access-from-exchange'), false);
+  assert.match(persisted, /"encryptedAccessToken": null/);
+});
+
+test('a revoked provider Item cannot create an update-mode Link session', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const linkAccessTokens: Array<string | null | undefined> = [];
+  const service = makeService(store, makeGateway({
+    async createLinkToken({ accessToken }) {
+      linkAccessTokens.push(accessToken);
+      return { linkToken: accessToken ? 'link-update' : 'link-create', mode: accessToken ? 'update' : 'create' };
+    },
+  }));
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+  );
+
+  assert.equal(session.mode, 'create');
+  assert.equal(session.connectionId, 'connection-santander-1');
+  assert.deepEqual(linkAccessTokens, [null]);
+});
+
+test('connect again uses standard Link and rebinds the new Item to the logical connection', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const exchangedPublicTokens: string[] = [];
+  const service = makeService(store, makeGateway({
+    async exchangePublicToken(publicToken) {
+      exchangedPublicTokens.push(publicToken);
+      return { access_token: 'access-reconnected', item_id: 'item-reconnected' };
+    },
+  }));
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+  );
+
+  const result = await service.completeConnection(
+    { userId: 'owner-a' },
+    { sessionId: session.sessionId, publicToken: 'public-reconnected' }
+  );
+  const rebound = await store.loadOwned('owner-a', 'connection-santander-1');
+
+  assert.equal(session.mode, 'create');
+  assert.deepEqual(exchangedPublicTokens, ['public-reconnected']);
+  assert.equal(result.connection.id, 'connection-santander-1');
+  assert.equal(rebound?.id, 'connection-santander-1');
+  assert.equal(rebound?.providerItemStatus, 'active');
+  assert.equal(rebound?.accessToken, 'access-reconnected');
+  assert.equal(rebound?.itemId, 'item-reconnected');
+  assert.equal(rebound?.disconnectedAt, null);
+  assert.deepEqual(rebound?.revokedItems, [
+    { itemId: 'item-santander-1', revokedAt: FIXED_NOW },
+  ]);
+});
+
+test('connect again refuses a different institution before changing logical identity', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const removedTokens: string[] = [];
+  const service = makeService(store, makeGateway({
+    async fetchItem() {
+      return { item: { item_id: 'item-other', institution_id: 'ins_other' } };
+    },
+    async removeItem(accessToken) {
+      removedTokens.push(accessToken);
+      return { removed: true };
+    },
+  }));
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+  );
+
+  await assert.rejects(
+    service.completeConnection(
+      { userId: 'owner-a' },
+      { sessionId: session.sessionId, publicToken: 'public-other-institution' }
+    ),
+    OpenBankingConnectionStateError
+  );
+
+  const retained = await store.loadOwned('owner-a', 'connection-santander-1');
+  assert.deepEqual(removedTokens, [
+    'access-production-secret-value',
+    'access-from-exchange',
+  ]);
+  assert.equal(retained?.providerItemStatus, 'disconnected');
+  assert.equal(retained?.accessToken, null);
+  assert.equal(retained?.id, 'connection-santander-1');
+});
+
+test('connect again never reuses the revoked access token', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const removedTokens: string[] = [];
+  const linkAccessTokens: Array<string | null | undefined> = [];
+  const fetchedTokens: string[] = [];
+  const service = makeService(store, makeGateway({
+    async removeItem(accessToken) {
+      removedTokens.push(accessToken);
+      return { removed: true };
+    },
+    async createLinkToken({ accessToken }) {
+      linkAccessTokens.push(accessToken);
+      return { linkToken: 'link-create', mode: 'create' };
+    },
+    async exchangePublicToken() {
+      return { access_token: 'access-new-item', item_id: 'item-new-item' };
+    },
+    async fetchItem(accessToken) {
+      fetchedTokens.push(accessToken);
+      return { item: { item_id: 'item-new-item', institution_id: 'ins_65' } };
+    },
+    async fetchBalances(accessToken) {
+      fetchedTokens.push(accessToken);
+      return { accounts: [plaidAccount], item: { institution_id: 'ins_65' } };
+    },
+  }));
+
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+  );
+  await service.completeConnection(
+    { userId: 'owner-a' },
+    { sessionId: session.sessionId, publicToken: 'public-new-item' }
+  );
+
+  assert.deepEqual(removedTokens, ['access-production-secret-value']);
+  assert.deepEqual(linkAccessTokens, [null]);
+  assert.deepEqual(fetchedTokens, ['access-new-item', 'access-new-item']);
+  assert.equal(fetchedTokens.includes('access-production-secret-value'), false);
+});
+
+test('repeated disconnect is idempotent and does not revoke the same Item twice', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  let removeCalls = 0;
+  const service = makeService(store, makeGateway({
+    async removeItem() {
+      removeCalls += 1;
+      return { removed: true };
+    },
+  }));
+
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+
+  const retained = await store.loadOwned('owner-a', 'connection-santander-1');
+  assert.equal(removeCalls, 1);
+  assert.equal(retained?.providerItemStatus, 'disconnected');
+  assert.equal(retained?.revokedItems.length, 1);
+});
+
+test('refresh is blocked while disconnected without calling Plaid', async (context) => {
+  const { store } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  let balanceCalls = 0;
+  const service = makeService(store, makeGateway({
+    async fetchBalances() {
+      balanceCalls += 1;
+      return { accounts: [plaidAccount], item: { institution_id: 'ins_65' } };
+    },
+  }));
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+
+  await assert.rejects(
+    service.refreshConnection({ userId: 'owner-a' }, 'connection-santander-1'),
+    OpenBankingConnectionStateError
+  );
+  assert.equal(balanceCalls, 0);
+});
+
+test('live Item reauthentication uses update mode, preserves connection ID, and keeps canonical account identity', async (context) => {
   const { store } = await createStoreFixture(context);
   await store.save(storedConnection());
   let exchangeCalls = 0;

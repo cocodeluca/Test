@@ -14,8 +14,14 @@ export interface StoredOpenBankingConnection {
   providerName: OpenBankingProviderName;
   institutionName: string;
   institutionId: string;
-  accessToken: string;
-  itemId: string;
+  accessToken: string | null;
+  itemId: string | null;
+  providerItemStatus: 'active' | 'disconnected';
+  disconnectedAt: string | null;
+  revokedItems: Array<{
+    itemId: string;
+    revokedAt: string;
+  }>;
   selectedAccountIds: string[];
   consentExpirationTime?: string | null;
   createdAt: string;
@@ -31,7 +37,7 @@ interface EncryptedSecret {
 }
 
 interface PersistedOpenBankingConnection extends Omit<StoredOpenBankingConnection, 'accessToken'> {
-  encryptedAccessToken: EncryptedSecret;
+  encryptedAccessToken: EncryptedSecret | null;
 }
 
 export interface OpenBankingConnectionStore {
@@ -42,6 +48,11 @@ export interface OpenBankingConnectionStore {
     userId: string,
     id: string,
     patch: Partial<Omit<StoredOpenBankingConnection, 'id' | 'userId' | 'accessToken'>>
+  ): Promise<StoredOpenBankingConnection>;
+  markDisconnectedOwned(
+    userId: string,
+    id: string,
+    input: { revokedAt: string; expectedItemId: string }
   ): Promise<StoredOpenBankingConnection>;
   deleteOwned(userId: string, id: string): Promise<boolean>;
 }
@@ -138,7 +149,21 @@ const isPersistedRecord = (value: unknown): value is PersistedOpenBankingConnect
     typeof record.providerName === 'string' &&
     typeof record.institutionName === 'string' &&
     typeof record.institutionId === 'string' &&
-    typeof record.itemId === 'string' &&
+    (typeof record.itemId === 'string' || record.itemId === null) &&
+    (record.providerItemStatus === undefined ||
+      record.providerItemStatus === 'active' ||
+      record.providerItemStatus === 'disconnected') &&
+    (record.disconnectedAt === undefined ||
+      record.disconnectedAt === null ||
+      typeof record.disconnectedAt === 'string') &&
+    (record.revokedItems === undefined ||
+      (Array.isArray(record.revokedItems) &&
+        record.revokedItems.every((item) =>
+          Boolean(item) &&
+          typeof item === 'object' &&
+          typeof (item as Record<string, unknown>).itemId === 'string' &&
+          typeof (item as Record<string, unknown>).revokedAt === 'string'
+        ))) &&
     Array.isArray(record.selectedAccountIds) &&
     record.selectedAccountIds.every((id) => typeof id === 'string') &&
     (record.consentExpirationTime === undefined ||
@@ -146,7 +171,12 @@ const isPersistedRecord = (value: unknown): value is PersistedOpenBankingConnect
       typeof record.consentExpirationTime === 'string') &&
     typeof record.createdAt === 'string' &&
     typeof record.updatedAt === 'string' &&
-    typeof record.encryptedAccessToken === 'object' &&
+    (record.encryptedAccessToken === null ||
+      typeof record.encryptedAccessToken === 'object') &&
+    (record.encryptedAccessToken === null
+      ? record.itemId === null && record.providerItemStatus === 'disconnected'
+      : typeof record.itemId === 'string' &&
+        (record.providerItemStatus === undefined || record.providerItemStatus === 'active')) &&
     !('accessToken' in record)
   );
 };
@@ -197,9 +227,16 @@ export const createOpenBankingConnectionStore = (options: {
     record: PersistedOpenBankingConnection
   ): StoredOpenBankingConnection => {
     const { encryptedAccessToken, ...metadata } = record;
+    const providerItemStatus = record.providerItemStatus ??
+      (record.encryptedAccessToken ? 'active' : 'disconnected');
     return {
       ...metadata,
-      accessToken: decryptSecret(encryptedAccessToken, key, buildAssociatedData(metadata)),
+      providerItemStatus,
+      disconnectedAt: record.disconnectedAt ?? null,
+      revokedItems: record.revokedItems ?? [],
+      accessToken: encryptedAccessToken
+        ? decryptSecret(encryptedAccessToken, key, buildAssociatedData(metadata))
+        : null,
     };
   };
 
@@ -209,7 +246,9 @@ export const createOpenBankingConnectionStore = (options: {
     const { accessToken, ...metadata } = record;
     return {
       ...metadata,
-      encryptedAccessToken: encryptSecret(accessToken, key, buildAssociatedData(metadata)),
+      encryptedAccessToken: accessToken
+        ? encryptSecret(accessToken, key, buildAssociatedData(metadata))
+        : null,
     };
   };
 
@@ -243,6 +282,14 @@ export const createOpenBankingConnectionStore = (options: {
 
     async save(connection) {
       return withWriteLock(async () => {
+        if (
+          (connection.providerItemStatus === 'active' &&
+            (!connection.accessToken || !connection.itemId)) ||
+          (connection.providerItemStatus === 'disconnected' &&
+            (connection.accessToken !== null || connection.itemId !== null))
+        ) {
+          throw new OpenBankingVaultError('Open banking provider Item lifecycle is invalid.');
+        }
         const records = await readPersistedRecords();
         const encrypted = encryptRecord(connection);
         const nextRecords = records.some((record) => record.id === connection.id)
@@ -282,6 +329,37 @@ export const createOpenBankingConnectionStore = (options: {
       });
     },
 
+    async markDisconnectedOwned(userId, id, input) {
+      return withWriteLock(async () => {
+        const records = await readPersistedRecords();
+        const record = records.find(
+          (candidate) => candidate.id === id && candidate.userId === userId
+        );
+        if (!record) throw new OpenBankingConnectionOwnershipError();
+        const existing = decryptRecord(record);
+        if (existing.providerItemStatus === 'disconnected') return existing;
+        if (!existing.itemId || existing.itemId !== input.expectedItemId) {
+          throw new OpenBankingVaultError('Open banking provider Item changed during disconnect.');
+        }
+        const updated: StoredOpenBankingConnection = {
+          ...existing,
+          accessToken: null,
+          itemId: null,
+          providerItemStatus: 'disconnected',
+          disconnectedAt: input.revokedAt,
+          revokedItems: [
+            ...existing.revokedItems,
+            { itemId: existing.itemId, revokedAt: input.revokedAt },
+          ],
+          updatedAt: input.revokedAt,
+        };
+        await writePersistedRecords(
+          records.map((candidate) => candidate === record ? encryptRecord(updated) : candidate)
+        );
+        return updated;
+      });
+    },
+
     async deleteOwned(userId, id) {
       return withWriteLock(async () => {
         const records = await readPersistedRecords();
@@ -312,6 +390,8 @@ export const createDefaultOpenBankingConnectionStore = (): OpenBankingConnection
     loadOwned: (userId, id) => getStore().loadOwned(userId, id),
     save: (connection) => getStore().save(connection),
     updateOwned: (userId, id, patch) => getStore().updateOwned(userId, id, patch),
+    markDisconnectedOwned: (userId, id, input) =>
+      getStore().markDisconnectedOwned(userId, id, input),
     deleteOwned: (userId, id) => getStore().deleteOwned(userId, id),
   };
 };

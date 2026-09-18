@@ -31,6 +31,7 @@ import {
   OpenBankingConfigurationError,
 } from './openBankingPolicy';
 import {
+  OpenBankingConnectionStateError,
   createOpenBankingService,
   type OpenBankingService,
 } from './openBankingService';
@@ -348,6 +349,13 @@ const jsonOpenBankingError = (
   if (error instanceof OpenBankingConnectionOwnershipError) {
     json(response, 404, {
       error: 'Open banking connection not found.',
+      code: error.code,
+    });
+    return;
+  }
+  if (error instanceof OpenBankingConnectionStateError) {
+    json(response, 409, {
+      error: error.message,
       code: error.code,
     });
     return;

@@ -35,6 +35,7 @@ export const esExtra = {
     back: 'Volver',
     refresh: 'Actualizar',
     reconnect: 'Reconectar',
+    connectAgain: 'Conectar de nuevo',
     review: 'Revisar',
     accounts: 'Cuentas',
     connections: 'Conexiones',

@@ -95,6 +95,15 @@ export interface OpenBankingService {
   ): Promise<{ ok: true; connectionId: string }>;
 }
 
+export class OpenBankingConnectionStateError extends Error {
+  readonly code = 'OPEN_BANKING_CONNECTION_STATE_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenBankingConnectionStateError';
+  }
+}
+
 const requireOwnedConnection = async (
   store: OpenBankingConnectionStore,
   principal: AuthenticatedOpenBankingPrincipal,
@@ -113,6 +122,22 @@ const requireOwnedConnection = async (
     );
   }
   return connection;
+};
+
+const requireLiveProviderItem = (connection: StoredOpenBankingConnection) => {
+  if (
+    connection.providerItemStatus !== 'active' ||
+    !connection.accessToken ||
+    !connection.itemId
+  ) {
+    throw new OpenBankingConnectionStateError(
+      'Open banking connection is disconnected. Connect again before refreshing or reauthenticating.'
+    );
+  }
+  return {
+    accessToken: connection.accessToken,
+    itemId: connection.itemId,
+  };
 };
 
 const sanitizeConnection = (
@@ -229,13 +254,23 @@ export const createOpenBankingService = (dependencies: {
             configuration
           )
         : null;
+      const mode = existingConnection?.providerItemStatus === 'active' ? 'update' : 'create';
+      const liveItem = mode === 'update' && existingConnection
+        ? requireLiveProviderItem(existingConnection)
+        : null;
       const linkResult = await dependencies.plaid.createLinkToken({
         userId: principal.userId,
-        accessToken: existingConnection?.accessToken ?? null,
+        accessToken: liveItem?.accessToken ?? null,
       });
+      if (linkResult.mode !== mode) {
+        throw new OpenBankingConnectionStateError(
+          'Plaid Link mode did not match the connection lifecycle.'
+        );
+      }
       const session = dependencies.linkSessions.create({
         ownerUserId: principal.userId,
         connectionId: existingConnection?.id ?? null,
+        mode,
       });
       return {
         sessionId: session.id,
@@ -243,7 +278,7 @@ export const createOpenBankingService = (dependencies: {
         status: 'redirect-required',
         linkToken: linkResult.linkToken,
         expiration: linkResult.expiration ?? null,
-        mode: existingConnection ? 'update' : 'create',
+        mode,
         connectionId: existingConnection?.id ?? null,
       };
     },
@@ -262,18 +297,26 @@ export const createOpenBankingService = (dependencies: {
             configuration
           )
         : null;
-      if (!existingConnection && !input.publicToken) {
+      const liveItem = session.mode === 'update' && existingConnection
+        ? requireLiveProviderItem(existingConnection)
+        : null;
+      if (session.mode === 'create' && existingConnection?.providerItemStatus === 'active') {
+        throw new OpenBankingConnectionStateError(
+          'The connection already has a live Plaid Item.'
+        );
+      }
+      if (session.mode === 'create' && !input.publicToken) {
         throw new OpenBankingConfigurationError('A Plaid public token is required.');
       }
 
       let exchangedAccessToken: string | null = null;
       let exchangedItemId: string | null = null;
-      if (!existingConnection) {
+      if (session.mode === 'create') {
         const exchanged = await dependencies.plaid.exchangePublicToken(input.publicToken!);
         exchangedAccessToken = exchanged.access_token;
         exchangedItemId = exchanged.item_id;
       }
-      const accessToken = existingConnection?.accessToken ?? exchangedAccessToken;
+      const accessToken = liveItem?.accessToken ?? exchangedAccessToken;
       if (!accessToken) {
         throw new OpenBankingConfigurationError('Plaid access token exchange failed.');
       }
@@ -291,6 +334,15 @@ export const createOpenBankingService = (dependencies: {
         ) {
           throw new OpenBankingConfigurationError(
             'The connected institution is not approved for this pilot.'
+          );
+        }
+        if (
+          session.mode === 'create' &&
+          existingConnection &&
+          institutionId !== existingConnection.institutionId
+        ) {
+          throw new OpenBankingConnectionStateError(
+            'Connect again must use the same institution to preserve connection history safely.'
           );
         }
         const institution = await dependencies.plaid.fetchInstitution(institutionId);
@@ -319,7 +371,10 @@ export const createOpenBankingService = (dependencies: {
           institutionName: institution.name,
           institutionId: institution.institutionId,
           accessToken,
-          itemId: existingConnection?.itemId ?? exchangedItemId ?? item.item.item_id,
+          itemId: liveItem?.itemId ?? exchangedItemId ?? item.item.item_id,
+          providerItemStatus: 'active',
+          disconnectedAt: null,
+          revokedItems: existingConnection?.revokedItems ?? [],
           selectedAccountIds,
           consentExpirationTime:
             balances.item?.consent_expiration_time ?? item.item.consent_expiration_time ?? null,
@@ -331,7 +386,7 @@ export const createOpenBankingService = (dependencies: {
           accounts,
         };
       } catch (error) {
-        if (!existingConnection && exchangedAccessToken) {
+        if (session.mode === 'create' && exchangedAccessToken) {
           try {
             await dependencies.plaid.removeItem(exchangedAccessToken);
           } catch {
@@ -350,8 +405,9 @@ export const createOpenBankingService = (dependencies: {
         connectionId,
         configuration
       );
+      const liveItem = requireLiveProviderItem(stored);
       try {
-        const balances = await dependencies.plaid.fetchBalances(stored.accessToken);
+        const balances = await dependencies.plaid.fetchBalances(liveItem.accessToken);
         const syncedAt = now().toISOString();
         const accounts = dependencies.plaid.mapAccounts({
           userId: principal.userId,
@@ -406,9 +462,16 @@ export const createOpenBankingService = (dependencies: {
         connectionId,
         configuration
       );
-      await dependencies.plaid.removeItem(stored.accessToken);
-      const deleted = await dependencies.store.deleteOwned(principal.userId, stored.id);
-      if (!deleted) throw new OpenBankingConnectionOwnershipError();
+      if (stored.providerItemStatus === 'disconnected') {
+        return { ok: true, connectionId: stored.id };
+      }
+      const liveItem = requireLiveProviderItem(stored);
+      await dependencies.plaid.removeItem(liveItem.accessToken);
+      const revokedAt = now().toISOString();
+      await dependencies.store.markDisconnectedOwned(principal.userId, stored.id, {
+        revokedAt,
+        expectedItemId: liveItem.itemId,
+      });
       return { ok: true, connectionId: stored.id };
     },
   };

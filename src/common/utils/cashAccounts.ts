@@ -219,22 +219,37 @@ export const upsertLinkedCashAccounts = (
       .map((account) => [getLegacyLinkedCashAccountIdentity(account), account] as const)
       .filter((entry): entry is readonly [string, CashAccount] => Boolean(entry[0]))
   );
-  const claimedLegacyAccountIds = new Set<string>();
+  const claimedExistingAccountIds = new Set<string>();
   const matchedExistingAccounts = deduplicatedIncomingAccounts.map((account) => {
     const identity = getLinkedCashAccountIdentity(account);
     const exact = identity ? existingByIdentity.get(identity) : undefined;
-    if (exact) return exact;
+    if (exact && !claimedExistingAccountIds.has(exact.id)) {
+      claimedExistingAccountIds.add(exact.id);
+      return exact;
+    }
     const legacyIdentity = getLegacyLinkedCashAccountIdentity(account);
     const legacy = legacyIdentity ? legacyExistingByIdentity.get(legacyIdentity) : undefined;
-    if (!legacy || claimedLegacyAccountIds.has(legacy.id)) return undefined;
-    claimedLegacyAccountIds.add(legacy.id);
-    return legacy;
+    if (legacy && !claimedExistingAccountIds.has(legacy.id)) {
+      claimedExistingAccountIds.add(legacy.id);
+      return legacy;
+    }
+    if (!account.connectionId || !account.maskedReference) return undefined;
+    const reconnectCandidates = existingAccounts.filter((candidate) =>
+      !claimedExistingAccountIds.has(candidate.id) &&
+      candidate.sourceType === 'linked' &&
+      candidate.status === 'inactive' &&
+      candidate.connectionId === account.connectionId &&
+      candidate.providerName === account.providerName &&
+      candidate.institutionId === account.institutionId &&
+      candidate.accountType === account.accountType &&
+      candidate.currency === account.currency &&
+      candidate.maskedReference === account.maskedReference
+    );
+    if (reconnectCandidates.length !== 1) return undefined;
+    claimedExistingAccountIds.add(reconnectCandidates[0].id);
+    return reconnectCandidates[0];
   });
-  const matchedExistingIds = new Set(
-    matchedExistingAccounts
-      .filter((account): account is CashAccount => Boolean(account))
-      .map((account) => account.id)
-  );
+  const matchedExistingIds = claimedExistingAccountIds;
   const retained = existingAccounts.filter((account) => {
     const identity = getLinkedCashAccountIdentity(account);
     return (identity === null || !incomingIdentities.has(identity)) && !matchedExistingIds.has(account.id);
@@ -255,6 +270,11 @@ export const upsertLinkedCashAccounts = (
 export const canRefreshBankConnection = (
   connection: Pick<BankConnection, 'connectionStatus'>
 ) => connection.connectionStatus !== 'disconnected';
+
+export const getBankConnectionReconnectMode = (
+  connection: Pick<BankConnection, 'connectionStatus'>
+): 'connect-again' | 'update' =>
+  connection.connectionStatus === 'disconnected' ? 'connect-again' : 'update';
 
 export const deactivateLinkedCashAccountsForConnection = (
   accounts: CashAccount[],

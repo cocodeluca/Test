@@ -8,6 +8,7 @@ import {
   createManualCashAccount,
   canRefreshBankConnection,
   deactivateLinkedCashAccountsForConnection,
+  getBankConnectionReconnectMode,
   upsertLinkedCashAccounts,
 } from '../src/common/utils/cashAccounts';
 import {
@@ -681,8 +682,11 @@ test('disconnected account preserves transaction and reconciliation history', as
   assert.deepEqual(reloaded.bankTransactionReconciliations, [reconciliation]);
 });
 
-test('disconnected connections require reconnect and restore inactive accounts coherently', () => {
-  const activeLinked = linkedAccount({ id: 'stable-reconnect-account' });
+test('connect again restores matching inactive accounts without duplication', () => {
+  const activeLinked = linkedAccount({
+    id: 'stable-reconnect-account',
+    maskedReference: '1234',
+  });
   const historicalTransaction = normalize([providerRecord()], [activeLinked])[0];
   const disconnected = {
     ...connection,
@@ -696,10 +700,16 @@ test('disconnected connections require reconnect and restore inactive accounts c
   );
 
   assert.equal(canRefreshBankConnection(disconnected), false);
+  assert.equal(getBankConnectionReconnectMode(disconnected), 'connect-again');
   assert.equal(inactiveAccounts[0].status, 'inactive');
 
   const reconnectedAccounts = upsertLinkedCashAccounts(inactiveAccounts, [
-    linkedAccount({ id: 'provider-reconnect-account', status: 'active' }),
+    linkedAccount({
+      id: 'provider-reconnect-account',
+      externalAccountId: `${connection.institutionId}:checking-new-item`,
+      maskedReference: '1234',
+      status: 'active',
+    }),
   ]);
   const reconnected = {
     ...disconnected,
@@ -708,11 +718,61 @@ test('disconnected connections require reconnect and restore inactive accounts c
   };
 
   assert.equal(canRefreshBankConnection(reconnected), true);
+  assert.equal(getBankConnectionReconnectMode(reconnected), 'update');
   assert.equal(reconnectedAccounts.length, 1);
   assert.equal(reconnectedAccounts[0].id, activeLinked.id);
+  assert.equal(
+    reconnectedAccounts[0].externalAccountId,
+    `${connection.institutionId}:checking-new-item`
+  );
   assert.equal(reconnectedAccounts[0].status, 'active');
   assert.equal(reconnected.linkedAccountIds[0], activeLinked.id);
   assert.equal(historicalTransaction.cashAccountId, activeLinked.id);
+});
+
+test('connect again never guesses between ambiguous inactive account matches', () => {
+  const inactiveAccounts = [
+    linkedAccount({ id: 'inactive-a', maskedReference: '9999', status: 'inactive' }),
+    linkedAccount({
+      id: 'inactive-b',
+      externalAccountId: `${connection.institutionId}:savings-old`,
+      maskedReference: '9999',
+      status: 'inactive',
+    }),
+  ];
+  const incoming = linkedAccount({
+    id: 'provider-new',
+    externalAccountId: `${connection.institutionId}:new-item-account`,
+    maskedReference: '9999',
+    status: 'active',
+  });
+
+  const result = upsertLinkedCashAccounts(inactiveAccounts, [incoming]);
+
+  assert.equal(result.length, 3);
+  assert.ok(result.some((account) => account.id === incoming.id));
+});
+
+test('disconnected connection state offers standard Link while live reauth keeps update mode', async () => {
+  const adapter = openBankingAdapters['mock-bank'];
+  const disconnectedSession = await adapter.createConnectionSession({
+    userId: 'banking-test-user',
+    institutionName: connection.institutionName,
+    institutionId: connection.institutionId,
+    connectionId: connection.id,
+    connectionStatus: 'disconnected',
+  });
+  const reauthSession = await adapter.createConnectionSession({
+    userId: 'banking-test-user',
+    institutionName: connection.institutionName,
+    institutionId: connection.institutionId,
+    connectionId: connection.id,
+    connectionStatus: 'needs-reauthentication',
+  });
+
+  assert.equal(disconnectedSession.mode, 'create');
+  assert.equal(disconnectedSession.connectionId, connection.id);
+  assert.equal(reauthSession.mode, 'update');
 });
 
 test('mixed-currency accounts and original transaction values survive an IndexedDB cold load', async () => {

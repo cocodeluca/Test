@@ -8,6 +8,7 @@ export interface OpenBankingLinkSession {
   institutionId: 'ins_65';
   intent: 'accounts-balances-read-only';
   connectionId: string | null;
+  mode: 'create' | 'update';
   createdAt: string;
   expiresAt: string;
 }
@@ -25,6 +26,7 @@ export interface OpenBankingLinkSessionStore {
   create(input: {
     ownerUserId: string;
     connectionId?: string | null;
+    mode?: 'create' | 'update';
   }): OpenBankingLinkSession;
   consume(sessionId: string, ownerUserId: string): OpenBankingLinkSession;
 }
@@ -40,7 +42,7 @@ export const createOpenBankingLinkSessionStore = (options: {
   const sessions = new Map<string, OpenBankingLinkSession>();
 
   return {
-    create({ ownerUserId, connectionId = null }) {
+    create({ ownerUserId, connectionId = null, mode }) {
       const createdAt = now();
       const session: OpenBankingLinkSession = {
         id: createId(),
@@ -50,6 +52,7 @@ export const createOpenBankingLinkSessionStore = (options: {
         institutionId: 'ins_65',
         intent: 'accounts-balances-read-only',
         connectionId,
+        mode: mode ?? (connectionId ? 'update' : 'create'),
         createdAt: createdAt.toISOString(),
         expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
       };

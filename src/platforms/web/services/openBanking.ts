@@ -53,6 +53,7 @@ export interface ProviderAdapter {
     institutionId?: string;
     scenario?: 'success' | 'needs-reauth' | 'error';
     connectionId?: string;
+    connectionStatus?: BankConnection['connectionStatus'];
   }) => Promise<ProviderConnectionSession>;
   completeConnection: (
     session: ProviderConnectionSession,
@@ -336,7 +337,13 @@ const buildMockRemovedTransactions = (institutionId: string) => [
 
 const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapter => ({
   providerName,
-  async createConnectionSession({ userId, institutionId, scenario = 'success', connectionId }) {
+  async createConnectionSession({
+    userId,
+    institutionId,
+    scenario = 'success',
+    connectionId,
+    connectionStatus,
+  }) {
     await delay(450);
     return {
       sessionId: buildId(`session-${userId}`),
@@ -344,7 +351,7 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
       status: scenario === 'success' ? 'redirect-required' : 'created',
       redirectUrl: `https://provider.mock/${institutionId ?? buildId('institution')}`,
       createdAt: new Date().toISOString(),
-      mode: connectionId ? 'update' : 'create',
+      mode: connectionId && connectionStatus !== 'disconnected' ? 'update' : 'create',
       connectionId: connectionId ?? null,
     };
   },

@@ -243,8 +243,18 @@ test('a refresh on one connection preserves reconciliation data owned by another
   assert.ok(refreshed.bankTransactions.some((item) => item.id === transactionB.id));
 });
 
-test('disconnect and reconnect on one connection preserve another concurrent refresh', async () => {
+test('disconnect and connect again preserve logical history and another concurrent refresh', async () => {
   let state = initialState();
+  const historicalAccount = accountFor(connectionA);
+  const historicalTransaction = transactionFor(connectionA, historicalAccount);
+  const historicalReconciliation = {
+    bankTransactionId: historicalTransaction.id,
+    status: 'ignored' as const,
+    createdAt: '2026-09-17T12:00:00.000Z',
+    updatedAt: '2026-09-17T12:00:00.000Z',
+  };
+  state.bankTransactions = [historicalTransaction];
+  state.bankTransactionReconciliations = [historicalReconciliation];
   const pendingRefresh = deferred<RefreshCompletion>();
   const pendingDisconnect = deferred<BankConnection>();
   const refreshB = pendingRefresh.promise.then((completion) => {
@@ -285,6 +295,15 @@ test('disconnect and reconnect on one connection preserve another concurrent ref
     state.cashAccounts.find((item) => item.connectionId === connectionA.id)?.status,
     'active'
   );
+  assert.equal(
+    state.cashAccounts.filter((item) => item.connectionId === connectionA.id).length,
+    1
+  );
+  assert.equal(
+    state.bankTransactions.find((item) => item.id === historicalTransaction.id)?.connectionId,
+    connectionA.id
+  );
+  assert.deepEqual(state.bankTransactionReconciliations, [historicalReconciliation]);
   assert.ok(state.bankTransactions.some((item) => item.connectionId === connectionB.id));
   assert.ok(state.bankTransactionSyncStates.some((item) => item.connectionId === connectionB.id));
 });
