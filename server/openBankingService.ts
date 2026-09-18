@@ -9,6 +9,7 @@ import {
   type PlaidPreflightIssue,
   readPlaidPilotConfiguration,
   SANTANDER_SPAIN_INSTITUTION_ID,
+  validatePlaidInstitutionForConfiguration,
   validateSantanderSpainInstitution,
 } from './openBankingPolicy';
 import {
@@ -97,16 +98,18 @@ export interface OpenBankingService {
 const requireOwnedConnection = async (
   store: OpenBankingConnectionStore,
   principal: AuthenticatedOpenBankingPrincipal,
-  connectionId: string
+  connectionId: string,
+  configuration = readPlaidPilotConfiguration()
 ) => {
   const connection = await store.loadOwned(principal.userId, connectionId);
   if (!connection) throw new OpenBankingConnectionOwnershipError();
   if (
     connection.providerName !== 'plaid' ||
-    connection.institutionId !== SANTANDER_SPAIN_INSTITUTION_ID
+    (configuration.environment !== 'sandbox' &&
+      connection.institutionId !== SANTANDER_SPAIN_INSTITUTION_ID)
   ) {
     throw new OpenBankingConfigurationError(
-      'The stored connection is not approved for the Santander Spain pilot.'
+      'The stored connection is not approved for the configured Plaid environment.'
     );
   }
   return connection;
@@ -213,13 +216,18 @@ export const createOpenBankingService = (dependencies: {
     },
 
     async createConnectionSession(principal, input) {
-      readPlaidPilotConfiguration();
+      const configuration = readPlaidPilotConfiguration();
       if (input.providerName !== 'plaid') {
-        throw new OpenBankingConfigurationError('Only Plaid is permitted for the Santander pilot.');
+        throw new OpenBankingConfigurationError('Only Plaid is permitted for this banking flow.');
       }
 
       const existingConnection = input.connectionId
-        ? await requireOwnedConnection(dependencies.store, principal, input.connectionId)
+        ? await requireOwnedConnection(
+            dependencies.store,
+            principal,
+            input.connectionId,
+            configuration
+          )
         : null;
       const linkResult = await dependencies.plaid.createLinkToken({
         userId: principal.userId,
@@ -241,13 +249,18 @@ export const createOpenBankingService = (dependencies: {
     },
 
     async completeConnection(principal, input) {
-      readPlaidPilotConfiguration();
+      const configuration = readPlaidPilotConfiguration();
       if (!input.sessionId) {
         throw new OpenBankingConfigurationError('A server-issued Link session is required.');
       }
       const session = dependencies.linkSessions.consume(input.sessionId, principal.userId);
       const existingConnection = session.connectionId
-        ? await requireOwnedConnection(dependencies.store, principal, session.connectionId)
+        ? await requireOwnedConnection(
+            dependencies.store,
+            principal,
+            session.connectionId,
+            configuration
+          )
         : null;
       if (!existingConnection && !input.publicToken) {
         throw new OpenBankingConfigurationError('A Plaid public token is required.');
@@ -271,13 +284,21 @@ export const createOpenBankingService = (dependencies: {
           dependencies.plaid.fetchBalances(accessToken),
         ]);
         const institutionId = item.item.institution_id ?? balances.item?.institution_id;
-        if (!institutionId || institutionId !== SANTANDER_SPAIN_INSTITUTION_ID) {
+        if (
+          !institutionId ||
+          (configuration.environment !== 'sandbox' &&
+            institutionId !== SANTANDER_SPAIN_INSTITUTION_ID)
+        ) {
           throw new OpenBankingConfigurationError(
             'The connected institution is not approved for this pilot.'
           );
         }
         const institution = await dependencies.plaid.fetchInstitution(institutionId);
-        validateSantanderSpainInstitution(institution);
+        validatePlaidInstitutionForConfiguration(
+          institution,
+          configuration,
+          institutionId
+        );
 
         const syncedAt = now().toISOString();
         const connectionId = existingConnection?.id ?? createConnectionId();
@@ -322,8 +343,13 @@ export const createOpenBankingService = (dependencies: {
     },
 
     async refreshConnection(principal, connectionId) {
-      readPlaidPilotConfiguration();
-      const stored = await requireOwnedConnection(dependencies.store, principal, connectionId);
+      const configuration = readPlaidPilotConfiguration();
+      const stored = await requireOwnedConnection(
+        dependencies.store,
+        principal,
+        connectionId,
+        configuration
+      );
       try {
         const balances = await dependencies.plaid.fetchBalances(stored.accessToken);
         const syncedAt = now().toISOString();
@@ -373,8 +399,13 @@ export const createOpenBankingService = (dependencies: {
     },
 
     async disconnectConnection(principal, connectionId) {
-      readPlaidPilotConfiguration();
-      const stored = await requireOwnedConnection(dependencies.store, principal, connectionId);
+      const configuration = readPlaidPilotConfiguration();
+      const stored = await requireOwnedConnection(
+        dependencies.store,
+        principal,
+        connectionId,
+        configuration
+      );
       await dependencies.plaid.removeItem(stored.accessToken);
       const deleted = await dependencies.store.deleteOwned(principal.userId, stored.id);
       if (!deleted) throw new OpenBankingConnectionOwnershipError();

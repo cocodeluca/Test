@@ -37,6 +37,7 @@ import {
   type StoredOpenBankingConnection,
 } from '../server/openBankingStore';
 import { brokerApiPlugin } from '../server/brokerApiPlugin';
+import { mapPlaidAccountsToCashAccounts } from '../server/plaid';
 
 const TEST_MASTER_KEY = Buffer.alloc(32, 17).toString('base64');
 const FIXED_NOW = '2026-09-17T15:00:00.000Z';
@@ -258,7 +259,7 @@ test('server Link sessions reject wrong owners, expiry, and replay', () => {
   assert.throws(() => sessions.consume(expired.id, 'owner-a'), OpenBankingLinkSessionError);
 });
 
-test('pilot configuration rejects missing, non-ES, and write-capable products', () => {
+test('pilot configuration keeps Production on ES and rejects write-capable Sandbox products', () => {
   const validEnvironment = {
     PLAID_ENV: 'sandbox',
     PLAID_PRODUCTS: 'auth',
@@ -275,12 +276,10 @@ test('pilot configuration rejects missing, non-ES, and write-capable products', 
     redirectUri: 'http://localhost:8081/plaid-oauth',
   });
   assert.throws(() => readPlaidPilotConfiguration({}), OpenBankingConfigurationError);
-  assert.throws(() => readPlaidPilotConfiguration({
+  assert.deepEqual(readPlaidPilotConfiguration({
     ...validEnvironment,
-    PLAID_ENV: 'sandbox',
-    PLAID_PRODUCTS: 'auth',
     PLAID_COUNTRY_CODES: 'US',
-  }), OpenBankingConfigurationError);
+  }).countryCodes, ['US']);
   for (const products of [
     'transactions',
     'transfer',
@@ -295,6 +294,17 @@ test('pilot configuration rejects missing, non-ES, and write-capable products', 
       PLAID_COUNTRY_CODES: 'ES',
     }), OpenBankingConfigurationError);
   }
+
+  assert.deepEqual(readPlaidPilotConfiguration({
+    ...validEnvironment,
+    PLAID_COUNTRY_CODES: 'US,ES',
+  }).countryCodes, ['US', 'ES']);
+  assert.throws(() => readPlaidPilotConfiguration({
+    ...validEnvironment,
+    PLAID_ENV: 'production',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_COUNTRY_CODES: 'US,ES',
+  }), OpenBankingConfigurationError);
 });
 
 test('preflight configuration reports missing secrets without returning secret values', () => {
@@ -496,7 +506,72 @@ test('Link completion uses provider institution metadata and returns no access t
   assert.equal('accessToken' in result.connection, false);
 });
 
-test('non-Santander Link completion is rejected and its Item is removed', async (context) => {
+test('Sandbox accepts a provider-returned test institution for Accounts and Balance', async (context) => {
+  const { store } = await createStoreFixture(context);
+  process.env.PLAID_COUNTRY_CODES = 'US';
+  try {
+    const service = makeService(store, makeGateway({
+      async fetchItem() {
+        return {
+          item: {
+            item_id: 'sandbox-item',
+            institution_id: 'ins_109508',
+            consent_expiration_time: null,
+          },
+        };
+      },
+      async fetchInstitution() {
+        return {
+          institutionId: 'ins_109508',
+          name: 'First Platypus Bank',
+          countryCodes: ['US'],
+          products: ['auth', 'balance'],
+          oauth: false,
+        };
+      },
+      async fetchBalances() {
+        return {
+          accounts: [{
+            ...plaidAccount,
+            account_id: 'sandbox-checking',
+            name: 'Plaid Checking',
+            balances: {
+              current: 100,
+              available: 95,
+              iso_currency_code: 'USD',
+            },
+          }],
+          item: { institution_id: 'ins_109508', consent_expiration_time: null },
+        };
+      },
+      mapAccounts(input) {
+        return mapPlaidAccountsToCashAccounts({
+          ...input,
+          providerName: 'plaid',
+        });
+      },
+    }));
+    const session = await service.createConnectionSession(
+      { userId: 'owner-a' },
+      { providerName: 'plaid' }
+    );
+    const result = await service.completeConnection(
+      { userId: 'owner-a' },
+      { sessionId: session.sessionId, publicToken: 'sandbox-public-token' }
+    );
+
+    assert.equal(result.connection.institutionId, 'ins_109508');
+    assert.equal(result.connection.institutionName, 'First Platypus Bank');
+    assert.equal(result.accounts[0].institutionId, 'ins_109508');
+    assert.equal(result.accounts[0].externalAccountId, 'sandbox-checking');
+    assert.equal(result.accounts[0].currency, 'USD');
+    assert.equal(JSON.stringify(result).includes('access-from-exchange'), false);
+  } finally {
+    process.env.PLAID_COUNTRY_CODES = 'ES';
+  }
+});
+
+test('Production rejects non-Santander Link completion and removes its Item', async (context) => {
   const { store } = await createStoreFixture(context);
   let removeCalls = 0;
   const service = makeService(store, makeGateway({
@@ -508,20 +583,27 @@ test('non-Santander Link completion is rejected and its Item is removed', async 
       return { removed: true };
     },
   }));
-  const session = await service.createConnectionSession(
-    { userId: 'owner-a' },
-    { providerName: 'plaid' }
-  );
-
-  await assert.rejects(
-    service.completeConnection(
+  process.env.PLAID_ENV = 'production';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  try {
+    const session = await service.createConnectionSession(
       { userId: 'owner-a' },
-      { sessionId: session.sessionId, publicToken: 'public-token' }
-    ),
-    OpenBankingConfigurationError
-  );
-  assert.equal(removeCalls, 1);
-  assert.deepEqual(await store.list(), []);
+      { providerName: 'plaid' }
+    );
+
+    await assert.rejects(
+      service.completeConnection(
+        { userId: 'owner-a' },
+        { sessionId: session.sessionId, publicToken: 'public-token' }
+      ),
+      OpenBankingConfigurationError
+    );
+    assert.equal(removeCalls, 1);
+    assert.deepEqual(await store.list(), []);
+  } finally {
+    process.env.PLAID_ENV = 'sandbox';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+  }
 });
 
 test('wrong-owner and replayed Link completion are rejected before token exchange', async (context) => {

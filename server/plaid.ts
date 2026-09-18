@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
   readPlaidPilotConfiguration,
-  SANTANDER_SPAIN_COUNTRY_CODE,
 } from './openBankingPolicy';
 
 const getPlaidBaseUrl = () => {
@@ -163,9 +162,10 @@ export const fetchPlaidItem = async (accessToken: string) =>
   });
 
 export const fetchPlaidInstitution = async (institutionId: string) => {
+  const configuration = readPlaidPilotConfiguration();
   const result = await plaidRequest<PlaidInstitutionResponse>('/institutions/get_by_id', {
     institution_id: institutionId,
-    country_codes: [SANTANDER_SPAIN_COUNTRY_CODE],
+    country_codes: configuration.countryCodes,
   });
   return {
     institutionId: result.institution.institution_id,

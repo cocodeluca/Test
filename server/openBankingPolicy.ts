@@ -8,7 +8,7 @@ export type PlaidEnvironment = 'sandbox' | 'development' | 'production';
 export interface PlaidPilotConfiguration {
   environment: PlaidEnvironment;
   products: ['auth'];
-  countryCodes: ['ES'];
+  countryCodes: string[];
   redirectUri: string;
 }
 
@@ -35,7 +35,7 @@ export interface PlaidPilotConfigurationStatus {
     valid: boolean;
   };
   scope: {
-    countryCodes: ['ES'];
+    countryCodes: string[];
     linkProducts: ['auth'];
     accountsEnabled: true;
     balancesEnabled: true;
@@ -120,8 +120,9 @@ export const inspectPlaidPilotConfiguration = (
     products.length === PLAID_READ_ONLY_PRODUCTS.length &&
     products.every((value, index) => value === PLAID_READ_ONLY_PRODUCTS[index]);
   const countryCodes = parseCsv(environment.PLAID_COUNTRY_CODES).map((value) => value.toUpperCase());
-  const countryCodesValid =
-    countryCodes.length === 1 && countryCodes[0] === SANTANDER_SPAIN_COUNTRY_CODE;
+  const countryCodesValid = plaidEnvironment === 'sandbox'
+    ? countryCodes.length > 0 && countryCodes.every((value) => /^[A-Z]{2}$/.test(value))
+    : countryCodes.length === 1 && countryCodes[0] === SANTANDER_SPAIN_COUNTRY_CODE;
   const redirectUriConfigured = isConfigured(environment.PLAID_REDIRECT_URI);
   const redirectUriSafe = isSafeRedirectUri(environment.PLAID_REDIRECT_URI, plaidEnvironment);
 
@@ -141,7 +142,7 @@ export const inspectPlaidPilotConfiguration = (
     credentials: { clientIdConfigured, secretConfigured },
     vault: { configured: vaultConfigured, valid: vaultValid },
     scope: {
-      countryCodes: ['ES'],
+      countryCodes,
       linkProducts: ['auth'],
       accountsEnabled: true,
       balancesEnabled: true,
@@ -171,9 +172,45 @@ export const readPlaidPilotConfiguration = (
   return {
     environment: status.environment,
     products: ['auth'],
-    countryCodes: ['ES'],
+    countryCodes: [...status.scope.countryCodes],
     redirectUri: environment.PLAID_REDIRECT_URI!.trim(),
   };
+};
+
+export const validatePlaidInstitutionForConfiguration = (
+  institution: {
+    institutionId: string;
+    name: string;
+    countryCodes: string[];
+    products: string[];
+    oauth?: boolean;
+  },
+  configuration: PlaidPilotConfiguration,
+  expectedInstitutionId: string
+) => {
+  if (institution.institutionId !== expectedInstitutionId) {
+    throw new OpenBankingConfigurationError(
+      'Plaid institution metadata did not match the connected Item.'
+    );
+  }
+
+  if (configuration.environment !== 'sandbox') {
+    validateSantanderSpainInstitution(institution);
+    return;
+  }
+
+  if (
+    !institution.institutionId ||
+    !institution.countryCodes.some((countryCode) =>
+      configuration.countryCodes.includes(countryCode)
+    ) ||
+    !institution.products.includes('balance') ||
+    !institution.products.includes('auth')
+  ) {
+    throw new OpenBankingConfigurationError(
+      'The Sandbox institution does not support the configured read-only Accounts and Balance flow.'
+    );
+  }
 };
 
 export const validateSantanderSpainInstitution = (institution: {
