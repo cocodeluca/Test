@@ -1018,7 +1018,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
               <div>
                 <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${appTextSoftClass}`}>{t('cashAccounts.openBanking')}</p>
                 <h2 className={`mt-2 text-[1.6rem] font-semibold ${appTextStrongClass}`}>{t('cashAccounts.connectBankTitle')}</h2>
-                <p className={`mt-2 text-sm leading-6 ${appTextMutedClass}`}>Real secure authentication should happen through the provider’s hosted flow. This development version uses a mock provider so we can validate the UX and state architecture first.</p>
+                <p className={`mt-2 text-sm leading-6 ${appTextMutedClass}`}>{t('cashAccounts.connectBankBody')}</p>
               </div>
               <button type="button" onClick={() => setShowConnectModal(false)} className={`rounded-xl p-2 ${appButtonMutedClass} ${appTextMutedClass}`}><X className="h-4 w-4" /></button>
             </div>

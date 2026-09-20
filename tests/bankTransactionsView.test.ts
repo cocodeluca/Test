@@ -9,6 +9,9 @@ import {
   upsertBankTransactions,
 } from '../src/common/utils/bankTransactions';
 import { BankTransactionsView } from '../src/platforms/web/components/BankTransactionsView';
+import { enExtra } from '../src/platforms/web/i18n/locales/en-extra';
+import { esExtra } from '../src/platforms/web/i18n/locales/es-extra';
+import { ptExtra } from '../src/platforms/web/i18n/locales/pt-extra';
 import { openBankingAdapters } from '../src/platforms/web/services/openBanking';
 
 const { renderToStaticMarkup } = require('react-dom/server') as {
@@ -69,10 +72,10 @@ const translations: Record<string, string> = {
   'cashAccounts.transactionLifecycle.reversed': 'Reversed',
   'cashAccounts.transactionLifecycle.reversal': 'Reversal',
   'cashAccounts.transactionEmptyTitle': 'No bank transactions yet',
-  'cashAccounts.transactionEmptyBody': 'Sync a mock account.',
+  'cashAccounts.transactionEmptyBody': 'Connect or refresh a bank account to sync transactions.',
   'cashAccounts.transactionAllAccounts': 'All accounts',
   'cashAccounts.transactionUnknownAccount': 'Unknown account',
-  'cashAccounts.transactionSyncMock': 'Sync mock transactions',
+  'cashAccounts.transactionSyncMock': 'Sync transactions',
   'cashAccounts.transactionSyncing': 'Syncing...',
   'cashAccounts.reconciliation': 'Reconciliation',
   'cashAccounts.reconciliationConfirm': 'Confirm',
@@ -105,6 +108,20 @@ test.beforeEach(() => {
     configurable: true,
     value: { setTimeout },
   });
+});
+
+test('uses provider-neutral transaction terminology in every supported locale', () => {
+  const expectations = [
+    [enExtra, 'Review transactions synced from your connected bank accounts.', 'Connect or refresh a bank account to sync transactions.'],
+    [esExtra, 'Revisa las transacciones sincronizadas desde tus cuentas bancarias conectadas.', 'Conecta o actualiza una cuenta bancaria para sincronizar transacciones.'],
+    [ptExtra, 'Consulte as transações sincronizadas das suas contas bancárias ligadas.', 'Ligue ou atualize uma conta bancária para sincronizar transações.'],
+  ] as const;
+
+  for (const [locale, description, emptyBody] of expectations) {
+    const cashAccounts = locale.cashAccounts as Record<string, unknown>;
+    assert.equal(cashAccounts.transactionsDescription, description);
+    assert.equal(cashAccounts.transactionEmptyBody, emptyBody);
+  }
 });
 
 test('renders persisted transaction details with the stable linked account', () => {
@@ -174,7 +191,7 @@ test('renders an empty state when no persisted transactions exist', () => {
   const html = renderView([]);
 
   assert.match(html, /No bank transactions yet/);
-  assert.match(html, /Sync a mock account\./);
+  assert.match(html, /Connect or refresh a bank account to sync transactions/);
   assert.doesNotMatch(html, /data-bank-transaction-id=/);
 });
 
