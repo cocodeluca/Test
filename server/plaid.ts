@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import {
   readPlaidPilotConfiguration,
 } from './openBankingPolicy';
+import type {
+  ProviderTransactionPage,
+  ProviderTransactionRecord,
+} from '../src/common/utils/bankTransactions';
 
 const getPlaidBaseUrl = () => {
   const plaidEnvironment = readPlaidPilotConfiguration().environment;
@@ -78,13 +82,53 @@ const getRequiredEnv = (name: 'PLAID_CLIENT_ID' | 'PLAID_SECRET'): string => {
 export class PlaidProviderError extends Error {
   readonly code: string | null;
   readonly requestId: string | null;
+  readonly errorType: string | null;
+  readonly httpStatus: number | null;
 
-  constructor(message: string, code?: string | null, requestId?: string | null) {
+  constructor(
+    message: string,
+    code?: string | null,
+    requestId?: string | null,
+    errorType?: string | null,
+    httpStatus?: number | null
+  ) {
     super(message);
     this.name = 'PlaidProviderError';
     this.code = code ?? null;
     this.requestId = requestId ?? null;
+    this.errorType = errorType ?? null;
+    this.httpStatus = httpStatus ?? null;
   }
+}
+
+export interface PlaidTransaction {
+  account_id: string;
+  transaction_id: string;
+  pending_transaction_id?: string | null;
+  pending: boolean;
+  date: string;
+  authorized_date?: string | null;
+  amount: number;
+  iso_currency_code?: string | null;
+  unofficial_currency_code?: string | null;
+  name?: string | null;
+  merchant_name?: string | null;
+  payment_channel?: string | null;
+  website?: string | null;
+  personal_finance_category?: {
+    primary?: string | null;
+    detailed?: string | null;
+  } | null;
+  counterparties?: Array<{ name?: string | null }>;
+}
+
+export interface PlaidTransactionsSyncResponse {
+  added: PlaidTransaction[];
+  modified: PlaidTransaction[];
+  removed: Array<{ transaction_id: string }>;
+  next_cursor: string;
+  has_more: boolean;
+  request_id?: string;
 }
 
 const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Promise<T> => {
@@ -108,6 +152,7 @@ const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Pro
   const payload = (await response.json()) as T & {
     error_message?: string;
     error_code?: string;
+    error_type?: string;
     request_id?: string;
   };
 
@@ -115,7 +160,13 @@ const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Pro
     const message =
       payload.error_message ||
       `${path} failed with status ${response.status}`;
-    throw new PlaidProviderError(message, payload.error_code, payload.request_id);
+    throw new PlaidProviderError(
+      message,
+      payload.error_code,
+      payload.request_id,
+      payload.error_type,
+      response.status
+    );
   }
 
   return payload;
@@ -124,6 +175,7 @@ const plaidRequest = async <T>(path: string, body: Record<string, unknown>): Pro
 export const createPlaidLinkToken = async (input: {
   userId: string;
   accessToken?: string | null;
+  intent?: 'connect' | 'reauthentication' | 'transactions-consent';
 }): Promise<{ linkToken: string; expiration?: string; mode: 'create' | 'update' }> => {
   const configuration = readPlaidPilotConfiguration();
   const products = input.accessToken ? undefined : configuration.products;
@@ -136,7 +188,11 @@ export const createPlaidLinkToken = async (input: {
 
   if (input.accessToken) {
     body.access_token = input.accessToken;
-    body.update = { account_selection_enabled: true };
+    if (input.intent === 'transactions-consent') {
+      body.additional_consented_products = ['transactions'];
+    } else {
+      body.update = { account_selection_enabled: true };
+    }
   } else {
     body.products = products;
   }
@@ -181,6 +237,14 @@ export const fetchPlaidBalances = async (accessToken: string) =>
     access_token: accessToken,
   });
 
+export const fetchPlaidTransactionsSyncPage = async (
+  accessToken: string,
+  cursor?: string | null
+) => plaidRequest<PlaidTransactionsSyncResponse>('/transactions/sync', {
+  access_token: accessToken,
+  ...(cursor ? { cursor } : {}),
+});
+
 export const removePlaidItem = async (accessToken: string) =>
   plaidRequest<{ removed: boolean; request_id: string }>('/item/remove', {
     access_token: accessToken,
@@ -194,6 +258,56 @@ const mapCurrency = (currency: string | null | undefined): 'EUR' | 'USD' | 'ARS'
   if (value === 'GBP') return 'GBP';
   throw new PlaidProviderError('Plaid returned an unsupported account currency.');
 };
+
+const mapPlaidTransaction = (transaction: PlaidTransaction): ProviderTransactionRecord => {
+  if (!transaction.account_id || !transaction.transaction_id || !transaction.date) {
+    throw new PlaidProviderError('Plaid returned an incomplete transaction identity.');
+  }
+  if (!Number.isFinite(transaction.amount)) {
+    throw new PlaidProviderError('Plaid returned an invalid transaction amount.');
+  }
+  const category = transaction.personal_finance_category;
+  const metadata = {
+    ...(transaction.payment_channel ? { paymentChannel: transaction.payment_channel } : {}),
+    ...(transaction.website ? { website: transaction.website } : {}),
+    ...(category?.primary ? { categoryPrimary: category.primary } : {}),
+    ...(category?.detailed ? { categoryDetailed: category.detailed } : {}),
+  };
+  const counterparty = transaction.merchant_name ??
+    transaction.counterparties?.find((candidate) => candidate.name)?.name ??
+    null;
+
+  return {
+    externalTransactionId: transaction.transaction_id,
+    pendingExternalTransactionId: transaction.pending_transaction_id ?? null,
+    externalAccountId: transaction.account_id,
+    bookingDate: transaction.date,
+    authorizedDate: transaction.authorized_date ?? null,
+    amount: Math.abs(transaction.amount),
+    // Plaid signs money leaving an account positively; the canonical model does the opposite.
+    direction: transaction.amount < 0 ? 'credit' : 'debit',
+    currency: mapCurrency(
+      transaction.iso_currency_code ?? transaction.unofficial_currency_code
+    ),
+    description: transaction.merchant_name ?? transaction.name ?? 'Plaid transaction',
+    counterparty,
+    pending: transaction.pending,
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
+};
+
+export const mapPlaidTransactionsSyncPage = (
+  response: PlaidTransactionsSyncResponse
+): ProviderTransactionPage => ({
+  transactions: [...response.added, ...response.modified].map(mapPlaidTransaction),
+  removedTransactions: response.removed.map((transaction) => ({
+    externalTransactionId: transaction.transaction_id,
+    externalAccountId: null,
+    reason: 'provider-removed',
+  })),
+  nextCursor: response.next_cursor,
+  hasMore: response.has_more,
+});
 
 const mapAccountType = (account: PlaidAccount) => {
   const subtype = (account.subtype ?? '').toLowerCase();

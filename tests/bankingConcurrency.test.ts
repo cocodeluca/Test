@@ -6,6 +6,7 @@ import {
   applyBankConnectionAccountResult,
   applyBankConnectionDeletion,
   applyBankConnectionDisconnect,
+  applyBankConnectionSyncFailure,
   applyBankConnectionTransactionResult,
   getBankConnectionDeletionEligibility,
   type BankingConnectionOperationState,
@@ -222,6 +223,56 @@ test('repeated concurrent refreshes remain idempotent with stable record IDs', a
   assert.equal(state.bankTransactionSyncStates.length, 2);
   assert.deepEqual(state.cashAccounts.map((item) => item.id).sort(), stableAccountIds);
   assert.deepEqual(state.bankTransactions.map((item) => item.id).sort(), stableTransactionIds);
+});
+
+test('a transaction-sync failure preserves refreshed accounts, transactions, and reconciliation history', () => {
+  const account = accountFor(connectionA, { currentBalance: 1750 });
+  const transaction = transactionFor(connectionA, account);
+  const reconciliation = {
+    bankTransactionId: transaction.id,
+    status: 'ignored' as const,
+    createdAt: '2026-09-17T12:00:00.000Z',
+    updatedAt: '2026-09-17T12:00:00.000Z',
+  };
+  const state: BankingConnectionOperationState = {
+    ...initialState(),
+    cashAccounts: [account, accountFor(connectionB)],
+    bankTransactions: [transaction],
+    bankTransactionReconciliations: [reconciliation],
+    bankTransactionSyncStates: [{
+      connectionId: connectionA.id,
+      providerName: connectionA.providerName,
+      cursor: 'last-safe-cursor',
+      lastSuccessfulSyncAt: '2026-09-17T12:00:00.000Z',
+      syncStatus: 'success',
+      errorMessage: null,
+      updatedAt: '2026-09-17T12:00:00.000Z',
+    }],
+  };
+
+  const failed = applyBankConnectionSyncFailure(state, {
+    connection: connectionA,
+    errorMessage: 'Provider transaction sync failed.',
+    errorCode: 'ADDITIONAL_CONSENT_REQUIRED',
+    syncedAt: '2026-09-17T13:00:00.000Z',
+  });
+
+  assert.strictEqual(failed.cashAccounts, state.cashAccounts);
+  assert.strictEqual(failed.bankConnections, state.bankConnections);
+  assert.strictEqual(failed.bankTransactions, state.bankTransactions);
+  assert.strictEqual(
+    failed.bankTransactionReconciliations,
+    state.bankTransactionReconciliations
+  );
+  assert.strictEqual(failed.rentPayments, state.rentPayments);
+  assert.strictEqual(failed.expensePayments, state.expensePayments);
+  assert.equal(failed.bankTransactionSyncStates[0].cursor, 'last-safe-cursor');
+  assert.equal(failed.bankTransactionSyncStates[0].lastSuccessfulSyncAt, '2026-09-17T12:00:00.000Z');
+  assert.equal(failed.bankTransactionSyncStates[0].syncStatus, 'error');
+  assert.equal(
+    failed.bankTransactionSyncStates[0].errorCode,
+    'ADDITIONAL_CONSENT_REQUIRED'
+  );
 });
 
 test('a refresh on one connection preserves reconciliation data owned by another', () => {

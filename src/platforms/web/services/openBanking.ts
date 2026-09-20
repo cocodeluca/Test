@@ -11,6 +11,36 @@ import type {
   ProviderTransactionRecord,
 } from '../../../common/utils/bankTransactions';
 
+export type OpenBankingLinkIntent =
+  | 'connect'
+  | 'reauthentication'
+  | 'transactions-consent';
+
+export interface OpenBankingProviderErrorDetails {
+  errorType: string | null;
+  errorCode: string | null;
+  httpStatus: number | null;
+}
+
+export class OpenBankingRequestError extends Error {
+  readonly code: string | null;
+  readonly providerError: OpenBankingProviderErrorDetails | null;
+
+  constructor(
+    message: string,
+    code?: string | null,
+    providerError?: OpenBankingProviderErrorDetails | null
+  ) {
+    super(message);
+    this.name = 'OpenBankingRequestError';
+    this.code = code ?? null;
+    this.providerError = providerError ?? null;
+  }
+}
+
+export const getOpenBankingProviderErrorCode = (error: unknown) =>
+  error instanceof OpenBankingRequestError ? error.providerError?.errorCode ?? null : null;
+
 declare global {
   interface Window {
     Plaid?: {
@@ -38,12 +68,24 @@ export interface ProviderConnectionSession {
   linkToken?: string | null;
   mode?: 'create' | 'update';
   connectionId?: string | null;
+  intent?: OpenBankingLinkIntent;
 }
 
 export interface ProviderConnectionResult {
   connection: BankConnection;
   accounts: CashAccount[];
 }
+
+export const buildPlaidConnectionCompletionPayload = (
+  session: ProviderConnectionSession,
+  linkResult: { publicToken: string; selectedAccountIds: string[] }
+) => ({
+  sessionId: session.sessionId,
+  ...(session.mode === 'create' ? { publicToken: linkResult.publicToken } : {}),
+  ...(session.intent === 'transactions-consent'
+    ? { selectedAccountIds: linkResult.selectedAccountIds }
+    : {}),
+});
 
 export interface ProviderAdapter {
   providerName: OpenBankingProviderName;
@@ -54,6 +96,7 @@ export interface ProviderAdapter {
     scenario?: 'success' | 'needs-reauth' | 'error';
     connectionId?: string;
     connectionStatus?: BankConnection['connectionStatus'];
+    intent?: OpenBankingLinkIntent;
   }) => Promise<ProviderConnectionSession>;
   completeConnection: (
     session: ProviderConnectionSession,
@@ -77,6 +120,32 @@ export interface ProviderAdapter {
   deleteConnection: (connection: BankConnection) => Promise<void>;
 }
 
+export const runTransactionsConsentUpdate = async (input: {
+  adapter: ProviderAdapter;
+  userId: string;
+  connection: BankConnection;
+  onConnectionResult: (result: ProviderConnectionResult) => BankConnection;
+  syncTransactions: (connection: BankConnection) => Promise<void>;
+}) => {
+  const session = await input.adapter.createConnectionSession({
+    userId: input.userId,
+    institutionName: input.connection.institutionName,
+    institutionId: input.connection.institutionId,
+    connectionId: input.connection.id,
+    connectionStatus: input.connection.connectionStatus,
+    intent: 'transactions-consent',
+  });
+  const result = await input.adapter.completeConnection(session, {
+    userId: input.userId,
+    institutionName: input.connection.institutionName,
+    institutionId: input.connection.institutionId,
+    connectionId: input.connection.id,
+    scenario: 'success',
+  });
+  const consentedConnection = input.onConnectionResult(result);
+  await input.syncTransactions(consentedConnection);
+};
+
 const buildId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -87,9 +156,17 @@ const jsonRequest = async <T>(url: string, body: Record<string, unknown>): Promi
     body: JSON.stringify(body),
   });
 
-  const payload = (await response.json()) as T & { error?: string };
+  const payload = (await response.json()) as T & {
+    error?: string;
+    code?: string;
+    providerError?: OpenBankingProviderErrorDetails;
+  };
   if (!response.ok) {
-    throw new Error(payload.error || 'Open banking request failed');
+    throw new OpenBankingRequestError(
+      payload.error || 'Open banking request failed',
+      payload.code,
+      payload.providerError
+    );
   }
   return payload;
 };
@@ -127,7 +204,7 @@ const loadPlaidScript = async () => {
   return window.Plaid;
 };
 
-const launchPlaidLink = async (linkToken: string) => {
+export const launchPlaidLink = async (linkToken: string) => {
   const Plaid = await loadPlaidScript();
 
   return new Promise<{
@@ -154,7 +231,7 @@ const launchPlaidLink = async (linkToken: string) => {
           return;
         }
         if (error?.error_message) {
-          reject(new Error(error.error_message));
+          reject(new Error('The bank connection flow could not be completed.'));
           return;
         }
         reject(new Error('The bank connection flow was canceled.'));
@@ -344,6 +421,7 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
     scenario = 'success',
     connectionId,
     connectionStatus,
+    intent,
   }) {
     await delay(450);
     return {
@@ -354,6 +432,9 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
       createdAt: new Date().toISOString(),
       mode: connectionId && connectionStatus !== 'disconnected' ? 'update' : 'create',
       connectionId: connectionId ?? null,
+      intent: intent ?? (connectionId && connectionStatus !== 'disconnected'
+        ? 'reauthentication'
+        : 'connect'),
     };
   },
   async completeConnection(session, { userId, institutionName, institutionId, scenario = 'success', connectionId }) {
@@ -457,10 +538,11 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
 
 const plaidAdapter: ProviderAdapter = {
   providerName: 'plaid',
-  async createConnectionSession({ connectionId }) {
+  async createConnectionSession({ connectionId, intent }) {
     return jsonRequest<ProviderConnectionSession>('/api/open-banking/session/create', {
       providerName: 'plaid',
       connectionId: connectionId ?? null,
+      intent,
     });
   },
   async completeConnection(session, _input) {
@@ -469,10 +551,10 @@ const plaidAdapter: ProviderAdapter = {
     }
 
     const linkResult = await launchPlaidLink(session.linkToken);
-    return jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/complete', {
-      sessionId: session.sessionId,
-      publicToken: linkResult.publicToken,
-    });
+    return jsonRequest<ProviderConnectionResult>(
+      '/api/open-banking/connection/complete',
+      buildPlaidConnectionCompletionPayload(session, linkResult)
+    );
   },
   async fetchAccounts(connection) {
     const result = await jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
@@ -492,6 +574,12 @@ const plaidAdapter: ProviderAdapter = {
   async refreshConnection(connection, _accounts) {
     return jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
       connectionId: connection.id,
+    });
+  },
+  async fetchTransactions(connection, _accounts, cursor) {
+    return jsonRequest<ProviderTransactionPage>('/api/open-banking/transactions/sync', {
+      connectionId: connection.id,
+      cursor: cursor ?? null,
     });
   },
   async disconnectConnection(connection) {

@@ -8,9 +8,18 @@ import { Readable } from 'node:stream';
 import type { CashAccount } from '../src/common/types';
 import {
   applyBankConnectionAccountResult,
+  applyBankConnectionTransactionResult,
   type BankingConnectionOperationState,
 } from '../src/common/utils/bankingConnectionOperations';
-import { createLinkedCashAccount } from '../src/common/utils/cashAccounts';
+import { normalizeProviderTransactions } from '../src/common/utils/bankTransactions';
+import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
+import {
+  buildPlaidConnectionCompletionPayload,
+  getOpenBankingProviderErrorCode,
+  OpenBankingRequestError,
+  runTransactionsConsentUpdate,
+  type ProviderAdapter,
+} from '../src/platforms/web/services/openBanking';
 import {
   OpenBankingAuthenticationError,
   unavailableOpenBankingAuthenticator,
@@ -26,6 +35,7 @@ import {
 } from '../server/openBankingPolicy';
 import {
   createOpenBankingService,
+  OpenBankingAccountScopeError,
   OpenBankingConnectionStateError,
   type OpenBankingService,
   type PlaidPilotGateway,
@@ -38,7 +48,14 @@ import {
   type StoredOpenBankingConnection,
 } from '../server/openBankingStore';
 import { brokerApiPlugin } from '../server/brokerApiPlugin';
-import { mapPlaidAccountsToCashAccounts } from '../server/plaid';
+import {
+  createPlaidLinkToken,
+  mapPlaidAccountsToCashAccounts,
+  mapPlaidTransactionsSyncPage,
+  PlaidProviderError,
+  type PlaidTransaction,
+  type PlaidTransactionsSyncResponse,
+} from '../server/plaid';
 
 const TEST_MASTER_KEY = Buffer.alloc(32, 17).toString('base64');
 const FIXED_NOW = '2026-09-17T15:00:00.000Z';
@@ -142,7 +159,7 @@ const makeGateway = (
   async fetchItem() {
     return {
       item: {
-        item_id: 'item-from-provider',
+        item_id: 'item-santander-1',
         institution_id: 'ins_65',
         consent_expiration_time: null,
       },
@@ -161,6 +178,14 @@ const makeGateway = (
     return {
       accounts: [plaidAccount],
       item: { institution_id: 'ins_65', consent_expiration_time: null },
+    };
+  },
+  async fetchTransactions(_accessToken, cursor) {
+    return {
+      transactions: [],
+      removedTransactions: [],
+      nextCursor: cursor ?? 'test-cursor',
+      hasMore: false,
     };
   },
   async removeItem() {
@@ -206,6 +231,50 @@ const makeService = (
   linkSessions,
   now: () => new Date(FIXED_NOW),
   createConnectionId: () => 'connection-created-1',
+});
+
+const withSandboxTransactions = async (operation: () => Promise<void>) => {
+  const previousProducts = process.env.PLAID_PRODUCTS;
+  process.env.PLAID_PRODUCTS = 'auth,transactions';
+  try {
+    await operation();
+  } finally {
+    if (previousProducts === undefined) delete process.env.PLAID_PRODUCTS;
+    else process.env.PLAID_PRODUCTS = previousProducts;
+  }
+};
+
+const plaidTransaction = (
+  overrides: Partial<PlaidTransaction> = {}
+): PlaidTransaction => ({
+  account_id: 'plaid-account-1',
+  transaction_id: 'plaid-transaction-1',
+  pending_transaction_id: null,
+  pending: false,
+  date: '2026-09-17',
+  authorized_date: '2026-09-16',
+  amount: 25,
+  iso_currency_code: 'EUR',
+  name: 'Plaid transaction',
+  merchant_name: 'Plaid merchant',
+  payment_channel: 'online',
+  personal_finance_category: {
+    primary: 'GENERAL_MERCHANDISE',
+    detailed: 'GENERAL_MERCHANDISE_OTHER_GENERAL_MERCHANDISE',
+  },
+  ...overrides,
+});
+
+const plaidSyncPage = (
+  overrides: Partial<PlaidTransactionsSyncResponse> = {}
+): PlaidTransactionsSyncResponse => ({
+  added: [],
+  modified: [],
+  removed: [],
+  next_cursor: 'cursor-final',
+  has_more: false,
+  request_id: 'provider-request-id',
+  ...overrides,
 });
 
 test('encrypted vault round-trips tokens without storing plaintext', async (context) => {
@@ -263,7 +332,7 @@ test('server Link sessions reject wrong owners, expiry, and replay', () => {
   assert.throws(() => sessions.consume(expired.id, 'owner-a'), OpenBankingLinkSessionError);
 });
 
-test('pilot configuration keeps Production on ES and rejects write-capable Sandbox products', () => {
+test('pilot configuration permits read-only Sandbox transactions while keeping Production unchanged', () => {
   const validEnvironment = {
     PLAID_ENV: 'sandbox',
     PLAID_PRODUCTS: 'auth',
@@ -284,11 +353,17 @@ test('pilot configuration keeps Production on ES and rejects write-capable Sandb
     ...validEnvironment,
     PLAID_COUNTRY_CODES: 'US',
   }).countryCodes, ['US']);
+  const sandboxTransactions = inspectPlaidPilotConfiguration({
+    ...validEnvironment,
+    PLAID_PRODUCTS: 'auth,transactions',
+  });
+  assert.equal(sandboxTransactions.ready, true);
+  assert.deepEqual(sandboxTransactions.scope.linkProducts, ['auth', 'transactions']);
+  assert.equal(sandboxTransactions.scope.transactionsEnabled, true);
   for (const products of [
     'transactions',
     'transfer',
     'payment_initiation',
-    'auth,transactions',
     'auth,transfer',
   ]) {
     assert.throws(() => readPlaidPilotConfiguration({
@@ -303,6 +378,13 @@ test('pilot configuration keeps Production on ES and rejects write-capable Sandb
     ...validEnvironment,
     PLAID_COUNTRY_CODES: 'US,ES',
   }).countryCodes, ['US', 'ES']);
+  assert.throws(() => readPlaidPilotConfiguration({
+    ...validEnvironment,
+    PLAID_ENV: 'production',
+    PLAID_PRODUCTS: 'auth,transactions',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_COUNTRY_CODES: 'ES',
+  }), OpenBankingConfigurationError);
   assert.throws(() => readPlaidPilotConfiguration({
     ...validEnvironment,
     PLAID_ENV: 'production',
@@ -399,6 +481,898 @@ test('Santander preflight rejects missing capabilities and provider lookup failu
   assert.equal(lookupFailure.ready, false);
   assert.deepEqual(lookupFailure.issues, ['PLAID_INSTITUTION_LOOKUP_FAILED']);
   assert.equal(JSON.stringify(lookupFailure).includes('credential details'), false);
+});
+
+test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycle idempotently', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const stored = storedConnection({
+      selectedAccountIds: ['plaid-account-1', 'plaid-account-2'],
+    });
+    await store.save(stored);
+    const requestedCursors: Array<string | null> = [];
+    const gateway = makeGateway({
+      async fetchTransactions(accessToken, cursor) {
+        assert.equal(accessToken, stored.accessToken);
+        requestedCursors.push(cursor ?? null);
+        if (!cursor) {
+          return mapPlaidTransactionsSyncPage(plaidSyncPage({
+            added: [
+              plaidTransaction({
+                transaction_id: 'pending-card-1',
+                pending: true,
+                merchant_name: 'Card purchase',
+              }),
+              plaidTransaction({
+                transaction_id: 'same-looking-account-1',
+                merchant_name: 'Same merchant',
+                amount: 45,
+              }),
+              plaidTransaction({
+                account_id: 'plaid-account-2',
+                transaction_id: 'same-looking-account-2',
+                merchant_name: 'Same merchant',
+                amount: 45,
+              }),
+            ],
+            modified: [
+              plaidTransaction({
+                transaction_id: 'same-looking-account-1',
+                merchant_name: 'Corrected merchant',
+                amount: 47,
+              }),
+            ],
+            next_cursor: 'cursor-page-1',
+            has_more: true,
+          }));
+        }
+        if (cursor === 'cursor-page-1') {
+          return mapPlaidTransactionsSyncPage(plaidSyncPage({
+            added: [
+              plaidTransaction({
+                transaction_id: 'posted-card-1',
+                pending_transaction_id: 'pending-card-1',
+                pending: false,
+                merchant_name: 'Card purchase posted',
+              }),
+            ],
+            removed: [{ transaction_id: 'removed-transaction-1' }],
+            next_cursor: 'cursor-page-2',
+          }));
+        }
+        assert.equal(cursor, 'cursor-page-2');
+        return mapPlaidTransactionsSyncPage(plaidSyncPage({
+          next_cursor: 'cursor-page-2',
+        }));
+      },
+    });
+    const service = makeService(store, gateway);
+    const firstPage = await service.syncTransactions(
+      { userId: stored.userId },
+      stored.id,
+      null
+    );
+
+    assert.deepEqual(requestedCursors, [null, 'cursor-page-1']);
+    assert.equal(firstPage.hasMore, false);
+    assert.equal(firstPage.nextCursor, 'cursor-page-2');
+    assert.equal(firstPage.transactions.length, 5);
+    assert.deepEqual(firstPage.removedTransactions, [{
+      externalTransactionId: 'removed-transaction-1',
+      externalAccountId: null,
+      reason: 'provider-removed',
+    }]);
+    assert.equal(firstPage.transactions[0].direction, 'debit');
+    assert.equal(firstPage.transactions[0].amount, 25);
+    assert.equal(firstPage.transactions[0].pending, true);
+    assert.equal(firstPage.transactions[4].pendingExternalTransactionId, 'pending-card-1');
+    assert.equal(JSON.stringify(firstPage).includes(stored.accessToken!), false);
+    assert.equal(JSON.stringify(firstPage).includes(process.env.PLAID_SECRET!), false);
+
+    const accounts = [
+      createLinkedCashAccount({
+        id: 'cash-plaid-1',
+        userId: stored.userId,
+        providerName: 'plaid',
+        connectionId: stored.id,
+        institutionName: stored.institutionName,
+        institutionId: stored.institutionId,
+        externalAccountId: 'plaid-account-1',
+        currency: 'EUR',
+        status: 'active',
+      }),
+      createLinkedCashAccount({
+        id: 'cash-plaid-2',
+        userId: stored.userId,
+        providerName: 'plaid',
+        connectionId: stored.id,
+        institutionName: stored.institutionName,
+        institutionId: stored.institutionId,
+        externalAccountId: 'plaid-account-2',
+        currency: 'EUR',
+        status: 'active',
+      }),
+    ];
+    const connection = createBankConnection({
+      id: stored.id,
+      userId: stored.userId,
+      providerName: 'plaid',
+      institutionName: stored.institutionName,
+      institutionId: stored.institutionId,
+      connectionStatus: 'connected',
+      syncStatus: 'success',
+      linkedAccountIds: accounts.map((account) => account.id),
+    });
+    const existingRemovedCandidate = normalizeProviderTransactions([{
+      externalTransactionId: 'removed-transaction-1',
+      externalAccountId: 'plaid-account-1',
+      bookingDate: '2026-09-15',
+      amount: 10,
+      direction: 'debit',
+      currency: 'EUR',
+      description: 'Removed later',
+      pending: false,
+    }], {
+      providerName: 'plaid',
+      connectionId: stored.id,
+      accounts,
+      reportingCurrency: 'EUR',
+      fxRates: {},
+      syncedAt: '2026-09-16T15:00:00.000Z',
+    });
+    const normalized = normalizeProviderTransactions(firstPage.transactions, {
+      providerName: 'plaid',
+      connectionId: stored.id,
+      accounts,
+      reportingCurrency: 'EUR',
+      fxRates: {},
+      syncedAt: FIXED_NOW,
+    });
+    const initialState: BankingConnectionOperationState = {
+      cashAccounts: accounts,
+      bankConnections: [connection],
+      bankTransactions: existingRemovedCandidate,
+      bankTransactionReconciliations: [],
+      bankTransactionSyncStates: [],
+      rentPayments: [],
+      expensePayments: [],
+    };
+    const synced = applyBankConnectionTransactionResult(initialState, {
+      connection,
+      incomingTransactions: normalized,
+      removedTransactions: firstPage.removedTransactions,
+      cursor: firstPage.nextCursor,
+      syncedAt: FIXED_NOW,
+    });
+
+    assert.equal(synced.bankTransactions.length, 4);
+    assert.equal(synced.bankTransactionSyncStates[0].cursor, 'cursor-page-2');
+    assert.equal(synced.rentPayments.length, 0);
+    assert.equal(synced.expensePayments.length, 0);
+    assert.equal(
+      synced.bankTransactions.find((transaction) =>
+        transaction.externalTransactionId === 'removed-transaction-1'
+      )?.lifecycleStatus,
+      'removed'
+    );
+    const posted = synced.bankTransactions.find((transaction) =>
+      transaction.externalTransactionId === 'posted-card-1'
+    );
+    assert.ok(posted);
+    assert.equal(posted.pending, false);
+    assert.equal(posted.pendingExternalTransactionId, 'pending-card-1');
+    assert.equal(
+      synced.bankTransactions.find((transaction) =>
+        transaction.externalTransactionId === 'same-looking-account-1'
+      )?.description,
+      'Corrected merchant'
+    );
+    assert.equal(
+      synced.bankTransactions.filter((transaction) =>
+        transaction.description.includes('merchant')
+      ).length,
+      2
+    );
+    assert.notEqual(
+      synced.bankTransactions.find((transaction) =>
+        transaction.externalTransactionId === 'same-looking-account-1'
+      )?.cashAccountId,
+      synced.bankTransactions.find((transaction) =>
+        transaction.externalTransactionId === 'same-looking-account-2'
+      )?.cashAccountId
+    );
+
+    const repeatedPage = await service.syncTransactions(
+      { userId: stored.userId },
+      stored.id,
+      firstPage.nextCursor
+    );
+    const repeated = applyBankConnectionTransactionResult(synced, {
+      connection,
+      incomingTransactions: normalizeProviderTransactions(repeatedPage.transactions, {
+        providerName: 'plaid',
+        connectionId: stored.id,
+        accounts,
+        reportingCurrency: 'EUR',
+        fxRates: {},
+        syncedAt: FIXED_NOW,
+      }),
+      removedTransactions: repeatedPage.removedTransactions,
+      cursor: repeatedPage.nextCursor,
+      syncedAt: FIXED_NOW,
+    });
+    assert.deepEqual(
+      repeated.bankTransactions.map((transaction) => transaction.id).sort(),
+      synced.bankTransactions.map((transaction) => transaction.id).sort()
+    );
+    assert.equal(repeated.bankTransactions.length, synced.bankTransactions.length);
+  });
+});
+
+test('Plaid transaction sync skips out-of-scope accounts while preserving owner and Item checks', async (context) => {
+  await withSandboxTransactions(async () => {
+    const activeFixture = await createStoreFixture(context);
+    const active = storedConnection();
+    await activeFixture.store.save(active);
+    const unmappedService = makeService(activeFixture.store, makeGateway({
+      async fetchTransactions() {
+        return mapPlaidTransactionsSyncPage(plaidSyncPage({
+          added: [plaidTransaction({ account_id: 'unselected-account' })],
+        }));
+      },
+    }));
+
+    const filtered = await unmappedService.syncTransactions(
+      { userId: active.userId },
+      active.id,
+      null
+    );
+    assert.deepEqual(filtered.transactions, []);
+    assert.equal(filtered.nextCursor, 'cursor-final');
+    assert.equal(filtered.hasMore, false);
+    await assert.rejects(
+      unmappedService.syncTransactions({ userId: 'owner-b' }, active.id, null),
+      OpenBankingConnectionOwnershipError
+    );
+    assert.equal((await activeFixture.store.loadOwned(active.userId, active.id))?.accessToken, active.accessToken);
+
+    const disconnectedFixture = await createStoreFixture(context);
+    const disconnected = storedConnection({
+      id: 'connection-disconnected',
+      accessToken: null,
+      itemId: null,
+      providerItemStatus: 'disconnected',
+      disconnectedAt: FIXED_NOW,
+      revokedItems: [{ itemId: 'item-revoked', revokedAt: FIXED_NOW }],
+    });
+    await disconnectedFixture.store.save(disconnected);
+    await assert.rejects(
+      makeService(disconnectedFixture.store).syncTransactions(
+        { userId: disconnected.userId },
+        disconnected.id,
+        null
+      ),
+      OpenBankingConnectionStateError
+    );
+  });
+});
+
+test('Plaid transaction sync stays disabled until the read-only Sandbox product is configured', async (context) => {
+  const { store } = await createStoreFixture(context);
+  const active = storedConnection();
+  await store.save(active);
+  let providerCalls = 0;
+  const service = makeService(store, makeGateway({
+    async fetchTransactions() {
+      providerCalls += 1;
+      return mapPlaidTransactionsSyncPage(plaidSyncPage());
+    },
+  }));
+
+  await assert.rejects(
+    service.syncTransactions({ userId: active.userId }, active.id, null),
+    OpenBankingConfigurationError
+  );
+  assert.equal(providerCalls, 0);
+});
+
+test('Plaid Transactions consent Link token uses update mode and additional consent only', async (context) => {
+  await withSandboxTransactions(async () => {
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+      globalThis.fetch = originalFetch;
+    });
+    const requestBodies: Record<string, unknown>[] = [];
+    globalThis.fetch = async (_url, init) => {
+      requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        link_token: 'safe-link-token',
+        expiration: '2026-09-17T15:05:00.000Z',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    const result = await createPlaidLinkToken({
+      userId: 'owner-a',
+      accessToken: 'existing-access-token',
+      intent: 'transactions-consent',
+    });
+
+    assert.equal(result.mode, 'update');
+    const requestBody = requestBodies[0];
+    assert.equal(requestBody.access_token, 'existing-access-token');
+    assert.deepEqual(requestBody.additional_consented_products, ['transactions']);
+    assert.equal('products' in requestBody, false);
+    assert.equal('update' in requestBody, false);
+  });
+});
+
+test('Plaid completion forwards account metadata only for Transactions consent', () => {
+  const linkResult = {
+    publicToken: 'browser-public-token',
+    selectedAccountIds: ['plaid-account-1', 'plaid-account-2'],
+  };
+  const baseSession = {
+    sessionId: 'session-1',
+    providerName: 'plaid' as const,
+    status: 'redirect-required' as const,
+    createdAt: FIXED_NOW,
+  };
+
+  assert.deepEqual(buildPlaidConnectionCompletionPayload({
+    ...baseSession,
+    mode: 'update',
+    intent: 'transactions-consent',
+  }, linkResult), {
+    sessionId: 'session-1',
+    selectedAccountIds: linkResult.selectedAccountIds,
+  });
+  assert.deepEqual(buildPlaidConnectionCompletionPayload({
+    ...baseSession,
+    mode: 'update',
+    intent: 'reauthentication',
+  }, linkResult), {
+    sessionId: 'session-1',
+  });
+  assert.deepEqual(buildPlaidConnectionCompletionPayload({
+    ...baseSession,
+    mode: 'create',
+    intent: 'connect',
+  }, linkResult), {
+    sessionId: 'session-1',
+    publicToken: 'browser-public-token',
+  });
+});
+
+test('Transactions consent accepts the canonical scope plus extras without expanding local accounts', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const providerAccounts = Array.from({ length: 5 }, (_, index) => ({
+      ...plaidAccount,
+      account_id: `plaid-account-${index + 1}`,
+      name: `Plaid account ${index + 1}`,
+      mask: `${1000 + index}`,
+    }));
+    const stored = storedConnection({
+      selectedAccountIds: providerAccounts.map((account) => account.account_id),
+    });
+    const extraProviderAccount = {
+      ...plaidAccount,
+      account_id: 'plaid-account-extra',
+      name: 'Out of scope provider account',
+      mask: '9999',
+      balances: { ...plaidAccount.balances, current: 999999, available: 999999 },
+    };
+    await store.save(stored);
+    let exchangeCalls = 0;
+    const linkInputs: Parameters<PlaidPilotGateway['createLinkToken']>[0][] = [];
+    const gateway = makeGateway({
+      async createLinkToken(input) {
+        linkInputs.push(input);
+        return { linkToken: 'link-consent', mode: 'update' };
+      },
+      async exchangePublicToken() {
+        exchangeCalls += 1;
+        return { access_token: 'must-not-be-used', item_id: 'must-not-be-used' };
+      },
+      async fetchItem() {
+        return { item: { item_id: stored.itemId!, institution_id: stored.institutionId } };
+      },
+      async fetchInstitution() {
+        return {
+          institutionId: stored.institutionId,
+          name: stored.institutionName,
+          countryCodes: ['ES'],
+          products: ['auth', 'balance', 'transactions'],
+          oauth: true,
+        };
+      },
+      async fetchBalances() {
+        return {
+          accounts: [...providerAccounts, extraProviderAccount],
+          item: { institution_id: stored.institutionId, consent_expiration_time: null },
+        };
+      },
+      mapAccounts(input) {
+        return mapPlaidAccountsToCashAccounts({
+          ...input,
+          providerName: 'plaid',
+        });
+      },
+    });
+    const service = makeService(store, gateway);
+    const exactSession = await service.createConnectionSession(
+      { userId: stored.userId },
+      {
+        providerName: 'plaid',
+        connectionId: stored.id,
+        intent: 'transactions-consent',
+      }
+    );
+    const exactResult = await service.completeConnection(
+      { userId: stored.userId },
+      {
+        sessionId: exactSession.sessionId,
+        publicToken: 'must-not-be-exchanged',
+        selectedAccountIds: stored.selectedAccountIds,
+      }
+    );
+    const extraSession = await service.createConnectionSession(
+      { userId: stored.userId },
+      {
+        providerName: 'plaid',
+        connectionId: stored.id,
+        intent: 'transactions-consent',
+      }
+    );
+    const result = await service.completeConnection(
+      { userId: stored.userId },
+      {
+        sessionId: extraSession.sessionId,
+        publicToken: 'must-not-be-exchanged',
+        selectedAccountIds: [...stored.selectedAccountIds, extraProviderAccount.account_id],
+      }
+    );
+    const retained = await store.loadOwned(stored.userId, stored.id);
+
+    assert.equal(exactSession.intent, 'transactions-consent');
+    assert.equal(exactSession.mode, 'update');
+    assert.equal(extraSession.mode, 'update');
+    assert.equal(linkInputs.length, 2);
+    assert.deepEqual(linkInputs[0], {
+      userId: stored.userId,
+      accessToken: stored.accessToken,
+      intent: 'transactions-consent',
+    });
+    assert.equal(exchangeCalls, 0);
+    assert.equal((await store.list()).length, 1);
+    assert.equal(retained?.id, stored.id);
+    assert.equal(retained?.accessToken, stored.accessToken);
+    assert.equal(retained?.itemId, stored.itemId);
+    assert.deepEqual(retained?.selectedAccountIds, stored.selectedAccountIds);
+    assert.equal(result.connection.id, stored.id);
+    assert.equal(exactResult.accounts.length, 5);
+    assert.equal(result.accounts.length, 5);
+    assert.equal(
+      result.accounts.some((account) => account.externalAccountId === extraProviderAccount.account_id),
+      false
+    );
+
+    const canonicalAccounts = providerAccounts.map((account, index) => createLinkedCashAccount({
+      id: `canonical-cash-${index + 1}`,
+      userId: stored.userId,
+      providerName: 'plaid',
+      connectionId: stored.id,
+      institutionName: stored.institutionName,
+      institutionId: stored.institutionId,
+      externalAccountId: account.account_id,
+      maskedReference: `****${account.mask}`,
+      isIncludedInPortfolio: index < 3,
+      status: 'active',
+    }));
+    const connection = createBankConnection({
+      id: stored.id,
+      userId: stored.userId,
+      providerName: 'plaid',
+      institutionName: stored.institutionName,
+      institutionId: stored.institutionId,
+      linkedAccountIds: canonicalAccounts.map((account) => account.id),
+    });
+    const merged = applyBankConnectionAccountResult({
+      cashAccounts: canonicalAccounts,
+      bankConnections: [connection],
+      bankTransactions: [],
+      bankTransactionReconciliations: [],
+      bankTransactionSyncStates: [],
+      rentPayments: [],
+      expensePayments: [],
+    }, result.connection, result.accounts);
+
+    assert.deepEqual(
+      merged.cashAccounts.map((account) => account.id).sort(),
+      canonicalAccounts.map((account) => account.id).sort()
+    );
+    assert.deepEqual(
+      merged.cashAccounts.map((account) => account.isIncludedInPortfolio),
+      [true, true, true, false, false]
+    );
+  });
+});
+
+test('Transactions consent fails closed when an existing provider account is missing', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const stored = storedConnection({
+      selectedAccountIds: ['plaid-account-1', 'plaid-account-2'],
+    });
+    await store.save(stored);
+    let providerReads = 0;
+    const service = makeService(store, makeGateway({
+      async fetchItem() {
+        providerReads += 1;
+        return { item: { item_id: stored.itemId!, institution_id: stored.institutionId } };
+      },
+      async fetchBalances() {
+        providerReads += 1;
+        return { accounts: [plaidAccount] };
+      },
+    }));
+    const session = await service.createConnectionSession(
+      { userId: stored.userId },
+      {
+        providerName: 'plaid',
+        connectionId: stored.id,
+        intent: 'transactions-consent',
+      }
+    );
+
+    await assert.rejects(
+      service.completeConnection(
+        { userId: stored.userId },
+        {
+          sessionId: session.sessionId,
+          selectedAccountIds: ['plaid-account-1'],
+        }
+      ),
+      OpenBankingAccountScopeError
+    );
+
+    const retained = await store.loadOwned(stored.userId, stored.id);
+    assert.equal(providerReads, 0);
+    assert.deepEqual(retained, stored);
+  });
+});
+
+test('Transactions consent verifies the canonical scope against provider balances', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const stored = storedConnection({
+      selectedAccountIds: ['plaid-account-1', 'plaid-account-2'],
+    });
+    await store.save(stored);
+    const service = makeService(store, makeGateway({
+      async fetchBalances() {
+        return {
+          accounts: [plaidAccount],
+          item: { institution_id: stored.institutionId, consent_expiration_time: null },
+        };
+      },
+    }));
+    const session = await service.createConnectionSession(
+      { userId: stored.userId },
+      {
+        providerName: 'plaid',
+        connectionId: stored.id,
+        intent: 'transactions-consent',
+      }
+    );
+
+    await assert.rejects(
+      service.completeConnection(
+        { userId: stored.userId },
+        {
+          sessionId: session.sessionId,
+          selectedAccountIds: stored.selectedAccountIds,
+        }
+      ),
+      OpenBankingAccountScopeError
+    );
+    assert.deepEqual(await store.loadOwned(stored.userId, stored.id), stored);
+  });
+});
+
+test('Transactions consent rejects wrong owners, disconnected Items, and Production', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const active = storedConnection();
+    await store.save(active);
+    let linkCalls = 0;
+    const service = makeService(store, makeGateway({
+      async createLinkToken({ accessToken }) {
+        linkCalls += 1;
+        return { linkToken: 'link-consent', mode: accessToken ? 'update' : 'create' };
+      },
+    }));
+
+    await assert.rejects(
+      service.createConnectionSession(
+        { userId: 'owner-b' },
+        { providerName: 'plaid', connectionId: active.id, intent: 'transactions-consent' }
+      ),
+      OpenBankingConnectionOwnershipError
+    );
+    assert.equal(linkCalls, 0);
+
+    const disconnected = storedConnection({
+      id: 'connection-disconnected-consent',
+      accessToken: null,
+      itemId: null,
+      providerItemStatus: 'disconnected',
+      disconnectedAt: FIXED_NOW,
+      revokedItems: [{ itemId: 'revoked-item', revokedAt: FIXED_NOW }],
+    });
+    await store.save(disconnected);
+    await assert.rejects(
+      service.createConnectionSession(
+        { userId: disconnected.userId },
+        {
+          providerName: 'plaid',
+          connectionId: disconnected.id,
+          intent: 'transactions-consent',
+        }
+      ),
+      OpenBankingConnectionStateError
+    );
+    assert.equal(linkCalls, 0);
+
+    process.env.PLAID_ENV = 'production';
+    process.env.PLAID_PRODUCTS = 'auth';
+    process.env.PLAID_COUNTRY_CODES = 'ES';
+    process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+    try {
+      await assert.rejects(
+        service.createConnectionSession(
+          { userId: active.userId },
+          { providerName: 'plaid', connectionId: active.id, intent: 'transactions-consent' }
+        ),
+        OpenBankingConfigurationError
+      );
+    } finally {
+      process.env.PLAID_ENV = 'sandbox';
+      process.env.PLAID_PRODUCTS = 'auth,transactions';
+      process.env.PLAID_COUNTRY_CODES = 'ES';
+      process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+    }
+    assert.equal(linkCalls, 0);
+  });
+});
+
+test('sanitized additional-consent errors remain actionable without provider identifiers', async () => {
+  const handlers = new Map<string, (request: IncomingMessage, response: TestResponse) => Promise<void>>();
+  const plugin = brokerApiPlugin({
+    openBankingAuthenticator: {
+      async authenticate() {
+        return { userId: 'owner-a' };
+      },
+    },
+    openBankingService: {
+      async syncTransactions() {
+        throw new PlaidProviderError(
+          'raw provider message must not escape',
+          'ADDITIONAL_CONSENT_REQUIRED',
+          'provider-request-id-must-not-escape',
+          'INVALID_INPUT',
+          400
+        );
+      },
+    } as unknown as OpenBankingService,
+  });
+  (plugin.configureServer as (server: unknown) => void)({
+    middlewares: {
+      use(pathname: string, handler: (request: IncomingMessage, response: TestResponse) => Promise<void>) {
+        handlers.set(pathname, handler);
+      },
+    },
+  });
+  const request = Readable.from([JSON.stringify({ connectionId: 'connection-safe' })]) as unknown as IncomingMessage;
+  Object.assign(request, {
+    method: 'POST',
+    headers: {
+      origin: 'http://localhost:5173',
+      host: 'localhost:5173',
+      'content-type': 'application/json',
+    },
+    socket: { remoteAddress: '127.0.0.1' },
+  });
+  const response: TestResponse = {
+    statusCode: 0,
+    body: '',
+    setHeader() {},
+    end(value) { this.body = value ?? ''; },
+  };
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    await handlers.get('/api/open-banking/transactions/sync')!(request, response);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  const payload = JSON.parse(response.body) as Record<string, unknown>;
+  assert.equal(response.statusCode, 502);
+  assert.equal(payload.error, 'Transaction access requires additional bank consent.');
+  assert.deepEqual(payload.providerError, {
+    errorType: 'INVALID_INPUT',
+    errorCode: 'ADDITIONAL_CONSENT_REQUIRED',
+    httpStatus: 400,
+  });
+  assert.equal(response.body.includes('provider-request-id-must-not-escape'), false);
+  assert.equal(response.body.includes('raw provider message must not escape'), false);
+
+  const frontendError = new OpenBankingRequestError(
+    String(payload.error),
+    String(payload.code),
+    payload.providerError as {
+      errorType: string | null;
+      errorCode: string | null;
+      httpStatus: number | null;
+    }
+  );
+  assert.equal(getOpenBankingProviderErrorCode(frontendError), 'ADDITIONAL_CONSENT_REQUIRED');
+});
+
+test('Transactions consent orchestration retries sync once and never loops on repeated consent errors', async () => {
+  const connection = createBankConnection({
+    id: 'connection-consent-flow',
+    userId: 'owner-a',
+    providerName: 'plaid',
+    institutionName: 'First Platypus Bank',
+    institutionId: 'sandbox-institution',
+  });
+  const result = { connection, accounts: [] };
+  let sessionCalls = 0;
+  let completionCalls = 0;
+  let appliedResults = 0;
+  let syncCalls = 0;
+  const adapter = {
+    providerName: 'plaid',
+    async createConnectionSession(
+      input: Parameters<ProviderAdapter['createConnectionSession']>[0]
+    ) {
+      sessionCalls += 1;
+      assert.equal(input.intent, 'transactions-consent');
+      return {
+        sessionId: 'session-consent',
+        providerName: 'plaid',
+        status: 'redirect-required',
+        createdAt: FIXED_NOW,
+        mode: 'update',
+        connectionId: connection.id,
+        intent: 'transactions-consent',
+      } as const;
+    },
+    async completeConnection() {
+      completionCalls += 1;
+      return result;
+    },
+  } as unknown as ProviderAdapter;
+
+  await assert.rejects(
+    runTransactionsConsentUpdate({
+      adapter,
+      userId: 'owner-a',
+      connection,
+      onConnectionResult(value) {
+        appliedResults += 1;
+        return value.connection;
+      },
+      async syncTransactions() {
+        syncCalls += 1;
+        throw new OpenBankingRequestError(
+          'Transaction access requires additional bank consent.',
+          'OPEN_BANKING_PROVIDER_ERROR',
+          {
+            errorType: 'INVALID_INPUT',
+            errorCode: 'ADDITIONAL_CONSENT_REQUIRED',
+            httpStatus: 400,
+          }
+        );
+      },
+    }),
+    OpenBankingRequestError
+  );
+  assert.deepEqual(
+    { sessionCalls, completionCalls, appliedResults, syncCalls },
+    { sessionCalls: 1, completionCalls: 1, appliedResults: 1, syncCalls: 1 }
+  );
+
+  let successfulSyncCalls = 0;
+  await runTransactionsConsentUpdate({
+    adapter,
+    userId: 'owner-a',
+    connection,
+    onConnectionResult: (value) => value.connection,
+    async syncTransactions() {
+      successfulSyncCalls += 1;
+    },
+  });
+  assert.equal(successfulSyncCalls, 1);
+
+  let canceledStateWrites = 0;
+  const canceledAdapter = {
+    ...adapter,
+    async completeConnection() {
+      throw new Error('The bank connection flow was canceled.');
+    },
+  } as unknown as ProviderAdapter;
+  await assert.rejects(
+    runTransactionsConsentUpdate({
+      adapter: canceledAdapter,
+      userId: 'owner-a',
+      connection,
+      onConnectionResult(value) {
+        canceledStateWrites += 1;
+        return value.connection;
+      },
+      async syncTransactions() {
+        canceledStateWrites += 1;
+      },
+    }),
+    /canceled/
+  );
+  assert.equal(canceledStateWrites, 0);
+
+  let accountScopeStateWrites = 0;
+  const accountScopeAdapter = {
+    ...adapter,
+    async completeConnection() {
+      throw new OpenBankingRequestError(
+        'Plaid account access changed. Review the connection before syncing transactions.',
+        'OPEN_BANKING_ACCOUNT_SCOPE_CHANGED'
+      );
+    },
+  } as unknown as ProviderAdapter;
+  await assert.rejects(
+    runTransactionsConsentUpdate({
+      adapter: accountScopeAdapter,
+      userId: 'owner-a',
+      connection,
+      onConnectionResult(value) {
+        accountScopeStateWrites += 1;
+        return value.connection;
+      },
+      async syncTransactions() {
+        accountScopeStateWrites += 1;
+      },
+    }),
+    (error: unknown) =>
+      error instanceof OpenBankingRequestError &&
+      error.code === 'OPEN_BANKING_ACCOUNT_SCOPE_CHANGED'
+  );
+  assert.equal(accountScopeStateWrites, 0);
+});
+
+test('Transactions consent UI exposes a dedicated localized action', async () => {
+  const source = await readFile(
+    path.join(process.cwd(), 'src/platforms/web/pages/CashAccountsPage.tsx'),
+    'utf8'
+  );
+  assert.match(source, /ADDITIONAL_CONSENT_REQUIRED/);
+  assert.match(source, /handleEnableTransactions/);
+  assert.match(source, /cashAccounts\.enableTransactions/);
+  assert.match(source, /runTransactionsConsentUpdate/);
+  assert.match(source, /OPEN_BANKING_ACCOUNT_SCOPE_CHANGED/);
+  assert.match(source, /transactionsAccountAccessChanged/);
+  assert.match(source, /onClick=\{\(\) => void handleEnableTransactions\(connection\)\}/);
+  assert.match(source, /onClick=\{\(\) => void handleReconnectConnection\(connection\)\}/);
+  for (const locale of ['en-extra.ts', 'es-extra.ts', 'pt-extra.ts']) {
+    const translations = await readFile(
+      path.join(process.cwd(), 'src/platforms/web/i18n/locales', locale),
+      'utf8'
+    );
+    assert.match(translations, /enableTransactions/);
+    assert.match(translations, /transactionsConsentRequired/);
+    assert.match(translations, /transactionsAccountAccessChanged/);
+  }
 });
 
 test('Santander preflight route requires a backend-authenticated owner', async () => {

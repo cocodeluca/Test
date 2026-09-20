@@ -9,6 +9,9 @@ export const ptExtra: TranslationTree = {
   },
   cashAccounts: {
     ...(esExtra.cashAccounts as TranslationTree),
+    enableTransactions: 'Ativar transações',
+    transactionsConsentRequired: 'O acesso a transações requer consentimento bancário adicional.',
+    transactionsAccountAccessChanged: 'O acesso às contas Plaid mudou. Reveja a ligação antes de sincronizar transações.',
     excludeFromPortfolio: 'Excluir da carteira',
     excludeFromPortfolioConfirm: 'Excluir {{account}} dos totais da carteira e das sugestoes de conciliacao? A ligacao ao fornecedor e o historico serao preservados.',
     includeInPortfolio: 'Incluir na carteira',
@@ -21,6 +24,7 @@ export const ptExtra: TranslationTree = {
     deleteConnectionBlockedHistory: 'Esta ligação deve ser mantida porque existe histórico bancário ou proveniência de pagamentos dependente dela.',
     errors: {
       ...((esExtra.cashAccounts as TranslationTree).errors as TranslationTree),
+      enableTransactionsUnavailable: 'Não foi possível solicitar acesso a transações agora.',
       deleteConnectionUnavailable: 'Não foi possível eliminar esta ligação agora.',
     },
     transactionsTab: 'Transações',

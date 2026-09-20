@@ -628,6 +628,7 @@ export interface BankTransactionSyncState {
   lastSuccessfulSyncAt?: string | null;
   syncStatus: SyncStatus;
   errorMessage?: string | null;
+  errorCode?: string | null;
   updatedAt: string;
 }
 

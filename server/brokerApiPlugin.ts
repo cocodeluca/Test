@@ -8,8 +8,10 @@ import {
   fetchPlaidBalances,
   fetchPlaidInstitution,
   fetchPlaidItem,
+  fetchPlaidTransactionsSyncPage,
   isPlaidLoginRequiredError,
   mapPlaidAccountsToCashAccounts,
+  mapPlaidTransactionsSyncPage,
   removePlaidItem,
   PlaidProviderError,
 } from './plaid';
@@ -31,6 +33,7 @@ import {
   OpenBankingConfigurationError,
 } from './openBankingPolicy';
 import {
+  OpenBankingAccountScopeError,
   OpenBankingConnectionStateError,
   createOpenBankingService,
   type OpenBankingService,
@@ -131,11 +134,13 @@ const handleFxRates = async (_request: IncomingMessage, response: ServerResponse
 interface OpenBankingSessionBody {
   providerName?: string;
   connectionId?: string;
+  intent?: 'connect' | 'reauthentication' | 'transactions-consent';
 }
 
 interface OpenBankingCompleteBody {
   sessionId?: string;
   publicToken?: string;
+  selectedAccountIds?: unknown;
 }
 
 const logOpenBankingError = (operation: string, error: unknown) => {
@@ -146,7 +151,6 @@ const logOpenBankingError = (operation: string, error: unknown) => {
       error && typeof error === 'object' && 'code' in error
         ? String(error.code)
         : null,
-    providerRequestId: error instanceof PlaidProviderError ? error.requestId : null,
   });
 };
 
@@ -360,6 +364,13 @@ const jsonOpenBankingError = (
     });
     return;
   }
+  if (error instanceof OpenBankingAccountScopeError) {
+    json(response, 409, {
+      error: error.message,
+      code: error.code,
+    });
+    return;
+  }
   if (error instanceof OpenBankingLinkSessionError) {
     json(response, 400, {
       error: 'Bank connection session is invalid or expired.',
@@ -375,9 +386,22 @@ const jsonOpenBankingError = (
     return;
   }
   if (error instanceof PlaidProviderError) {
+    const safeProviderValue = (value: string | null) =>
+      value && /^[A-Z0-9_]+$/.test(value) ? value : null;
+    const providerErrorCode = safeProviderValue(error.code);
     json(response, 502, {
-      error: 'The banking provider could not complete the request.',
+      error: providerErrorCode === 'ADDITIONAL_CONSENT_REQUIRED'
+        ? 'Transaction access requires additional bank consent.'
+        : 'The banking provider could not complete the request.',
       code: 'OPEN_BANKING_PROVIDER_ERROR',
+      providerError: {
+        errorType: safeProviderValue(error.errorType),
+        errorCode: providerErrorCode,
+        httpStatus:
+          error.httpStatus && error.httpStatus >= 400 && error.httpStatus <= 599
+            ? error.httpStatus
+            : null,
+      },
     });
     return;
   }
@@ -394,9 +418,19 @@ const handleCreateOpenBankingSession = async (
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingSessionBody>(request);
+  if (
+    body.intent !== undefined &&
+    body.intent !== 'connect' &&
+    body.intent !== 'reauthentication' &&
+    body.intent !== 'transactions-consent'
+  ) {
+    json(response, 400, { error: 'intent is invalid.' });
+    return;
+  }
   const result = await service.createConnectionSession(principal, {
     providerName: body.providerName,
     connectionId: body.connectionId,
+    intent: body.intent,
   });
   json(response, 200, result);
 };
@@ -424,9 +458,21 @@ const handleCompleteOpenBankingConnection = async (
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
   const body = await readJsonBody<OpenBankingCompleteBody>(request);
+  if (
+    body.selectedAccountIds !== undefined &&
+    (!Array.isArray(body.selectedAccountIds) ||
+      body.selectedAccountIds.length > 1000 ||
+      body.selectedAccountIds.some(
+        (accountId) => typeof accountId !== 'string' || accountId.length === 0
+      ))
+  ) {
+    json(response, 400, { error: 'selectedAccountIds is invalid.' });
+    return;
+  }
   const result = await service.completeConnection(principal, {
     sessionId: body.sessionId,
     publicToken: body.publicToken,
+    selectedAccountIds: body.selectedAccountIds as string[] | undefined,
   });
   json(response, 200, result);
 };
@@ -446,6 +492,32 @@ const handleRefreshOpenBankingConnection = async (
     return;
   }
   const result = await service.refreshConnection(principal, body.connectionId);
+  json(response, 200, result);
+};
+
+const handleSyncOpenBankingTransactions = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
+) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
+  const principal = await authenticator.authenticate(request);
+  const body = await readJsonBody<{ connectionId?: string; cursor?: unknown }>(request);
+  if (!body.connectionId) {
+    json(response, 400, { error: 'connectionId is required.' });
+    return;
+  }
+  if (body.cursor !== undefined && body.cursor !== null && typeof body.cursor !== 'string') {
+    json(response, 400, { error: 'cursor must be a string or null.' });
+    return;
+  }
+  const result = await service.syncTransactions(
+    principal,
+    body.connectionId,
+    body.cursor as string | null | undefined
+  );
   json(response, 200, result);
 };
 
@@ -501,6 +573,10 @@ const createDefaultOpenBankingService = () => createOpenBankingService({
     fetchItem: fetchPlaidItem,
     fetchInstitution: fetchPlaidInstitution,
     fetchBalances: fetchPlaidBalances,
+    fetchTransactions: async (accessToken, cursor) =>
+      mapPlaidTransactionsSyncPage(
+        await fetchPlaidTransactionsSyncPage(accessToken, cursor)
+      ),
     removeItem: removePlaidItem,
     isLoginRequiredError: isPlaidLoginRequiredError,
     mapAccounts: (input) => mapPlaidAccountsToCashAccounts({
@@ -677,6 +753,23 @@ export const brokerApiPlugin = (options: BrokerApiPluginOptions = {}): Plugin =>
         );
       } catch (error) {
         jsonOpenBankingError(response, error, 'connection-disconnect');
+      }
+    });
+
+    server.middlewares.use('/api/open-banking/transactions/sync', async (request, response) => {
+      if (request.method !== 'POST') {
+        return methodNotAllowed(response);
+      }
+
+      try {
+        await handleSyncOpenBankingTransactions(
+          request,
+          response,
+          openBankingService,
+          openBankingAuthenticator
+        );
+      } catch (error) {
+        jsonOpenBankingError(response, error, 'transactions-sync');
       }
     });
 

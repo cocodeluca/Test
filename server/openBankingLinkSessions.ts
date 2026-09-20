@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
+export type OpenBankingLinkSessionIntent =
+  | 'connect'
+  | 'reauthentication'
+  | 'transactions-consent';
+
 export interface OpenBankingLinkSession {
   id: string;
   ownerUserId: string;
   providerName: 'plaid';
   countryCode: 'ES';
   institutionId: 'ins_65';
-  intent: 'accounts-balances-read-only';
+  intent: OpenBankingLinkSessionIntent;
   connectionId: string | null;
   mode: 'create' | 'update';
   createdAt: string;
@@ -27,6 +32,7 @@ export interface OpenBankingLinkSessionStore {
     ownerUserId: string;
     connectionId?: string | null;
     mode?: 'create' | 'update';
+    intent?: OpenBankingLinkSessionIntent;
   }): OpenBankingLinkSession;
   consume(sessionId: string, ownerUserId: string): OpenBankingLinkSession;
 }
@@ -42,17 +48,18 @@ export const createOpenBankingLinkSessionStore = (options: {
   const sessions = new Map<string, OpenBankingLinkSession>();
 
   return {
-    create({ ownerUserId, connectionId = null, mode }) {
+    create({ ownerUserId, connectionId = null, mode, intent }) {
       const createdAt = now();
+      const resolvedMode = mode ?? (connectionId ? 'update' : 'create');
       const session: OpenBankingLinkSession = {
         id: createId(),
         ownerUserId,
         providerName: 'plaid',
         countryCode: 'ES',
         institutionId: 'ins_65',
-        intent: 'accounts-balances-read-only',
+        intent: intent ?? (resolvedMode === 'update' ? 'reauthentication' : 'connect'),
         connectionId,
-        mode: mode ?? (connectionId ? 'update' : 'create'),
+        mode: resolvedMode,
         createdAt: createdAt.toISOString(),
         expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
       };

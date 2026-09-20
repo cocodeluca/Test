@@ -35,7 +35,8 @@ export interface ProviderTransactionPage {
 
 export interface ProviderRemovedTransactionRecord {
   externalTransactionId: string;
-  externalAccountId: string;
+  /** Some providers, including Plaid sync, omit the account ID from removal records. */
+  externalAccountId?: string | null;
   reason?: string | null;
 }
 
@@ -301,21 +302,13 @@ export const applyBankTransactionProviderLifecycle = (args: {
   const lifecycleEvents = new Map<string, BankTransactionLifecycleEvent>();
 
   for (const removed of args.removedTransactions ?? []) {
-    const identity = getBankTransactionIdentity({
-      providerName: args.providerName,
-      connectionId: args.connectionId,
-      externalAccountId: removed.externalAccountId,
-      externalTransactionId: removed.externalTransactionId,
-    });
-    const existing = transactions.find((transaction) =>
-      getBankTransactionIdentity(transaction) === identity ||
-      (!transaction.connectionId &&
-        getLegacyBankTransactionIdentity(transaction) === getLegacyBankTransactionIdentity({
-          providerName: args.providerName,
-          externalAccountId: removed.externalAccountId,
-          externalTransactionId: removed.externalTransactionId,
-        }))
+    const candidates = transactions.filter((transaction) =>
+      transaction.providerName === args.providerName &&
+      (!transaction.connectionId || transaction.connectionId === args.connectionId) &&
+      transaction.externalTransactionId === removed.externalTransactionId &&
+      (!removed.externalAccountId || transaction.externalAccountId === removed.externalAccountId)
     );
+    const existing = candidates.length === 1 ? candidates[0] : undefined;
     if (!existing) continue;
     transactions = transactions.map((transaction) => transaction.id === existing.id ? {
       ...transaction,
@@ -396,6 +389,7 @@ export const upsertBankTransactionSyncState = (
     cursor?: string | null;
     syncStatus: SyncStatus;
     errorMessage?: string | null;
+    errorCode?: string | null;
     syncedAt: string;
   }
 ): BankTransactionSyncState[] => {
@@ -406,6 +400,7 @@ export const upsertBankTransactionSyncState = (
     lastSuccessfulSyncAt: next.syncStatus === 'success' ? next.syncedAt : null,
     syncStatus: next.syncStatus,
     errorMessage: next.errorMessage ?? null,
+    errorCode: next.errorCode ?? null,
     updatedAt: next.syncedAt,
   };
   const existing = states.find((state) => state.connectionId === next.connectionId);

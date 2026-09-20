@@ -128,6 +128,7 @@ export const applyBankConnectionSyncFailure = (
   args: {
     connection: BankConnection;
     errorMessage: string;
+    errorCode?: string | null;
     syncedAt: string;
   }
 ): BankingConnectionOperationState => ({
@@ -139,6 +140,7 @@ export const applyBankConnectionSyncFailure = (
       providerName: args.connection.providerName,
       syncStatus: 'error',
       errorMessage: args.errorMessage,
+      errorCode: args.errorCode,
       syncedAt: args.syncedAt,
     }
   ),

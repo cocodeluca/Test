@@ -76,7 +76,12 @@ import {
 import { CompactEditModal } from '../components/CompactEditModal';
 import { BankTransactionsView } from '../components/BankTransactionsView';
 import { useSettings } from '../context/SettingsContext';
-import { openBankingAdapters } from '../services/openBanking';
+import {
+  getOpenBankingProviderErrorCode,
+  OpenBankingRequestError,
+  openBankingAdapters,
+  runTransactionsConsentUpdate,
+} from '../services/openBanking';
 
 interface CashAccountsPageProps {
   userId: string;
@@ -312,9 +317,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     }));
   };
 
-  const syncMockTransactions = async (connection: BankConnection) => {
+  const syncProviderTransactions = async (connection: BankConnection) => {
     const adapter = openBankingAdapters[connection.providerName];
-    if (!adapter.fetchTransactions || connection.providerName !== 'mock-bank') {
+    if (!adapter.fetchTransactions) {
       return;
     }
     const beforeFetch = bankingStateRef.current;
@@ -347,7 +352,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     } catch (error) {
       commitBankingState((current) => applyBankConnectionSyncFailure(current, {
         connection,
-        errorMessage: error instanceof Error ? error.message : 'Mock transaction sync failed.',
+        errorMessage: error instanceof Error ? error.message : 'Bank transaction sync failed.',
+        errorCode: getOpenBankingProviderErrorCode(error),
         syncedAt,
       }));
       throw error;
@@ -474,7 +480,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         ));
         const connected = next.bankConnections.find((item) => item.id === result.connection.id)!;
         connectedAccountId = connected.linkedAccountIds[0] ?? null;
-        await syncMockTransactions(connected);
+        await syncProviderTransactions(connected);
       });
       setSelectedAccountId(connectedAccountId ?? selectedAccountId);
       setActiveTab('connections');
@@ -509,7 +515,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           result.accounts
         ));
         const refreshed = next.bankConnections.find((item) => item.id === connection.id)!;
-        await syncMockTransactions(refreshed);
+        await syncProviderTransactions(refreshed);
       });
     } catch (error) {
       setConnectionMessage(
@@ -548,11 +554,73 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           result.accounts.map((account) => ({ ...account, connectionId: connection.id }))
         ));
         const reconnected = next.bankConnections.find((item) => item.id === connection.id)!;
-        await syncMockTransactions(reconnected);
+        await syncProviderTransactions(reconnected);
       });
     } catch (error) {
       setConnectionMessage(
         error instanceof Error ? error.message : t('cashAccounts.errors.reconnectUnavailable')
+      );
+    }
+  };
+
+  const handleEnableTransactions = async (connection: BankConnection) => {
+    setConnectionMessage(null);
+    try {
+      await runConnectionOperation(connection.id, async () => {
+        const currentConnection = bankingStateRef.current.bankConnections.find(
+          (item) => item.id === connection.id
+        );
+        if (!currentConnection || currentConnection.connectionStatus === 'disconnected') return;
+        const adapter = openBankingAdapters[currentConnection.providerName];
+        await runTransactionsConsentUpdate({
+          adapter,
+          userId,
+          connection: currentConnection,
+          onConnectionResult: (result) => {
+            const next = commitBankingState((current) => applyBankConnectionAccountResult(
+              current,
+              { ...result.connection, id: currentConnection.id },
+              result.accounts.map((account) => ({
+                ...account,
+                connectionId: currentConnection.id,
+              }))
+            ));
+            const consented = next.bankConnections.find(
+              (item) => item.id === currentConnection.id
+            );
+            if (!consented) throw new Error('Open banking connection not found.');
+            return consented;
+          },
+          syncTransactions: syncProviderTransactions,
+        });
+      });
+    } catch (error) {
+      const accountScopeChanged =
+        error instanceof OpenBankingRequestError &&
+        error.code === 'OPEN_BANKING_ACCOUNT_SCOPE_CHANGED';
+      if (accountScopeChanged) {
+        const updatedAt = new Date().toISOString();
+        const errorMessage = t('cashAccounts.transactionsAccountAccessChanged');
+        commitBankingState((current) => ({
+          ...current,
+          bankConnections: current.bankConnections.map((item) =>
+            item.id === connection.id
+              ? {
+                  ...item,
+                  syncStatus: 'error',
+                  errorMessage,
+                  updatedAt,
+                }
+              : item
+          ),
+        }));
+      }
+      setConnectionMessage(
+        accountScopeChanged
+          ? t('cashAccounts.transactionsAccountAccessChanged')
+          : error instanceof Error
+          ? error.message
+          : t('cashAccounts.errors.enableTransactionsUnavailable')
       );
     }
   };
@@ -832,7 +900,13 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                   <h2 className={`mt-5 text-[1.5rem] font-semibold ${appTextStrongClass}`}>{t('cashAccounts.noConnectedInstitutions')}</h2>
                   <p className={`mx-auto mt-3 max-w-xl text-sm leading-6 ${appTextMutedClass}`}>{t('cashAccounts.noConnectedInstitutionsBody')}</p>
                 </div>
-              ) : bankConnections.map((connection) => (
+              ) : bankConnections.map((connection) => {
+                const transactionSyncState = bankTransactionSyncStates.find(
+                  (state) => state.connectionId === connection.id
+                );
+                const transactionsConsentRequired =
+                  transactionSyncState?.errorCode === 'ADDITIONAL_CONSENT_REQUIRED';
+                return (
                 <div key={connection.id} className={`${appPanelInsetClass} rounded-[24px] p-5`}>
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div>
@@ -845,6 +919,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                     <div className="flex flex-wrap gap-2">
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t(getBankConnectionReconnectMode(connection) === 'connect-again' ? 'common.connectAgain' : 'common.reconnect')}</button>
+                      {transactionsConsentRequired && connection.connectionStatus !== 'disconnected' ? <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleEnableTransactions(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><ShieldCheck className="h-4 w-4" />{t('cashAccounts.enableTransactions')}</button> : null}
                       <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
                       {connection.connectionStatus === 'disconnected' ? <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDeleteConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('cashAccounts.deleteConnection')}</button> : null}
                     </div>
@@ -856,8 +931,10 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                     <div className={`${appPanelClass} rounded-[18px] p-3`}><p className={`text-[11px] font-semibold uppercase tracking-[0.16em] ${appTextSoftClass}`}>{t('cashAccounts.reauth')}</p><p className={`mt-2 text-sm font-semibold ${appTextStrongClass}`}>{connection.needsReauth ? t('cashAccounts.required') : t('cashAccounts.notRequired')}</p></div>
                   </div>
                   {connection.errorMessage ? <div className="mt-4 rounded-[18px] border border-rose-300/70 bg-rose-50/80 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300">{connection.errorMessage}</div> : null}
+                  {transactionsConsentRequired ? <div className="mt-4 rounded-[18px] border border-amber-300/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">{t('cashAccounts.transactionsConsentRequired')}</div> : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : activeTab === 'transactions' ? (
             <BankTransactionsView

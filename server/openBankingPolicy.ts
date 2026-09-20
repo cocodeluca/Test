@@ -2,12 +2,14 @@ export const SANTANDER_SPAIN_INSTITUTION_ID = 'ins_65';
 export const SANTANDER_SPAIN_COUNTRY_CODE = 'ES';
 export const SANTANDER_SPAIN_INSTITUTION_NAME = 'Banco Santander';
 export const PLAID_READ_ONLY_PRODUCTS = ['auth'] as const;
+export const PLAID_SANDBOX_TRANSACTION_PRODUCTS = ['auth', 'transactions'] as const;
+type PlaidReadOnlyProduct = 'auth' | 'transactions';
 
 export type PlaidEnvironment = 'sandbox' | 'development' | 'production';
 
 export interface PlaidPilotConfiguration {
   environment: PlaidEnvironment;
-  products: ['auth'];
+  products: PlaidReadOnlyProduct[];
   countryCodes: string[];
   redirectUri: string;
 }
@@ -36,10 +38,10 @@ export interface PlaidPilotConfigurationStatus {
   };
   scope: {
     countryCodes: string[];
-    linkProducts: ['auth'];
+    linkProducts: PlaidReadOnlyProduct[];
     accountsEnabled: true;
     balancesEnabled: true;
-    transactionsEnabled: false;
+    transactionsEnabled: boolean;
     transferEnabled: false;
     paymentInitiationEnabled: false;
   };
@@ -116,9 +118,14 @@ export const inspectPlaidPilotConfiguration = (
   const vaultConfigured = isConfigured(environment.OPEN_BANKING_VAULT_KEY);
   const vaultValid = isValidVaultKey(environment.OPEN_BANKING_VAULT_KEY);
   const products = parseCsv(environment.PLAID_PRODUCTS).map((value) => value.toLowerCase());
-  const productsValid =
+  const sandboxTransactionsEnabled =
+    plaidEnvironment === 'sandbox' &&
+    products.length === PLAID_SANDBOX_TRANSACTION_PRODUCTS.length &&
+    products.every((value, index) => value === PLAID_SANDBOX_TRANSACTION_PRODUCTS[index]);
+  const baseProductsValid =
     products.length === PLAID_READ_ONLY_PRODUCTS.length &&
     products.every((value, index) => value === PLAID_READ_ONLY_PRODUCTS[index]);
+  const productsValid = baseProductsValid || sandboxTransactionsEnabled;
   const countryCodes = parseCsv(environment.PLAID_COUNTRY_CODES).map((value) => value.toUpperCase());
   const countryCodesValid = plaidEnvironment === 'sandbox'
     ? countryCodes.length > 0 && countryCodes.every((value) => /^[A-Z]{2}$/.test(value))
@@ -143,10 +150,10 @@ export const inspectPlaidPilotConfiguration = (
     vault: { configured: vaultConfigured, valid: vaultValid },
     scope: {
       countryCodes,
-      linkProducts: ['auth'],
+      linkProducts: sandboxTransactionsEnabled ? ['auth', 'transactions'] : ['auth'],
       accountsEnabled: true,
       balancesEnabled: true,
-      transactionsEnabled: false,
+      transactionsEnabled: sandboxTransactionsEnabled,
       transferEnabled: false,
       paymentInitiationEnabled: false,
     },
@@ -171,7 +178,7 @@ export const readPlaidPilotConfiguration = (
 
   return {
     environment: status.environment,
-    products: ['auth'],
+    products: [...status.scope.linkProducts],
     countryCodes: [...status.scope.countryCodes],
     redirectUri: environment.PLAID_REDIRECT_URI!.trim(),
   };
@@ -205,10 +212,12 @@ export const validatePlaidInstitutionForConfiguration = (
       configuration.countryCodes.includes(countryCode)
     ) ||
     !institution.products.includes('balance') ||
-    !institution.products.includes('auth')
+    !institution.products.includes('auth') ||
+    (configuration.products.includes('transactions') &&
+      !institution.products.includes('transactions'))
   ) {
     throw new OpenBankingConfigurationError(
-      'The Sandbox institution does not support the configured read-only Accounts and Balance flow.'
+      'The Sandbox institution does not support the configured read-only products.'
     );
   }
 };

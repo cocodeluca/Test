@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { BankConnection, CashAccount } from '../src/common/types';
+import type { ProviderTransactionPage } from '../src/common/utils/bankTransactions';
 import type { AuthenticatedOpenBankingPrincipal } from './openBankingAuth';
-import type { OpenBankingLinkSessionStore } from './openBankingLinkSessions';
+import type {
+  OpenBankingLinkSessionIntent,
+  OpenBankingLinkSessionStore,
+} from './openBankingLinkSessions';
 import {
   OpenBankingConfigurationError,
   inspectPlaidPilotConfiguration,
@@ -28,6 +32,7 @@ export interface PlaidPilotGateway {
   createLinkToken(input: {
     userId: string;
     accessToken?: string | null;
+    intent?: OpenBankingLinkSessionIntent;
   }): Promise<{ linkToken: string; expiration?: string; mode: 'create' | 'update' }>;
   exchangePublicToken(publicToken: string): Promise<{ access_token: string; item_id: string }>;
   fetchItem(accessToken: string): Promise<PlaidItemGetResponse>;
@@ -39,6 +44,10 @@ export interface PlaidPilotGateway {
     oauth?: boolean;
   }>;
   fetchBalances(accessToken: string): Promise<PlaidAccountsBalanceResponse>;
+  fetchTransactions(
+    accessToken: string,
+    cursor?: string | null
+  ): Promise<ProviderTransactionPage>;
   removeItem(accessToken: string): Promise<unknown>;
   isLoginRequiredError(error: unknown): boolean;
   mapAccounts(input: {
@@ -71,7 +80,11 @@ export interface OpenBankingService {
   }>;
   createConnectionSession(
     principal: AuthenticatedOpenBankingPrincipal,
-    input: { providerName?: string; connectionId?: string | null }
+    input: {
+      providerName?: string;
+      connectionId?: string | null;
+      intent?: OpenBankingLinkSessionIntent;
+    }
   ): Promise<{
     sessionId: string;
     providerName: 'plaid';
@@ -80,15 +93,25 @@ export interface OpenBankingService {
     expiration: string | null;
     mode: 'create' | 'update';
     connectionId: string | null;
+    intent: OpenBankingLinkSessionIntent;
   }>;
   completeConnection(
     principal: AuthenticatedOpenBankingPrincipal,
-    input: { sessionId?: string; publicToken?: string }
+    input: {
+      sessionId?: string;
+      publicToken?: string;
+      selectedAccountIds?: string[];
+    }
   ): Promise<SanitizedProviderConnectionResult>;
   refreshConnection(
     principal: AuthenticatedOpenBankingPrincipal,
     connectionId: string
   ): Promise<SanitizedProviderConnectionResult>;
+  syncTransactions(
+    principal: AuthenticatedOpenBankingPrincipal,
+    connectionId: string,
+    cursor?: string | null
+  ): Promise<ProviderTransactionPage>;
   disconnectConnection(
     principal: AuthenticatedOpenBankingPrincipal,
     connectionId: string
@@ -105,6 +128,15 @@ export class OpenBankingConnectionStateError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'OpenBankingConnectionStateError';
+  }
+}
+
+export class OpenBankingAccountScopeError extends Error {
+  readonly code = 'OPEN_BANKING_ACCOUNT_SCOPE_CHANGED';
+
+  constructor() {
+    super('Plaid account access changed. Review the connection before syncing transactions.');
+    this.name = 'OpenBankingAccountScopeError';
   }
 }
 
@@ -258,13 +290,43 @@ export const createOpenBankingService = (dependencies: {
             configuration
           )
         : null;
-      const mode = existingConnection?.providerItemStatus === 'active' ? 'update' : 'create';
+      if (input.intent === 'transactions-consent') {
+        if (
+          configuration.environment !== 'sandbox' ||
+          !configuration.products.includes('transactions')
+        ) {
+          throw new OpenBankingConfigurationError(
+            'Plaid Transactions consent update mode is available only in configured Sandbox.'
+          );
+        }
+        if (!existingConnection) {
+          throw new OpenBankingConnectionStateError(
+            'Transactions consent requires an existing bank connection.'
+          );
+        }
+      }
+      const mode = input.intent === 'transactions-consent'
+        ? 'update'
+        : existingConnection?.providerItemStatus === 'active'
+        ? 'update'
+        : 'create';
       const liveItem = mode === 'update' && existingConnection
         ? requireLiveProviderItem(existingConnection)
         : null;
+      const intent: OpenBankingLinkSessionIntent = input.intent ??
+        (mode === 'update' ? 'reauthentication' : 'connect');
+      if (
+        (intent === 'connect' && mode !== 'create') ||
+        (intent === 'reauthentication' && mode !== 'update')
+      ) {
+        throw new OpenBankingConnectionStateError(
+          'Plaid Link intent did not match the connection lifecycle.'
+        );
+      }
       const linkResult = await dependencies.plaid.createLinkToken({
         userId: principal.userId,
         accessToken: liveItem?.accessToken ?? null,
+        intent,
       });
       if (linkResult.mode !== mode) {
         throw new OpenBankingConnectionStateError(
@@ -275,6 +337,7 @@ export const createOpenBankingService = (dependencies: {
         ownerUserId: principal.userId,
         connectionId: existingConnection?.id ?? null,
         mode,
+        intent,
       });
       return {
         sessionId: session.id,
@@ -284,6 +347,7 @@ export const createOpenBankingService = (dependencies: {
         expiration: linkResult.expiration ?? null,
         mode,
         connectionId: existingConnection?.id ?? null,
+        intent,
       };
     },
 
@@ -293,6 +357,15 @@ export const createOpenBankingService = (dependencies: {
         throw new OpenBankingConfigurationError('A server-issued Link session is required.');
       }
       const session = dependencies.linkSessions.consume(input.sessionId, principal.userId);
+      if (
+        session.intent === 'transactions-consent' &&
+        (configuration.environment !== 'sandbox' ||
+          !configuration.products.includes('transactions'))
+      ) {
+        throw new OpenBankingConfigurationError(
+          'Plaid Transactions consent update mode is available only in configured Sandbox.'
+        );
+      }
       const existingConnection = session.connectionId
         ? await requireOwnedConnection(
             dependencies.store,
@@ -304,6 +377,23 @@ export const createOpenBankingService = (dependencies: {
       const liveItem = session.mode === 'update' && existingConnection
         ? requireLiveProviderItem(existingConnection)
         : null;
+      if (session.intent === 'transactions-consent' && session.mode !== 'update') {
+        throw new OpenBankingConnectionStateError(
+          'Transactions consent must use Plaid update mode.'
+        );
+      }
+      if (session.intent === 'transactions-consent') {
+        const linkSelectedAccountIds = new Set(input.selectedAccountIds ?? []);
+        const hasInvalidAccountIdentity = (input.selectedAccountIds ?? []).some(
+          (accountId) => typeof accountId !== 'string' || accountId.length === 0
+        );
+        const missingExistingAccount = existingConnection?.selectedAccountIds.some(
+          (accountId) => !linkSelectedAccountIds.has(accountId)
+        ) ?? true;
+        if (hasInvalidAccountIdentity || missingExistingAccount) {
+          throw new OpenBankingAccountScopeError();
+        }
+      }
       if (session.mode === 'create' && existingConnection?.providerItemStatus === 'active') {
         throw new OpenBankingConnectionStateError(
           'The connection already has a live Plaid Item.'
@@ -330,6 +420,27 @@ export const createOpenBankingService = (dependencies: {
           dependencies.plaid.fetchItem(accessToken),
           dependencies.plaid.fetchBalances(accessToken),
         ]);
+        if (session.intent === 'transactions-consent' && existingConnection) {
+          const providerAccountIds = new Set(
+            balances.accounts.map((account) => account.account_id)
+          );
+          if (
+            existingConnection.selectedAccountIds.some(
+              (accountId) => !providerAccountIds.has(accountId)
+            )
+          ) {
+            throw new OpenBankingAccountScopeError();
+          }
+        }
+        if (
+          session.mode === 'update' &&
+          liveItem &&
+          item.item.item_id !== liveItem.itemId
+        ) {
+          throw new OpenBankingConnectionStateError(
+            'Plaid update mode returned a different provider Item.'
+          );
+        }
         const institutionId = item.item.institution_id ?? balances.item?.institution_id;
         if (
           !institutionId ||
@@ -358,7 +469,9 @@ export const createOpenBankingService = (dependencies: {
 
         const syncedAt = now().toISOString();
         const connectionId = existingConnection?.id ?? createConnectionId();
-        const selectedAccountIds = balances.accounts.map((account) => account.account_id);
+        const selectedAccountIds = session.intent === 'transactions-consent' && existingConnection
+          ? [...existingConnection.selectedAccountIds]
+          : balances.accounts.map((account) => account.account_id);
         const accounts = dependencies.plaid.mapAccounts({
           userId: principal.userId,
           connectionId,
@@ -456,6 +569,70 @@ export const createOpenBankingService = (dependencies: {
           accounts: [],
         };
       }
+    },
+
+    async syncTransactions(principal, connectionId, cursor) {
+      const configuration = readPlaidPilotConfiguration();
+      const stored = await requireOwnedConnection(
+        dependencies.store,
+        principal,
+        connectionId,
+        configuration
+      );
+      const liveItem = requireLiveProviderItem(stored);
+      if (
+        configuration.environment !== 'sandbox' ||
+        !configuration.products.includes('transactions')
+      ) {
+        throw new OpenBankingConfigurationError(
+          'Plaid Sandbox transaction sync requires PLAID_PRODUCTS=auth,transactions.'
+        );
+      }
+
+      const selectedAccountIds = new Set(stored.selectedAccountIds);
+      if (selectedAccountIds.size === 0) {
+        throw new OpenBankingConnectionStateError(
+          'The Plaid connection has no selected accounts for transaction mapping.'
+        );
+      }
+
+      const transactions: ProviderTransactionPage['transactions'] = [];
+      const removedTransactions: NonNullable<ProviderTransactionPage['removedTransactions']> = [];
+      let nextCursor = cursor ?? null;
+      let pageCount = 0;
+      let hasMore = false;
+
+      do {
+        if (++pageCount > 100) {
+          throw new OpenBankingConnectionStateError(
+            'Plaid transaction sync exceeded the safe pagination limit.'
+          );
+        }
+        const page = await dependencies.plaid.fetchTransactions(
+          liveItem.accessToken,
+          nextCursor
+        );
+        // Plaid may return transactions for accounts additionally selected during
+        // consent. The stored account scope remains the ingestion allowlist.
+        transactions.push(...page.transactions.filter((transaction) =>
+          selectedAccountIds.has(transaction.externalAccountId)
+        ));
+        removedTransactions.push(...(page.removedTransactions ?? []));
+        hasMore = page.hasMore;
+        if (hasMore && (!page.nextCursor || page.nextCursor === nextCursor)) {
+          throw new OpenBankingConnectionStateError(
+            'Plaid transaction sync returned an invalid pagination cursor.'
+          );
+        }
+        nextCursor = page.nextCursor ?? nextCursor;
+      } while (hasMore);
+
+      return {
+        transactions,
+        removedTransactions,
+        nextCursor,
+        hasMore: false,
+      };
     },
 
     async disconnectConnection(principal, connectionId) {

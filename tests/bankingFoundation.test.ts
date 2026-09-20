@@ -428,7 +428,7 @@ test('inactive linked account rejects new transaction normalization', () => {
 test('repeated mock transaction fetch is idempotent', async () => {
   const adapter = openBankingAdapters['mock-bank'];
   assert.ok(adapter.fetchTransactions);
-  assert.equal(openBankingAdapters.plaid.fetchTransactions, undefined);
+  assert.ok(openBankingAdapters.plaid.fetchTransactions);
   const accounts = [
     linkedAccount(),
     linkedAccount({
