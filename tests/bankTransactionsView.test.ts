@@ -81,10 +81,17 @@ const translations: Record<string, string> = {
   'cashAccounts.reconciliationConfirm': 'Confirm',
   'cashAccounts.reconciliationIgnore': 'Ignore',
   'cashAccounts.reconciliationUnmatch': 'Undo match',
+  'cashAccounts.reconciliationPeriod': 'Period',
+  'cashAccounts.reconciliationDueDate': 'Due',
+  'cashAccounts.reconciliationExpectedAmount': 'Expected',
+  'cashAccounts.reconciliationTransactionAmount': 'Transaction',
+  'cashAccounts.reconciliationDays': 'days',
   'cashAccounts.reconciliationStatus.suggested': 'Suggested match',
   'cashAccounts.reconciliationTarget.rent-receivable': 'Rent',
   'cashAccounts.reconciliationReason.exact-amount': 'Exact amount',
+  'cashAccounts.reconciliationReason.same-currency': 'Same currency',
   'cashAccounts.reconciliationReason.date-proximity': 'Nearby date',
+  'cashAccounts.reconciliationReason.unique-eligible-obligation': 'Unique eligible obligation',
 };
 
 const t = (key: string) => translations[key] ?? key;
@@ -229,6 +236,12 @@ test('renders a conservative rent suggestion with explicit confirm and ignore ac
   assert.match(html, /data-reconciliation-status="suggested"/);
   assert.match(html, /Suggested match/);
   assert.match(html, /Central Apartment/);
+  assert.match(html, /data-reconciliation-obligation-details/);
+  assert.match(html, /Period: 2026-09/);
+  assert.match(html, /Due: Sep 15, 2026/);
+  assert.match(html, /data-reconciliation-amount-details/);
+  assert.match(html, /Expected: 1450/);
+  assert.match(html, /Transaction: 1450/);
   assert.match(html, />Confirm</);
   assert.match(html, />Ignore</);
 });

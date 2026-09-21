@@ -202,8 +202,22 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                               <p className={`text-sm font-medium ${appTextStrongClass}`}>
                                 {t(`cashAccounts.reconciliationTarget.${reconciliation.suggestion.targetType}`)}: {reconciliation.suggestion.propertyName} · {reconciliation.suggestion.targetLabel}
                               </p>
+                              <p className={`mt-1 text-xs ${appTextMutedClass}`} data-reconciliation-obligation-details>
+                                {reconciliation.suggestion.period
+                                  ? `${t('cashAccounts.reconciliationPeriod')}: ${reconciliation.suggestion.period} · `
+                                  : ''}
+                                {t('cashAccounts.reconciliationDueDate')}: {formatTransactionDate(reconciliation.suggestion.dueDate, language)}
+                              </p>
+                              <p className={`mt-1 text-xs ${appTextMutedClass}`} data-reconciliation-amount-details>
+                                {t('cashAccounts.reconciliationExpectedAmount')}: {formatCurrencyValue(reconciliation.suggestion.expectedAmount, reconciliation.suggestion.currency)} ·{' '}
+                                {t('cashAccounts.reconciliationTransactionAmount')}: {formatCurrencyValue(reconciliation.suggestion.transactionAmount, reconciliation.suggestion.currency)}
+                              </p>
                               <p className={`mt-1 text-xs ${appTextMutedClass}`}>
-                                {reconciliation.suggestion.reasons.map((reason) => t(`cashAccounts.reconciliationReason.${reason}`)).join(' · ')}
+                                {reconciliation.suggestion.reasons.map((reason) =>
+                                  reason === 'date-proximity'
+                                    ? `${t(`cashAccounts.reconciliationReason.${reason}`)} (${reconciliation.suggestion!.dateDistanceDays} ${t('cashAccounts.reconciliationDays')})`
+                                    : t(`cashAccounts.reconciliationReason.${reason}`)
+                                ).join(' · ')}
                               </p>
                             </div>
                           ) : null}

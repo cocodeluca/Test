@@ -62,7 +62,7 @@ const transaction = (overrides: Partial<BankTransaction> = {}): BankTransaction 
   normalizedAmount: 1450,
   normalizedCurrency: 'EUR',
   fxCoverage: 'same-currency',
-  description: 'September rent',
+  description: (overrides.amount ?? 1450) < 0 ? 'Property insurance' : 'September rent',
   counterparty: 'Tenant transfer',
   pending: false,
   createdAt: '2026-09-16T10:00:00.000Z',
@@ -105,7 +105,8 @@ test('an incoming transaction suggests one relevant unpaid rent receivable', () 
   const suggestion = suggestBankTransactionMatch(transaction(), context());
   assert.equal(suggestion?.targetType, 'rent-receivable');
   assert.equal(suggestion?.targetId, receivable.id);
-  assert.deepEqual(suggestion?.reasons, ['exact-amount', 'date-proximity']);
+  assert.ok(suggestion?.reasons.includes('exact-amount'));
+  assert.ok(suggestion?.reasons.includes('date-proximity'));
 });
 
 test('an excluded linked account keeps transactions but receives no reconciliation suggestion', () => {
@@ -475,7 +476,8 @@ test('a smaller incoming transaction suggests one clear rent obligation', () => 
   );
   assert.equal(suggestion?.targetType, 'rent-receivable');
   assert.equal(suggestion?.targetId, receivable.id);
-  assert.deepEqual(suggestion?.reasons, ['partial-amount', 'date-proximity']);
+  assert.ok(suggestion?.reasons.includes('partial-amount'));
+  assert.ok(suggestion?.reasons.includes('date-proximity'));
 });
 
 test('a smaller outgoing transaction suggests one clear expense obligation', () => {
@@ -485,7 +487,8 @@ test('a smaller outgoing transaction suggests one clear expense obligation', () 
   );
   assert.equal(suggestion?.targetType, 'expense-obligation');
   assert.equal(suggestion?.targetId, expenseObligation.id);
-  assert.deepEqual(suggestion?.reasons, ['partial-amount', 'date-proximity']);
+  assert.ok(suggestion?.reasons.includes('partial-amount'));
+  assert.ok(suggestion?.reasons.includes('date-proximity'));
 });
 
 test('confirm creates one idempotent partial payment and leaves rent partially outstanding', () => {

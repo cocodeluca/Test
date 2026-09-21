@@ -186,7 +186,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const commitBankingState = (
-    update: (current: BankingConnectionOperationState) => BankingConnectionOperationState
+    update: (current: BankingConnectionOperationState) => BankingConnectionOperationState,
+    targets: { rentReceivables?: RentReceivable[]; expenseObligations?: ExpenseObligation[] } = {}
   ) => {
     const current = bankingStateRef.current;
     const next = update(current);
@@ -201,10 +202,10 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       onUpdateBankTransactionSyncStates(next.bankTransactionSyncStates);
     }
     if (next.rentPayments !== current.rentPayments) {
-      onUpdateRentCollection(rentReceivables, next.rentPayments);
+      onUpdateRentCollection(targets.rentReceivables ?? rentReceivables, next.rentPayments);
     }
     if (next.expensePayments !== current.expensePayments) {
-      onUpdatePropertyExpenses(propertyExpenseRules, expenseObligations, next.expensePayments);
+      onUpdatePropertyExpenses(propertyExpenseRules, targets.expenseObligations ?? expenseObligations, next.expensePayments);
     }
     return next;
   };
@@ -252,6 +253,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     properties,
     rentReceivables,
     rentPayments,
+    propertyExpenseRules,
     expenseObligations,
     expensePayments,
     cashAccounts,
@@ -271,8 +273,10 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         properties,
         rentReceivables,
         rentPayments: current.rentPayments,
+        propertyExpenseRules,
         expenseObligations,
         expensePayments: current.expensePayments,
+        cashAccounts,
       },
     });
     if (!result) return;
@@ -281,7 +285,10 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       bankTransactionReconciliations: result.reconciliations,
       rentPayments: result.rentPayments,
       expensePayments: result.expensePayments,
-    }));
+    }), {
+      rentReceivables: result.rentReceivables,
+      expenseObligations: result.expenseObligations,
+    });
   };
 
   const handleIgnoreTransaction = (transaction: BankTransaction) => {
