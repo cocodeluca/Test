@@ -4,8 +4,10 @@ node_modules/
 # Build output
 dist/
 dist-ssr/
+dist-server/
 build/
 coverage/
+*.tsbuildinfo
 
 # Expo / Metro / Vite caches
 .expo/

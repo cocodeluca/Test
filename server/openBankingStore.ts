@@ -18,7 +18,7 @@ export interface StoredOpenBankingConnection {
   institutionId: string;
   accessToken: string | null;
   itemId: string | null;
-  providerItemStatus: 'active' | 'disconnected';
+  providerItemStatus: 'active' | 'disconnect_requested' | 'provider_revoked' | 'disconnected';
   disconnectedAt: string | null;
   revokedItems: Array<{
     itemId: string;
@@ -57,6 +57,11 @@ export interface OpenBankingRecordScope {
 
 export interface OpenBankingConnectionStore {
   list(providerName: OpenBankingProviderName, environment: PlaidEnvironment): Promise<StoredOpenBankingConnection[]>;
+  listOwned(input: {
+    userId: string;
+    providerName: OpenBankingProviderName;
+    environment: PlaidEnvironment;
+  }): Promise<StoredOpenBankingConnection[]>;
   loadOwned(scope: OpenBankingRecordScope): Promise<StoredOpenBankingConnection | null>;
   save(connection: StoredOpenBankingConnection): Promise<StoredOpenBankingConnection>;
   updateOwned(
@@ -71,6 +76,18 @@ export interface OpenBankingConnectionStore {
       nextCursor: string | null;
       updatedAt: string;
     }
+  ): Promise<StoredOpenBankingConnection>;
+  beginDisconnectOwned(
+    scope: OpenBankingRecordScope,
+    input: { requestedAt: string; expectedItemId: string }
+  ): Promise<StoredOpenBankingConnection>;
+  markProviderRevokedOwned(
+    scope: OpenBankingRecordScope,
+    input: { revokedAt: string; expectedItemId: string }
+  ): Promise<StoredOpenBankingConnection>;
+  finalizeDisconnectOwned(
+    scope: OpenBankingRecordScope,
+    input: { revokedAt: string; expectedItemId: string }
   ): Promise<StoredOpenBankingConnection>;
   markDisconnectedOwned(
     scope: OpenBankingRecordScope,
@@ -206,6 +223,8 @@ const isPersistedRecordShape = (
     (typeof record.itemId === 'string' || record.itemId === null) &&
     (record.providerItemStatus === undefined ||
       record.providerItemStatus === 'active' ||
+      record.providerItemStatus === 'disconnect_requested' ||
+      record.providerItemStatus === 'provider_revoked' ||
       record.providerItemStatus === 'disconnected') &&
     (record.disconnectedAt === undefined ||
       record.disconnectedAt === null ||
@@ -233,7 +252,10 @@ const isPersistedRecordShape = (
     (record.encryptedAccessToken === null
       ? record.itemId === null && record.providerItemStatus === 'disconnected'
       : typeof record.itemId === 'string' &&
-        (record.providerItemStatus === undefined || record.providerItemStatus === 'active')) &&
+        (record.providerItemStatus === undefined ||
+          record.providerItemStatus === 'active' ||
+          record.providerItemStatus === 'disconnect_requested' ||
+          record.providerItemStatus === 'provider_revoked')) &&
     !('accessToken' in record)
   );
 };
@@ -426,6 +448,16 @@ export const createOpenBankingConnectionStore = (options: {
         .map(decryptRecord);
     },
 
+    async listOwned({ userId, providerName, environment }) {
+      if (environment !== options.expectedEnvironment) {
+        throw new OpenBankingEnvironmentMismatchError();
+      }
+      return (await readPersistedRecords())
+        .filter((record) => record.userId === userId &&
+          record.providerName === providerName && record.environment === environment)
+        .map(decryptRecord);
+    },
+
     async loadOwned(scope) {
       const record = (await readPersistedRecords()).find(
         (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
@@ -447,7 +479,7 @@ export const createOpenBankingConnectionStore = (options: {
           throw new OpenBankingCursorStateError();
         }
         if (
-          (connection.providerItemStatus === 'active' &&
+          (connection.providerItemStatus !== 'disconnected' &&
             (!connection.accessToken || !connection.itemId)) ||
           (connection.providerItemStatus === 'disconnected' &&
             (connection.accessToken !== null || connection.itemId !== null))
@@ -531,7 +563,61 @@ export const createOpenBankingConnectionStore = (options: {
       });
     },
 
-    async markDisconnectedOwned(scope, input) {
+    async beginDisconnectOwned(scope, input) {
+      return withWriteLock(async () => {
+        const records = await readPersistedRecords();
+        const record = records.find(
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
+        );
+        if (!record) throw new OpenBankingConnectionOwnershipError();
+        assertRecordScope(record, scope);
+        const existing = decryptRecord(record);
+        if (existing.providerItemStatus === 'disconnected' ||
+            existing.providerItemStatus === 'provider_revoked') return existing;
+        if (!existing.itemId || existing.itemId !== input.expectedItemId || !existing.accessToken) {
+          throw new OpenBankingVaultError('Open banking provider Item changed during disconnect.');
+        }
+        const updated: StoredOpenBankingConnection = {
+          ...existing,
+          providerItemStatus: 'disconnect_requested',
+          updatedAt: input.requestedAt,
+        };
+        await writePersistedRecords(
+          records.map((candidate) => candidate === record ? encryptRecord(updated) : candidate)
+        );
+        return updated;
+      });
+    },
+
+    async markProviderRevokedOwned(scope, input) {
+      return withWriteLock(async () => {
+        const records = await readPersistedRecords();
+        const record = records.find(
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
+        );
+        if (!record) throw new OpenBankingConnectionOwnershipError();
+        assertRecordScope(record, scope);
+        const existing = decryptRecord(record);
+        if (existing.providerItemStatus === 'disconnected' ||
+            existing.providerItemStatus === 'provider_revoked') return existing;
+        if (existing.providerItemStatus !== 'disconnect_requested' ||
+            existing.itemId !== input.expectedItemId || !existing.accessToken) {
+          throw new OpenBankingVaultError('Open banking disconnect operation state is invalid.');
+        }
+        const updated: StoredOpenBankingConnection = {
+          ...existing,
+          providerItemStatus: 'provider_revoked',
+          disconnectedAt: input.revokedAt,
+          updatedAt: input.revokedAt,
+        };
+        await writePersistedRecords(
+          records.map((candidate) => candidate === record ? encryptRecord(updated) : candidate)
+        );
+        return updated;
+      });
+    },
+
+    async finalizeDisconnectOwned(scope, input) {
       return withWriteLock(async () => {
         const records = await readPersistedRecords();
         const record = records.find(
@@ -541,8 +627,9 @@ export const createOpenBankingConnectionStore = (options: {
         assertRecordScope(record, scope);
         const existing = decryptRecord(record);
         if (existing.providerItemStatus === 'disconnected') return existing;
-        if (!existing.itemId || existing.itemId !== input.expectedItemId) {
-          throw new OpenBankingVaultError('Open banking provider Item changed during disconnect.');
+        if (existing.providerItemStatus !== 'provider_revoked' ||
+            existing.itemId !== input.expectedItemId) {
+          throw new OpenBankingVaultError('Open banking disconnect operation state is invalid.');
         }
         const updated: StoredOpenBankingConnection = {
           ...existing,
@@ -550,10 +637,9 @@ export const createOpenBankingConnectionStore = (options: {
           itemId: null,
           providerItemStatus: 'disconnected',
           disconnectedAt: input.revokedAt,
-          revokedItems: [
-            ...existing.revokedItems,
-            { itemId: existing.itemId, revokedAt: input.revokedAt },
-          ],
+          revokedItems: existing.revokedItems.some((item) => item.itemId === input.expectedItemId)
+            ? existing.revokedItems
+            : [...existing.revokedItems, { itemId: input.expectedItemId, revokedAt: input.revokedAt }],
           updatedAt: input.revokedAt,
         };
         await writePersistedRecords(
@@ -561,6 +647,17 @@ export const createOpenBankingConnectionStore = (options: {
         );
         return updated;
       });
+    },
+
+    async markDisconnectedOwned(scope, input) {
+      const begun = await this.beginDisconnectOwned(scope, {
+        requestedAt: input.revokedAt,
+        expectedItemId: input.expectedItemId,
+      });
+      if (begun.providerItemStatus === 'disconnected') return begun;
+      const revoked = await this.markProviderRevokedOwned(scope, input);
+      if (revoked.providerItemStatus === 'disconnected') return revoked;
+      return this.finalizeDisconnectOwned(scope, input);
     },
 
     async deleteOwned(scope) {
@@ -592,11 +689,16 @@ export const createDefaultOpenBankingConnectionStore = (): OpenBankingConnection
   };
   return {
     list: (providerName, environment) => getStore().list(providerName, environment),
+    listOwned: (input) => getStore().listOwned(input),
     loadOwned: (scope) => getStore().loadOwned(scope),
     save: (connection) => getStore().save(connection),
     updateOwned: (scope, patch) => getStore().updateOwned(scope, patch),
     advanceTransactionCursorOwned: (scope, input) =>
       getStore().advanceTransactionCursorOwned(scope, input),
+    beginDisconnectOwned: (scope, input) => getStore().beginDisconnectOwned(scope, input),
+    markProviderRevokedOwned: (scope, input) =>
+      getStore().markProviderRevokedOwned(scope, input),
+    finalizeDisconnectOwned: (scope, input) => getStore().finalizeDisconnectOwned(scope, input),
     markDisconnectedOwned: (scope, input) => getStore().markDisconnectedOwned(scope, input),
     deleteOwned: (scope) => getStore().deleteOwned(scope),
   };

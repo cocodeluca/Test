@@ -29,6 +29,18 @@ export interface SanitizedProviderConnectionResult {
   accounts: CashAccount[];
 }
 
+export interface SanitizedOwnedProviderConnection {
+  id: string;
+  providerName: 'plaid';
+  providerEnvironment: PlaidEnvironment;
+  institutionName: string;
+  institutionId: string;
+  status: StoredOpenBankingConnection['providerItemStatus'];
+  recoveryRequired: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PlaidPilotGateway {
   createLinkToken(input: {
     userId: string;
@@ -127,6 +139,9 @@ export interface OpenBankingService {
     connectionId: string,
     connectionEnvironment: PlaidEnvironment | null
   ): Promise<{ ok: true; connectionId: string; deleted: boolean }>;
+  listOwnedConnections(
+    principal: AuthenticatedOpenBankingPrincipal
+  ): Promise<{ connections: SanitizedOwnedProviderConnection[] }>;
 }
 
 export class OpenBankingConnectionStateError extends Error {
@@ -214,6 +229,22 @@ const sanitizeConnection = (
   needsReauth: false,
   errorMessage: null,
   linkedAccountIds: accounts.map((account) => account.id),
+  createdAt: stored.createdAt,
+  updatedAt: stored.updatedAt,
+});
+
+const sanitizeOwnedProviderConnection = (
+  stored: StoredOpenBankingConnection
+): SanitizedOwnedProviderConnection => ({
+  id: stored.id,
+  providerName: 'plaid',
+  providerEnvironment: stored.environment,
+  institutionName: stored.institutionName,
+  institutionId: stored.institutionId,
+  status: stored.providerItemStatus,
+  recoveryRequired:
+    stored.providerItemStatus === 'disconnect_requested' ||
+    stored.providerItemStatus === 'provider_revoked',
   createdAt: stored.createdAt,
   updatedAt: stored.updatedAt,
 });
@@ -707,19 +738,48 @@ export const createOpenBankingService = (dependencies: {
       if (stored.providerItemStatus === 'disconnected') {
         return { ok: true, connectionId: stored.id };
       }
-      const liveItem = requireLiveProviderItem(stored);
-      await dependencies.plaid.removeItem(liveItem.accessToken);
-      const revokedAt = now().toISOString();
-      await dependencies.store.markDisconnectedOwned({
+      if (!stored.accessToken || !stored.itemId) {
+        throw new OpenBankingConnectionStateError(
+          'Open banking disconnect recovery state is unavailable.'
+        );
+      }
+      const scope = {
         userId: principal.userId,
         id: stored.id,
+        providerName: 'plaid' as const,
+        environment: configuration.environment,
+      };
+      const requestedAt = now().toISOString();
+      let operation = stored.providerItemStatus === 'active'
+        ? await dependencies.store.beginDisconnectOwned(scope, {
+            requestedAt,
+            expectedItemId: stored.itemId,
+          })
+        : stored;
+      if (operation.providerItemStatus === 'disconnect_requested') {
+        await dependencies.plaid.removeItem(operation.accessToken!);
+        operation = await dependencies.store.markProviderRevokedOwned(scope, {
+          revokedAt: now().toISOString(),
+          expectedItemId: operation.itemId!,
+        });
+      }
+      if (operation.providerItemStatus === 'provider_revoked') {
+        await dependencies.store.finalizeDisconnectOwned(scope, {
+          revokedAt: operation.disconnectedAt ?? now().toISOString(),
+          expectedItemId: operation.itemId!,
+        });
+      }
+      return { ok: true, connectionId: stored.id };
+    },
+
+    async listOwnedConnections(principal) {
+      const configuration = readPlaidPilotConfiguration();
+      const connections = await dependencies.store.listOwned({
+        userId: principal.userId,
         providerName: 'plaid',
         environment: configuration.environment,
-      }, {
-        revokedAt,
-        expectedItemId: liveItem.itemId,
       });
-      return { ok: true, connectionId: stored.id };
+      return { connections: connections.map(sanitizeOwnedProviderConnection) };
     },
 
     async deleteDisconnectedConnection(principal, connectionId, connectionEnvironment) {

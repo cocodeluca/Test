@@ -6,6 +6,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage } from 'node:http';
 import path from 'node:path';
 
@@ -249,7 +250,7 @@ export const createServerUserStore = (options: { filePath: string }): ServerUser
   };
 };
 
-interface StoredServerSession {
+export interface StoredServerSession {
   tokenDigest: string;
   userId: string;
   createdAt: string;
@@ -261,6 +262,11 @@ export interface ServerSessionStore {
   resolve(token: string): StoredServerSession | null;
   revoke(token: string): void;
   revokeUser(userId: string): void;
+}
+
+interface StoredServerSessionFile {
+  version: 1;
+  sessions: StoredServerSession[];
 }
 
 const digestSessionToken = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -309,6 +315,117 @@ export const createServerSessionStore = (options: {
       for (const [digest, session] of sessions) {
         if (session.userId === userId) sessions.delete(digest);
       }
+    },
+  };
+};
+
+const isStoredSession = (value: unknown): value is StoredServerSession => {
+  if (!value || typeof value !== 'object') return false;
+  const session = value as Record<string, unknown>;
+  return typeof session.tokenDigest === 'string' && /^[a-f0-9]{64}$/.test(session.tokenDigest) &&
+    typeof session.userId === 'string' && isUuid(session.userId) &&
+    typeof session.createdAt === 'string' && Number.isFinite(Date.parse(session.createdAt)) &&
+    typeof session.expiresAt === 'string' && Number.isFinite(Date.parse(session.expiresAt));
+};
+
+/**
+ * Development-only restart-persistent session store. Production must provide a
+ * transactional durable adapter through the operational-store contract.
+ */
+export const createFileServerSessionStore = (options: {
+  filePath: string;
+  now?: () => Date;
+  ttlMs?: number;
+  createToken?: () => string;
+}): ServerSessionStore => {
+  const filePath = path.resolve(options.filePath);
+  const now = options.now ?? (() => new Date());
+  const ttlMs = Math.min(options.ttlMs ?? DEFAULT_SESSION_TTL_MS, DEFAULT_SESSION_TTL_MS);
+  const createToken = options.createToken ?? (() => randomBytes(32).toString('base64url'));
+
+  const readSessions = (): StoredServerSession[] => {
+    let raw: string;
+    try {
+      raw = readFileSync(filePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new ServerAuthStoreError();
+    }
+    try {
+      const parsed = JSON.parse(raw) as StoredServerSessionFile;
+      if (parsed?.version !== 1 || !Array.isArray(parsed.sessions) ||
+          !parsed.sessions.every(isStoredSession) ||
+          new Set(parsed.sessions.map((session) => session.tokenDigest)).size !== parsed.sessions.length) {
+        throw new Error('invalid');
+      }
+      return parsed.sessions;
+    } catch {
+      throw new ServerAuthStoreError('Authentication session store is malformed or corrupted.');
+    }
+  };
+
+  const writeSessions = (sessions: StoredServerSession[]) => {
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    writeFileSync(temporaryPath, JSON.stringify({ version: 1, sessions }, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, filePath);
+  };
+
+  const mutate = <T>(operation: (sessions: StoredServerSession[]) => T): T => {
+    const sessions = readSessions();
+    const result = operation(sessions);
+    writeSessions(sessions);
+    return result;
+  };
+
+  return {
+    create(userId) {
+      const token = createToken();
+      if (Buffer.from(token, 'base64url').length < 32) {
+        throw new ServerAuthStoreError('Session token generator returned insufficient entropy.');
+      }
+      const createdAt = now();
+      const session: StoredServerSession = {
+        tokenDigest: digestSessionToken(token),
+        userId,
+        createdAt: createdAt.toISOString(),
+        expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
+      };
+      mutate((sessions) => { sessions.push(session); });
+      return { token, expiresAt: session.expiresAt };
+    },
+    resolve(token) {
+      if (!token) return null;
+      const digest = digestSessionToken(token);
+      let resolved: StoredServerSession | null = null;
+      mutate((sessions) => {
+        const index = sessions.findIndex((session) => session.tokenDigest === digest);
+        if (index < 0) return;
+        if (new Date(sessions[index].expiresAt).getTime() <= now().getTime()) {
+          sessions.splice(index, 1);
+          return;
+        }
+        resolved = sessions[index];
+      });
+      return resolved;
+    },
+    revoke(token) {
+      if (!token) return;
+      const digest = digestSessionToken(token);
+      mutate((sessions) => {
+        const index = sessions.findIndex((session) => session.tokenDigest === digest);
+        if (index >= 0) sessions.splice(index, 1);
+      });
+    },
+    revokeUser(userId) {
+      mutate((sessions) => {
+        for (let index = sessions.length - 1; index >= 0; index -= 1) {
+          if (sessions[index].userId === userId) sessions.splice(index, 1);
+        }
+      });
     },
   };
 };
@@ -462,8 +579,15 @@ export const parseCookieHeader = (cookieHeader: string | undefined): Record<stri
 export const getSessionTokenFromRequest = (request: IncomingMessage) =>
   parseCookieHeader(request.headers.cookie)[AUTH_SESSION_COOKIE_NAME] ?? '';
 
+const singleForwardedHeader = (value: string | string[] | undefined) => {
+  if (Array.isArray(value) || !value || value.includes(',')) return null;
+  return value.trim();
+};
+
 export const isSecureRequest = (request: IncomingMessage) =>
-  process.env.NODE_ENV === 'production' || Boolean((request.socket as { encrypted?: boolean }).encrypted);
+  Boolean((request.socket as { encrypted?: boolean }).encrypted) ||
+  (process.env.TRUST_PROXY === '1' &&
+    singleForwardedHeader(request.headers['x-forwarded-proto'])?.toLowerCase() === 'https');
 
 export const serializeSessionCookie = (token: string, options: {
   secure: boolean;
@@ -482,13 +606,21 @@ export const serializeExpiredSessionCookie = (secure: boolean) =>
 
 export const assertSameOriginRequest = (request: IncomingMessage) => {
   const origin = request.headers.origin;
-  const host = request.headers.host;
+  const configuredOrigin = process.env.PUBLIC_ORIGIN?.trim();
+  const forwardedHost = process.env.TRUST_PROXY === '1'
+    ? singleForwardedHeader(request.headers['x-forwarded-host'])
+    : null;
+  const host = forwardedHost ?? request.headers.host;
   if (!origin || !host) {
     throw new ServerAuthError('AUTH_ORIGIN_REJECTED', 403, 'Request origin is not allowed.');
   }
   try {
     const parsed = new URL(origin);
-    if (parsed.host !== host || (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:')) {
+    if (
+      parsed.host !== host ||
+      (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') ||
+      (configuredOrigin && parsed.origin !== new URL(configuredOrigin).origin)
+    ) {
       throw new Error('mismatch');
     }
   } catch {
@@ -509,6 +641,8 @@ export const createDefaultServerAuthService = (): ServerAuthService => {
   });
   return createServerAuthService({
     users,
-    sessions: createServerSessionStore(),
+    sessions: createFileServerSessionStore({
+      filePath: path.resolve(process.cwd(), '.data', 'auth-sessions.json'),
+    }),
   });
 };
