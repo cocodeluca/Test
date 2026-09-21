@@ -6,12 +6,14 @@ import {
 } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { OpenBankingProviderName } from '../src/common/types';
+import type { OpenBankingProviderName, PlaidEnvironment } from '../src/common/types';
+import { readPlaidPilotConfiguration } from './openBankingPolicy';
 
 export interface StoredOpenBankingConnection {
   id: string;
   userId: string;
   providerName: OpenBankingProviderName;
+  environment: PlaidEnvironment;
   institutionName: string;
   institutionId: string;
   accessToken: string | null;
@@ -23,6 +25,7 @@ export interface StoredOpenBankingConnection {
     revokedAt: string;
   }>;
   selectedAccountIds: string[];
+  transactionSyncCursor: string | null;
   consentExpirationTime?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -40,21 +43,40 @@ interface PersistedOpenBankingConnection extends Omit<StoredOpenBankingConnectio
   encryptedAccessToken: EncryptedSecret | null;
 }
 
+interface LegacyPersistedOpenBankingConnection extends Omit<PersistedOpenBankingConnection, 'environment' | 'transactionSyncCursor'> {
+  environment?: never;
+  transactionSyncCursor?: never;
+}
+
+export interface OpenBankingRecordScope {
+  userId: string;
+  id: string;
+  providerName: OpenBankingProviderName;
+  environment: PlaidEnvironment;
+}
+
 export interface OpenBankingConnectionStore {
-  list(): Promise<StoredOpenBankingConnection[]>;
-  loadOwned(userId: string, id: string): Promise<StoredOpenBankingConnection | null>;
+  list(providerName: OpenBankingProviderName, environment: PlaidEnvironment): Promise<StoredOpenBankingConnection[]>;
+  loadOwned(scope: OpenBankingRecordScope): Promise<StoredOpenBankingConnection | null>;
   save(connection: StoredOpenBankingConnection): Promise<StoredOpenBankingConnection>;
   updateOwned(
-    userId: string,
-    id: string,
-    patch: Partial<Omit<StoredOpenBankingConnection, 'id' | 'userId' | 'accessToken'>>
+    scope: OpenBankingRecordScope,
+    patch: Partial<Omit<StoredOpenBankingConnection, 'id' | 'userId' | 'providerName' | 'environment' | 'accessToken' | 'transactionSyncCursor'>>
+  ): Promise<StoredOpenBankingConnection>;
+  advanceTransactionCursorOwned(
+    scope: OpenBankingRecordScope,
+    input: {
+      expectedItemId: string;
+      expectedCursor: string | null;
+      nextCursor: string | null;
+      updatedAt: string;
+    }
   ): Promise<StoredOpenBankingConnection>;
   markDisconnectedOwned(
-    userId: string,
-    id: string,
+    scope: OpenBankingRecordScope,
     input: { revokedAt: string; expectedItemId: string }
   ): Promise<StoredOpenBankingConnection>;
-  deleteOwned(userId: string, id: string): Promise<boolean>;
+  deleteOwned(scope: OpenBankingRecordScope): Promise<boolean>;
 }
 
 export class OpenBankingVaultError extends Error {
@@ -72,6 +94,33 @@ export class OpenBankingConnectionOwnershipError extends Error {
   constructor() {
     super('Open banking connection not found for authenticated owner.');
     this.name = 'OpenBankingConnectionOwnershipError';
+  }
+}
+
+export class OpenBankingEnvironmentMismatchError extends Error {
+  readonly code = 'OPEN_BANKING_ENVIRONMENT_MISMATCH';
+
+  constructor() {
+    super('Open banking provider environment does not match the active configuration.');
+    this.name = 'OpenBankingEnvironmentMismatchError';
+  }
+}
+
+export class OpenBankingLegacyEnvironmentError extends Error {
+  readonly code = 'OPEN_BANKING_LEGACY_ENVIRONMENT_UNKNOWN';
+
+  constructor() {
+    super('Legacy open banking provider environment cannot be established safely.');
+    this.name = 'OpenBankingLegacyEnvironmentError';
+  }
+}
+
+export class OpenBankingCursorStateError extends Error {
+  readonly code = 'OPEN_BANKING_CURSOR_STATE_INVALID';
+
+  constructor() {
+    super('Open banking transaction cursor state is unavailable or corrupt.');
+    this.name = 'OpenBankingCursorStateError';
   }
 }
 
@@ -140,13 +189,18 @@ const decryptSecret = (secret: EncryptedSecret, key: Buffer, associatedData: str
   }
 };
 
-const isPersistedRecord = (value: unknown): value is PersistedOpenBankingConnection => {
+const isPersistedRecordShape = (
+  value: unknown
+): value is PersistedOpenBankingConnection | LegacyPersistedOpenBankingConnection => {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   return (
     typeof record.id === 'string' &&
     typeof record.userId === 'string' &&
     typeof record.providerName === 'string' &&
+    (record.environment === undefined ||
+      record.environment === 'sandbox' ||
+      record.environment === 'production') &&
     typeof record.institutionName === 'string' &&
     typeof record.institutionId === 'string' &&
     (typeof record.itemId === 'string' || record.itemId === null) &&
@@ -166,6 +220,9 @@ const isPersistedRecord = (value: unknown): value is PersistedOpenBankingConnect
         ))) &&
     Array.isArray(record.selectedAccountIds) &&
     record.selectedAccountIds.every((id) => typeof id === 'string') &&
+    (record.transactionSyncCursor === undefined ||
+      record.transactionSyncCursor === null ||
+      typeof record.transactionSyncCursor === 'string') &&
     (record.consentExpirationTime === undefined ||
       record.consentExpirationTime === null ||
       typeof record.consentExpirationTime === 'string') &&
@@ -181,7 +238,26 @@ const isPersistedRecord = (value: unknown): value is PersistedOpenBankingConnect
   );
 };
 
+const isPersistedRecord = (
+  record: PersistedOpenBankingConnection | LegacyPersistedOpenBankingConnection
+): record is PersistedOpenBankingConnection =>
+  record.environment === 'sandbox' || record.environment === 'production';
+
 const buildAssociatedData = (
+  record: Pick<
+    StoredOpenBankingConnection,
+    'id' | 'userId' | 'providerName' | 'environment' | 'institutionId' | 'itemId'
+  >
+) => JSON.stringify({
+  id: record.id,
+  userId: record.userId,
+  providerName: record.providerName,
+  environment: record.environment,
+  institutionId: record.institutionId,
+  itemId: record.itemId,
+});
+
+const buildLegacyAssociatedData = (
   record: Pick<
     StoredOpenBankingConnection,
     'id' | 'userId' | 'providerName' | 'institutionId' | 'itemId'
@@ -197,6 +273,7 @@ const buildAssociatedData = (
 export const createOpenBankingConnectionStore = (options: {
   filePath: string;
   encodedMasterKey: string | undefined;
+  expectedEnvironment: PlaidEnvironment;
 }): OpenBankingConnectionStore => {
   const key = parseMasterKey(options.encodedMasterKey);
   const filePath = path.resolve(options.filePath);
@@ -217,10 +294,66 @@ export const createOpenBankingConnectionStore = (options: {
     } catch {
       throw new OpenBankingVaultError('Open banking vault JSON is corrupted.');
     }
-    if (!Array.isArray(parsed) || !parsed.every(isPersistedRecord)) {
+    if (!Array.isArray(parsed)) {
       throw new OpenBankingVaultError('Open banking vault structure is invalid.');
     }
-    return parsed;
+    for (const value of parsed) {
+      if (
+        value &&
+        typeof value === 'object' &&
+        'transactionSyncCursor' in value &&
+        (value as Record<string, unknown>).transactionSyncCursor !== null &&
+        typeof (value as Record<string, unknown>).transactionSyncCursor !== 'string'
+      ) {
+        throw new OpenBankingCursorStateError();
+      }
+      if (
+        value &&
+        typeof value === 'object' &&
+        ((('environment' in value) && !('transactionSyncCursor' in value)) ||
+          (!('environment' in value) && ('transactionSyncCursor' in value)))
+      ) {
+        if ('environment' in value) throw new OpenBankingCursorStateError();
+        throw new OpenBankingLegacyEnvironmentError();
+      }
+    }
+    if (!parsed.every(isPersistedRecordShape)) {
+      throw new OpenBankingVaultError('Open banking vault structure is invalid.');
+    }
+
+    const records = parsed as Array<
+      PersistedOpenBankingConnection | LegacyPersistedOpenBankingConnection
+    >;
+    if (records.every(isPersistedRecord)) return records;
+    if (
+      options.expectedEnvironment !== 'sandbox' ||
+      records.some((record) =>
+        (isPersistedRecord(record) && record.environment !== 'sandbox') ||
+        (!isPersistedRecord(record) && record.providerName !== 'plaid')
+      )
+    ) {
+      throw new OpenBankingLegacyEnvironmentError();
+    }
+
+    const migrated = records.map((record): PersistedOpenBankingConnection => {
+      if (isPersistedRecord(record)) return record;
+      const { encryptedAccessToken, ...legacyMetadata } = record;
+      const accessToken = encryptedAccessToken
+        ? decryptSecret(encryptedAccessToken, key, buildLegacyAssociatedData(legacyMetadata))
+        : null;
+      return encryptRecord({
+        ...legacyMetadata,
+        environment: 'sandbox',
+        transactionSyncCursor: null,
+        providerItemStatus: record.providerItemStatus ??
+          (record.encryptedAccessToken ? 'active' : 'disconnected'),
+        disconnectedAt: record.disconnectedAt ?? null,
+        revokedItems: record.revokedItems ?? [],
+        accessToken,
+      });
+    });
+    await writePersistedRecords(migrated);
+    return migrated;
   };
 
   const decryptRecord = (
@@ -268,20 +401,51 @@ export const createOpenBankingConnectionStore = (options: {
     return run;
   };
 
+  const assertRecordScope = (
+    record: PersistedOpenBankingConnection,
+    scope: OpenBankingRecordScope
+  ) => {
+    if (
+      record.providerName !== scope.providerName ||
+      record.environment !== scope.environment ||
+      record.environment !== options.expectedEnvironment
+    ) {
+      throw new OpenBankingEnvironmentMismatchError();
+    }
+  };
+
   return {
-    async list() {
-      return (await readPersistedRecords()).map(decryptRecord);
+    async list(providerName, environment) {
+      if (environment !== options.expectedEnvironment) {
+        throw new OpenBankingEnvironmentMismatchError();
+      }
+      return (await readPersistedRecords())
+        .filter((record) =>
+          record.providerName === providerName && record.environment === environment
+        )
+        .map(decryptRecord);
     },
 
-    async loadOwned(userId, id) {
+    async loadOwned(scope) {
       const record = (await readPersistedRecords()).find(
-        (candidate) => candidate.id === id && candidate.userId === userId
+        (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
       );
-      return record ? decryptRecord(record) : null;
+      if (!record) return null;
+      assertRecordScope(record, scope);
+      return decryptRecord(record);
     },
 
     async save(connection) {
       return withWriteLock(async () => {
+        if (connection.environment !== options.expectedEnvironment) {
+          throw new OpenBankingEnvironmentMismatchError();
+        }
+        if (
+          connection.transactionSyncCursor !== null &&
+          typeof connection.transactionSyncCursor !== 'string'
+        ) {
+          throw new OpenBankingCursorStateError();
+        }
         if (
           (connection.providerItemStatus === 'active' &&
             (!connection.accessToken || !connection.itemId)) ||
@@ -298,6 +462,12 @@ export const createOpenBankingConnectionStore = (options: {
               if (record.userId !== connection.userId) {
                 throw new OpenBankingConnectionOwnershipError();
               }
+              if (
+                record.providerName !== connection.providerName ||
+                record.environment !== connection.environment
+              ) {
+                throw new OpenBankingEnvironmentMismatchError();
+              }
               return encrypted;
             })
           : [...records, encrypted];
@@ -306,20 +476,24 @@ export const createOpenBankingConnectionStore = (options: {
       });
     },
 
-    async updateOwned(userId, id, patch) {
+    async updateOwned(scope, patch) {
       return withWriteLock(async () => {
         const records = await readPersistedRecords();
         const record = records.find(
-          (candidate) => candidate.id === id && candidate.userId === userId
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
         );
         if (!record) throw new OpenBankingConnectionOwnershipError();
+        assertRecordScope(record, scope);
         const existing = decryptRecord(record);
         const updated: StoredOpenBankingConnection = {
           ...existing,
           ...patch,
-          id,
-          userId,
+          id: scope.id,
+          userId: scope.userId,
+          providerName: scope.providerName,
+          environment: scope.environment,
           accessToken: existing.accessToken,
+          transactionSyncCursor: existing.transactionSyncCursor,
           updatedAt: patch.updatedAt ?? new Date().toISOString(),
         };
         await writePersistedRecords(
@@ -329,13 +503,42 @@ export const createOpenBankingConnectionStore = (options: {
       });
     },
 
-    async markDisconnectedOwned(userId, id, input) {
+    async advanceTransactionCursorOwned(scope, input) {
       return withWriteLock(async () => {
         const records = await readPersistedRecords();
         const record = records.find(
-          (candidate) => candidate.id === id && candidate.userId === userId
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
         );
         if (!record) throw new OpenBankingConnectionOwnershipError();
+        assertRecordScope(record, scope);
+        const existing = decryptRecord(record);
+        if (
+          existing.providerItemStatus !== 'active' ||
+          existing.itemId !== input.expectedItemId ||
+          existing.transactionSyncCursor !== input.expectedCursor
+        ) {
+          throw new OpenBankingCursorStateError();
+        }
+        const updated: StoredOpenBankingConnection = {
+          ...existing,
+          transactionSyncCursor: input.nextCursor,
+          updatedAt: input.updatedAt,
+        };
+        await writePersistedRecords(
+          records.map((candidate) => candidate === record ? encryptRecord(updated) : candidate)
+        );
+        return updated;
+      });
+    },
+
+    async markDisconnectedOwned(scope, input) {
+      return withWriteLock(async () => {
+        const records = await readPersistedRecords();
+        const record = records.find(
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
+        );
+        if (!record) throw new OpenBankingConnectionOwnershipError();
+        assertRecordScope(record, scope);
         const existing = decryptRecord(record);
         if (existing.providerItemStatus === 'disconnected') return existing;
         if (!existing.itemId || existing.itemId !== input.expectedItemId) {
@@ -360,15 +563,16 @@ export const createOpenBankingConnectionStore = (options: {
       });
     },
 
-    async deleteOwned(userId, id) {
+    async deleteOwned(scope) {
       return withWriteLock(async () => {
         const records = await readPersistedRecords();
-        const exists = records.some(
-          (record) => record.id === id && record.userId === userId
+        const record = records.find(
+          (candidate) => candidate.id === scope.id && candidate.userId === scope.userId
         );
-        if (!exists) return false;
+        if (!record) return false;
+        assertRecordScope(record, scope);
         await writePersistedRecords(
-          records.filter((record) => !(record.id === id && record.userId === userId))
+          records.filter((candidate) => candidate !== record)
         );
         return true;
       });
@@ -382,16 +586,18 @@ export const createDefaultOpenBankingConnectionStore = (): OpenBankingConnection
     store ??= createOpenBankingConnectionStore({
       filePath: path.resolve(process.cwd(), '.data', 'open-banking-connections.json'),
       encodedMasterKey: process.env.OPEN_BANKING_VAULT_KEY,
+      expectedEnvironment: readPlaidPilotConfiguration().environment,
     });
     return store;
   };
   return {
-    list: () => getStore().list(),
-    loadOwned: (userId, id) => getStore().loadOwned(userId, id),
+    list: (providerName, environment) => getStore().list(providerName, environment),
+    loadOwned: (scope) => getStore().loadOwned(scope),
     save: (connection) => getStore().save(connection),
-    updateOwned: (userId, id, patch) => getStore().updateOwned(userId, id, patch),
-    markDisconnectedOwned: (userId, id, input) =>
-      getStore().markDisconnectedOwned(userId, id, input),
-    deleteOwned: (userId, id) => getStore().deleteOwned(userId, id),
+    updateOwned: (scope, patch) => getStore().updateOwned(scope, patch),
+    advanceTransactionCursorOwned: (scope, input) =>
+      getStore().advanceTransactionCursorOwned(scope, input),
+    markDisconnectedOwned: (scope, input) => getStore().markDisconnectedOwned(scope, input),
+    deleteOwned: (scope) => getStore().deleteOwned(scope),
   };
 };

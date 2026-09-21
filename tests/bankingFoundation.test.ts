@@ -10,6 +10,7 @@ import {
   canRefreshBankConnection,
   deactivateLinkedCashAccountsForConnection,
   getBankConnectionReconnectMode,
+  getLinkedCashAccountIdentity,
   normalizeCashAccount,
   setLinkedCashAccountPortfolioInclusion,
   upsertLinkedCashAccounts,
@@ -393,6 +394,75 @@ test('same provider account and transaction identities remain distinct across co
   );
 });
 
+test('Plaid account and transaction identities remain distinct across environments', () => {
+  const connectionId = 'shared-plaid-connection';
+  const externalAccountId = 'shared-plaid-account';
+  const sandboxAccount = createLinkedCashAccount({
+    id: 'cash-plaid-sandbox',
+    providerName: 'plaid',
+    providerEnvironment: 'sandbox',
+    connectionId,
+    externalAccountId,
+  });
+  const productionAccount = createLinkedCashAccount({
+    id: 'cash-plaid-production',
+    providerName: 'plaid',
+    providerEnvironment: 'production',
+    connectionId,
+    externalAccountId,
+  });
+  const accounts = upsertLinkedCashAccounts([], [sandboxAccount, productionAccount]);
+  const record = providerRecord({
+    externalAccountId,
+    externalTransactionId: 'shared-plaid-transaction',
+  });
+  const sandboxTransaction = normalizeProviderTransactions([record], {
+    providerName: 'plaid',
+    providerEnvironment: 'sandbox',
+    connectionId,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+  const productionTransaction = normalizeProviderTransactions([record], {
+    providerName: 'plaid',
+    providerEnvironment: 'production',
+    connectionId,
+    accounts,
+    reportingCurrency: 'EUR',
+    fxRates: { EUR: 1 },
+    syncedAt: '2026-09-16T12:00:00.000Z',
+  })[0];
+
+  assert.equal(accounts.length, 2);
+  assert.notEqual(
+    getLinkedCashAccountIdentity(sandboxAccount),
+    getLinkedCashAccountIdentity(productionAccount)
+  );
+  assert.equal(sandboxTransaction.cashAccountId, sandboxAccount.id);
+  assert.equal(productionTransaction.cashAccountId, productionAccount.id);
+  assert.notEqual(sandboxTransaction.id, productionTransaction.id);
+  assert.equal(
+    upsertBankTransactions([], [sandboxTransaction, productionTransaction]).length,
+    2
+  );
+
+  const legacySandboxAccount = createLinkedCashAccount({
+    id: 'legacy-plaid-sandbox',
+    providerName: 'plaid',
+    connectionId: null,
+    externalAccountId,
+  });
+  const productionUpsert = upsertLinkedCashAccounts(
+    [legacySandboxAccount],
+    [productionAccount]
+  );
+  assert.equal(productionUpsert.length, 2);
+  assert.ok(productionUpsert.some((account) => account.id === legacySandboxAccount.id));
+  assert.ok(productionUpsert.some((account) => account.id === productionAccount.id));
+});
+
 test('legacy linked identities adopt one connection scope without changing stable internal IDs', () => {
   const legacyAccount = linkedAccount({
     id: 'legacy-cash-id',
@@ -742,7 +812,6 @@ test('bank transactions and incremental sync metadata survive an IndexedDB cold 
   const syncStates = upsertBankTransactionSyncState([], {
     connectionId: connection.id,
     providerName: 'mock-bank',
-    cursor: 'mock-cursor-1',
     syncStatus: 'success',
     syncedAt: '2026-09-16T12:00:00.000Z',
   });
@@ -759,7 +828,7 @@ test('bank transactions and incremental sync metadata survive an IndexedDB cold 
   assert.deepEqual(reloaded.bankTransactionSyncStates, syncStates);
   assert.equal(reloaded.bankTransactions?.[0].pending, true);
   assert.equal(reloaded.bankTransactions?.[0].cashAccountId, 'cash-stable-1');
-  assert.equal(reloaded.bankTransactionSyncStates?.[0].cursor, 'mock-cursor-1');
+  assert.equal('cursor' in (reloaded.bankTransactionSyncStates?.[0] ?? {}), false);
   assert.equal(reloaded.bankTransactionSyncStates?.[0].lastSuccessfulSyncAt, '2026-09-16T12:00:00.000Z');
 });
 

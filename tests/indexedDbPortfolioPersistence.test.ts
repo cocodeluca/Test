@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS } from '../src/common/utils/settingsStore';
 import {
   emptyPortfolioData, saveUserPortfolio, loadUserPortfolio, loadUserPortfolioHydrationSnapshot,
   importUserAccountBackup, saveUserRecoverySnapshot, loadUserRecoverySnapshot,
+  serializeUserPortfolioForPersistence,
   type UserAccountBackup, type UserPortfolioData,
 } from '../src/platforms/web/services/localAccountStore';
 import { accountSnapshotTransaction } from '../src/platforms/web/services/portfolioDatabase';
@@ -15,6 +16,7 @@ import { hydrateAccountWorkspace } from '../src/platforms/web/hooks/useAccountWo
 import { createGalleryMediaRef, verifyGalleryMediaRefs } from '../src/platforms/web/services/galleryMediaStore';
 import { APP_RECOVERY_MODE } from '../src/platforms/web/utils/appRecoveryMode';
 import { normalizePropertyRecord } from '../src/common/utils/calculations';
+import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
 import { type PortfolioPersistenceTraceEntry } from '../src/platforms/web/services/portfolioPersistenceTrace';
 
 const user = { id: 'synthetic-a', email: 'synthetic-a@example.test', name: 'Synthetic', createdAt: '2026-01-01' };
@@ -117,6 +119,50 @@ test('remote large backup save/load/import/readback/hydration uses canonical Ind
   assert.deepEqual(await loadUserPortfolio(user.id), payload.portfolio);
   await hydrateAccountWorkspace(user);
   assert.deepEqual((await loadUserPortfolioHydrationSnapshot(user.id)).portfolio, payload.portfolio);
+});
+
+test('general backup excludes provider cursor and restored Plaid links require backend revalidation', async () => {
+  const connection = createBankConnection({
+    id: 'backup-plaid-connection',
+    userId: user.id,
+    providerName: 'plaid',
+    providerEnvironment: 'sandbox',
+    institutionName: 'Sandbox institution',
+    institutionId: 'sandbox-institution',
+  });
+  const account = createLinkedCashAccount({
+    id: 'backup-plaid-account',
+    userId: user.id,
+    providerName: 'plaid',
+    providerEnvironment: 'sandbox',
+    connectionId: connection.id,
+    externalAccountId: 'sandbox-account',
+  });
+  const portfolio: UserPortfolioData = {
+    ...structuredClone(emptyPortfolioData),
+    cashAccounts: [account],
+    bankConnections: [{ ...connection, linkedAccountIds: [account.id] }],
+    bankTransactionSyncStates: [{
+      connectionId: connection.id,
+      providerName: 'plaid',
+      providerEnvironment: 'sandbox',
+      syncStatus: 'success',
+      updatedAt: '2026-09-21T00:00:00.000Z',
+      cursor: 'browser-backup-cursor',
+    } as NonNullable<UserPortfolioData['bankTransactionSyncStates']>[number] & { cursor: string }],
+  };
+
+  const serialized = serializeUserPortfolioForPersistence(portfolio);
+  assert.equal(serialized.includes('browser-backup-cursor'), false);
+  assert.equal(serialized.includes('"cursor"'), false);
+
+  await importUserAccountBackup(user, backup(portfolio));
+  const restored = await loadUserPortfolio(user.id);
+  assert.equal(restored.bankConnections[0].providerEnvironment, 'sandbox');
+  assert.equal(restored.bankConnections[0].connectionStatus, 'needs-reauthentication');
+  assert.equal(restored.bankConnections[0].syncStatus, 'needs-reauth');
+  assert.equal(restored.bankConnections[0].needsReauth, true);
+  assert.deepEqual(restored.bankTransactionSyncStates, []);
 });
 
 test('remote-only bootstrap imports large snapshot before publishing authoritative hydration', async () => {

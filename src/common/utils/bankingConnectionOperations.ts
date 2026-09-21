@@ -84,7 +84,6 @@ export const applyBankConnectionTransactionResult = (
     connection: BankConnection;
     incomingTransactions: BankTransaction[];
     removedTransactions?: ProviderRemovedTransactionRecord[];
-    cursor?: string | null;
     syncedAt: string;
   }
 ): BankingConnectionOperationState => {
@@ -93,6 +92,7 @@ export const applyBankConnectionTransactionResult = (
     incomingTransactions: args.incomingTransactions,
     removedTransactions: args.removedTransactions,
     providerName: args.connection.providerName,
+    providerEnvironment: args.connection.providerEnvironment,
     connectionId: args.connection.id,
     syncedAt: args.syncedAt,
   });
@@ -115,7 +115,7 @@ export const applyBankConnectionTransactionResult = (
       {
         connectionId: args.connection.id,
         providerName: args.connection.providerName,
-        cursor: args.cursor,
+        providerEnvironment: args.connection.providerEnvironment,
         syncStatus: 'success',
         syncedAt: args.syncedAt,
       }
@@ -138,6 +138,7 @@ export const applyBankConnectionSyncFailure = (
     {
       connectionId: args.connection.id,
       providerName: args.connection.providerName,
+      providerEnvironment: args.connection.providerEnvironment,
       syncStatus: 'error',
       errorMessage: args.errorMessage,
       errorCode: args.errorCode,

@@ -5,7 +5,7 @@ export const PLAID_READ_ONLY_PRODUCTS = ['auth'] as const;
 export const PLAID_SANDBOX_TRANSACTION_PRODUCTS = ['auth', 'transactions'] as const;
 type PlaidReadOnlyProduct = 'auth' | 'transactions';
 
-export type PlaidEnvironment = 'sandbox' | 'development' | 'production';
+export type { PlaidEnvironment } from '../src/common/types';
 
 export interface PlaidPilotConfiguration {
   environment: PlaidEnvironment;
@@ -108,9 +108,7 @@ export const inspectPlaidPilotConfiguration = (
   const issues: PlaidPreflightIssue[] = [];
   const rawEnvironment = environment.PLAID_ENV?.trim().toLowerCase();
   const plaidEnvironment: PlaidEnvironment | null =
-    rawEnvironment === 'sandbox' ||
-    rawEnvironment === 'development' ||
-    rawEnvironment === 'production'
+    rawEnvironment === 'sandbox' || rawEnvironment === 'production'
       ? rawEnvironment
       : null;
   const clientIdConfigured = isConfigured(environment.PLAID_CLIENT_ID);
@@ -241,3 +239,4 @@ export const validateSantanderSpainInstitution = (institution: {
     );
   }
 };
+import type { PlaidEnvironment } from '../src/common/types';

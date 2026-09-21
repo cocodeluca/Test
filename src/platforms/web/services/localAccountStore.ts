@@ -190,7 +190,12 @@ const toPersistedUserPortfolio = (data: UserPortfolioData): UserPortfolioData =>
   bankConnections: data.bankConnections,
   bankTransactions: data.bankTransactions ?? [],
   bankTransactionReconciliations: data.bankTransactionReconciliations ?? [],
-  bankTransactionSyncStates: data.bankTransactionSyncStates ?? [],
+  bankTransactionSyncStates: (data.bankTransactionSyncStates ?? []).map((state) => {
+    const { cursor: _legacyCursor, ...displayState } = state as BankTransactionSyncState & {
+      cursor?: string | null;
+    };
+    return displayState;
+  }),
   investmentAccounts: data.investmentAccounts,
   opportunities: data.opportunities,
   rehabProjects: data.rehabProjects,
@@ -674,14 +679,51 @@ const normalizeLoadedPortfolio = (
 ): UserPortfolioData => {
   const rentReceivables = storedValue.rentReceivables ?? [];
   const rentPayments = storedValue.rentPayments ?? [];
+  const bankConnections = (storedValue.bankConnections ?? []).map((connection) =>
+    normalizeBankConnection(connection)
+  );
+  const environmentByConnection = new Map(
+    bankConnections.map((connection) => [connection.id, connection.providerEnvironment] as const)
+  );
   return {
     properties: initializeRentTrackingStartDates(storedValue.properties ?? [], rentReceivables, rentPayments),
     mortgages: storedValue.mortgages ?? [],
     cashAccounts: (storedValue.cashAccounts ?? []).map((account) => normalizeCashAccount(account)),
-    bankConnections: (storedValue.bankConnections ?? []).map((connection) => normalizeBankConnection(connection)),
-    bankTransactions: storedValue.bankTransactions ?? [],
+    bankConnections,
+    bankTransactions: (storedValue.bankTransactions ?? []).map((transaction) => ({
+      ...transaction,
+      ...(transaction.providerName === 'plaid' ||
+      Object.prototype.hasOwnProperty.call(transaction, 'providerEnvironment')
+        ? {
+            providerEnvironment:
+              transaction.providerName === 'plaid'
+                ? transaction.providerEnvironment ??
+                  environmentByConnection.get(transaction.connectionId) ??
+                  'sandbox'
+                : transaction.providerEnvironment,
+          }
+        : {}),
+    })),
     bankTransactionReconciliations: storedValue.bankTransactionReconciliations ?? [],
-    bankTransactionSyncStates: storedValue.bankTransactionSyncStates ?? [],
+    bankTransactionSyncStates: (storedValue.bankTransactionSyncStates ?? []).map((state) => {
+      const { cursor: _legacyCursor, ...displayState } = state as BankTransactionSyncState & {
+        cursor?: string | null;
+      };
+      return {
+        ...displayState,
+        ...(displayState.providerName === 'plaid' ||
+        Object.prototype.hasOwnProperty.call(displayState, 'providerEnvironment')
+          ? {
+              providerEnvironment:
+                displayState.providerName === 'plaid'
+                  ? displayState.providerEnvironment ??
+                    environmentByConnection.get(displayState.connectionId) ??
+                    'sandbox'
+                  : displayState.providerEnvironment,
+            }
+          : {}),
+      };
+    }),
     investmentAccounts: storedValue.investmentAccounts ?? [],
     opportunities: storedValue.opportunities ?? [],
     rehabProjects: storedValue.rehabProjects ?? [],
@@ -942,8 +984,21 @@ export const importUserAccountBackup = async (
   await saveUserPortfolio(user.id, normalizeLoadedPortfolio({
     properties: backup.portfolio.properties ?? [],
     mortgages: backup.portfolio.mortgages ?? [],
-    cashAccounts: backup.portfolio.cashAccounts ?? [],
-    bankConnections: backup.portfolio.bankConnections ?? [],
+    cashAccounts: (backup.portfolio.cashAccounts ?? []).map((account) =>
+      account.providerName === 'plaid'
+        ? { ...account, syncStatus: 'needs-reauth' as const }
+        : account
+    ),
+    bankConnections: (backup.portfolio.bankConnections ?? []).map((connection) =>
+      connection.providerName === 'plaid'
+        ? {
+            ...connection,
+            connectionStatus: 'needs-reauthentication' as const,
+            syncStatus: 'needs-reauth' as const,
+            needsReauth: true,
+          }
+        : connection
+    ),
     investmentAccounts: backup.portfolio.investmentAccounts ?? [],
     opportunities: backup.portfolio.opportunities ?? [],
     rehabProjects: backup.portfolio.rehabProjects ?? [],

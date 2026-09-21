@@ -9,9 +9,7 @@ import type {
 
 const getPlaidBaseUrl = () => {
   const plaidEnvironment = readPlaidPilotConfiguration().environment;
-  return plaidEnvironment === 'development'
-    ? 'https://development.plaid.com'
-    : plaidEnvironment === 'production'
+  return plaidEnvironment === 'production'
     ? 'https://production.plaid.com'
     : 'https://sandbox.plaid.com';
 };
@@ -322,6 +320,7 @@ const mapAccountType = (account: PlaidAccount) => {
 export const mapPlaidAccountsToCashAccounts = (input: {
   userId: string;
   providerName: 'plaid';
+  providerEnvironment: import('../src/common/types').PlaidEnvironment;
   connectionId: string;
   institutionName: string;
   institutionId: string;
@@ -349,6 +348,7 @@ export const mapPlaidAccountsToCashAccounts = (input: {
         typeof account.balances.available === 'number' ? account.balances.available : null,
       sourceType: 'linked' as const,
       providerName: input.providerName,
+      providerEnvironment: input.providerEnvironment,
       externalAccountId: account.account_id,
       institutionId: input.institutionId,
       maskedReference: account.mask ? `****${account.mask}` : null,

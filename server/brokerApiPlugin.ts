@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
+import type { PlaidEnvironment } from '../src/common/types';
 import { fetchEtoroAccountSnapshot } from './etoro';
 import { fetchLatestFxRates } from './fx';
 import {
@@ -17,7 +18,10 @@ import {
 } from './plaid';
 import {
   createDefaultOpenBankingConnectionStore,
+  OpenBankingCursorStateError,
   OpenBankingConnectionOwnershipError,
+  OpenBankingEnvironmentMismatchError,
+  OpenBankingLegacyEnvironmentError,
   OpenBankingVaultError,
 } from './openBankingStore';
 import {
@@ -134,7 +138,14 @@ const handleFxRates = async (_request: IncomingMessage, response: ServerResponse
 interface OpenBankingSessionBody {
   providerName?: string;
   connectionId?: string;
+  connectionEnvironment?: unknown;
   intent?: 'connect' | 'reauthentication' | 'transactions-consent';
+}
+
+interface OpenBankingConnectionBody {
+  connectionId?: string;
+  connectionEnvironment?: unknown;
+  cursor?: unknown;
 }
 
 interface OpenBankingCompleteBody {
@@ -142,6 +153,15 @@ interface OpenBankingCompleteBody {
   publicToken?: string;
   selectedAccountIds?: unknown;
 }
+
+const parseConnectionEnvironment = (value: unknown): PlaidEnvironment | null => {
+  if (value === 'sandbox' || value === 'production') return value;
+  throw new ServerAuthError(
+    'OPEN_BANKING_ENVIRONMENT_INVALID',
+    400,
+    'A valid connection environment is required.'
+  );
+};
 
 const logOpenBankingError = (operation: string, error: unknown) => {
   console.error('[open-banking] Request failed.', {
@@ -357,6 +377,23 @@ const jsonOpenBankingError = (
     });
     return;
   }
+  if (error instanceof OpenBankingEnvironmentMismatchError) {
+    json(response, 409, {
+      error: 'Open banking connection is unavailable in this provider environment.',
+      code: error.code,
+    });
+    return;
+  }
+  if (
+    error instanceof OpenBankingLegacyEnvironmentError ||
+    error instanceof OpenBankingCursorStateError
+  ) {
+    json(response, 503, {
+      error: 'Open banking operational state is unavailable.',
+      code: error.code,
+    });
+    return;
+  }
   if (error instanceof OpenBankingConnectionStateError) {
     json(response, 409, {
       error: error.message,
@@ -430,6 +467,9 @@ const handleCreateOpenBankingSession = async (
   const result = await service.createConnectionSession(principal, {
     providerName: body.providerName,
     connectionId: body.connectionId,
+    connectionEnvironment: body.connectionId
+      ? parseConnectionEnvironment(body.connectionEnvironment)
+      : null,
     intent: body.intent,
   });
   json(response, 200, result);
@@ -486,12 +526,16 @@ const handleRefreshOpenBankingConnection = async (
   assertSameOriginRequest(request);
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
-  const body = await readJsonBody<{ connectionId?: string }>(request);
+  const body = await readJsonBody<OpenBankingConnectionBody>(request);
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-  const result = await service.refreshConnection(principal, body.connectionId);
+  const result = await service.refreshConnection(
+    principal,
+    body.connectionId,
+    parseConnectionEnvironment(body.connectionEnvironment)
+  );
   json(response, 200, result);
 };
 
@@ -504,19 +548,19 @@ const handleSyncOpenBankingTransactions = async (
   assertSameOriginRequest(request);
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
-  const body = await readJsonBody<{ connectionId?: string; cursor?: unknown }>(request);
+  const body = await readJsonBody<OpenBankingConnectionBody>(request);
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-  if (body.cursor !== undefined && body.cursor !== null && typeof body.cursor !== 'string') {
-    json(response, 400, { error: 'cursor must be a string or null.' });
+  if (Object.prototype.hasOwnProperty.call(body, 'cursor')) {
+    json(response, 400, { error: 'Browser transaction cursors are not accepted.' });
     return;
   }
   const result = await service.syncTransactions(
     principal,
     body.connectionId,
-    body.cursor as string | null | undefined
+    parseConnectionEnvironment(body.connectionEnvironment)
   );
   json(response, 200, result);
 };
@@ -530,12 +574,16 @@ const handleDisconnectOpenBankingConnection = async (
   assertSameOriginRequest(request);
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
-  const body = await readJsonBody<{ connectionId?: string }>(request);
+  const body = await readJsonBody<OpenBankingConnectionBody>(request);
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-  const result = await service.disconnectConnection(principal, body.connectionId);
+  const result = await service.disconnectConnection(
+    principal,
+    body.connectionId,
+    parseConnectionEnvironment(body.connectionEnvironment)
+  );
   json(response, 200, result);
 };
 
@@ -548,12 +596,16 @@ const handleDeleteOpenBankingConnection = async (
   assertSameOriginRequest(request);
   assertJsonRequest(request);
   const principal = await authenticator.authenticate(request);
-  const body = await readJsonBody<{ connectionId?: string }>(request);
+  const body = await readJsonBody<OpenBankingConnectionBody>(request);
   if (!body.connectionId) {
     json(response, 400, { error: 'connectionId is required.' });
     return;
   }
-  const result = await service.deleteDisconnectedConnection(principal, body.connectionId);
+  const result = await service.deleteDisconnectedConnection(
+    principal,
+    body.connectionId,
+    parseConnectionEnvironment(body.connectionEnvironment)
+  );
   json(response, 200, result);
 };
 

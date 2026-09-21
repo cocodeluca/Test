@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { BankConnection, CashAccount } from '../src/common/types';
+import type { BankConnection, CashAccount, PlaidEnvironment } from '../src/common/types';
 import type { ProviderTransactionPage } from '../src/common/utils/bankTransactions';
 import type { AuthenticatedOpenBankingPrincipal } from './openBankingAuth';
 import type {
@@ -18,6 +18,7 @@ import {
 } from './openBankingPolicy';
 import {
   OpenBankingConnectionOwnershipError,
+  OpenBankingEnvironmentMismatchError,
   type OpenBankingConnectionStore,
   type StoredOpenBankingConnection,
 } from './openBankingStore';
@@ -52,6 +53,7 @@ export interface PlaidPilotGateway {
   isLoginRequiredError(error: unknown): boolean;
   mapAccounts(input: {
     userId: string;
+    providerEnvironment: PlaidEnvironment;
     connectionId: string;
     institutionName: string;
     institutionId: string;
@@ -83,11 +85,13 @@ export interface OpenBankingService {
     input: {
       providerName?: string;
       connectionId?: string | null;
+      connectionEnvironment?: PlaidEnvironment | null;
       intent?: OpenBankingLinkSessionIntent;
     }
   ): Promise<{
     sessionId: string;
     providerName: 'plaid';
+    providerEnvironment: PlaidEnvironment;
     status: 'redirect-required';
     linkToken: string;
     expiration: string | null;
@@ -105,20 +109,23 @@ export interface OpenBankingService {
   ): Promise<SanitizedProviderConnectionResult>;
   refreshConnection(
     principal: AuthenticatedOpenBankingPrincipal,
-    connectionId: string
+    connectionId: string,
+    connectionEnvironment: PlaidEnvironment | null
   ): Promise<SanitizedProviderConnectionResult>;
   syncTransactions(
     principal: AuthenticatedOpenBankingPrincipal,
     connectionId: string,
-    cursor?: string | null
+    connectionEnvironment: PlaidEnvironment | null
   ): Promise<ProviderTransactionPage>;
   disconnectConnection(
     principal: AuthenticatedOpenBankingPrincipal,
-    connectionId: string
+    connectionId: string,
+    connectionEnvironment: PlaidEnvironment | null
   ): Promise<{ ok: true; connectionId: string }>;
   deleteDisconnectedConnection(
     principal: AuthenticatedOpenBankingPrincipal,
-    connectionId: string
+    connectionId: string,
+    connectionEnvironment: PlaidEnvironment | null
   ): Promise<{ ok: true; connectionId: string; deleted: boolean }>;
 }
 
@@ -146,7 +153,12 @@ const requireOwnedConnection = async (
   connectionId: string,
   configuration = readPlaidPilotConfiguration()
 ) => {
-  const connection = await store.loadOwned(principal.userId, connectionId);
+  const connection = await store.loadOwned({
+    userId: principal.userId,
+    id: connectionId,
+    providerName: 'plaid',
+    environment: configuration.environment,
+  });
   if (!connection) throw new OpenBankingConnectionOwnershipError();
   if (
     connection.providerName !== 'plaid' ||
@@ -158,6 +170,15 @@ const requireOwnedConnection = async (
     );
   }
   return connection;
+};
+
+const requireFrontendEnvironment = (
+  claimedEnvironment: PlaidEnvironment | null | undefined,
+  configuredEnvironment: PlaidEnvironment
+) => {
+  if (claimedEnvironment !== configuredEnvironment) {
+    throw new OpenBankingEnvironmentMismatchError();
+  }
 };
 
 const requireLiveProviderItem = (connection: StoredOpenBankingConnection) => {
@@ -184,6 +205,7 @@ const sanitizeConnection = (
   id: stored.id,
   userId: stored.userId,
   providerName: stored.providerName,
+  providerEnvironment: stored.environment,
   institutionName: stored.institutionName,
   institutionId: stored.institutionId,
   connectionStatus: 'connected',
@@ -290,6 +312,9 @@ export const createOpenBankingService = (dependencies: {
             configuration
           )
         : null;
+      if (existingConnection) {
+        requireFrontendEnvironment(input.connectionEnvironment, configuration.environment);
+      }
       if (input.intent === 'transactions-consent') {
         if (
           configuration.environment !== 'sandbox' ||
@@ -335,6 +360,7 @@ export const createOpenBankingService = (dependencies: {
       }
       const session = dependencies.linkSessions.create({
         ownerUserId: principal.userId,
+        environment: configuration.environment,
         connectionId: existingConnection?.id ?? null,
         mode,
         intent,
@@ -342,6 +368,7 @@ export const createOpenBankingService = (dependencies: {
       return {
         sessionId: session.id,
         providerName: 'plaid',
+        providerEnvironment: configuration.environment,
         status: 'redirect-required',
         linkToken: linkResult.linkToken,
         expiration: linkResult.expiration ?? null,
@@ -357,6 +384,9 @@ export const createOpenBankingService = (dependencies: {
         throw new OpenBankingConfigurationError('A server-issued Link session is required.');
       }
       const session = dependencies.linkSessions.consume(input.sessionId, principal.userId);
+      if (session.environment !== configuration.environment) {
+        throw new OpenBankingEnvironmentMismatchError();
+      }
       if (
         session.intent === 'transactions-consent' &&
         (configuration.environment !== 'sandbox' ||
@@ -474,6 +504,7 @@ export const createOpenBankingService = (dependencies: {
           : balances.accounts.map((account) => account.account_id);
         const accounts = dependencies.plaid.mapAccounts({
           userId: principal.userId,
+          providerEnvironment: configuration.environment,
           connectionId,
           institutionName: institution.name,
           institutionId: institution.institutionId,
@@ -485,6 +516,7 @@ export const createOpenBankingService = (dependencies: {
           id: connectionId,
           userId: principal.userId,
           providerName: 'plaid',
+          environment: configuration.environment,
           institutionName: institution.name,
           institutionId: institution.institutionId,
           accessToken,
@@ -493,6 +525,8 @@ export const createOpenBankingService = (dependencies: {
           disconnectedAt: null,
           revokedItems: existingConnection?.revokedItems ?? [],
           selectedAccountIds,
+          transactionSyncCursor:
+            session.mode === 'update' ? existingConnection?.transactionSyncCursor ?? null : null,
           consentExpirationTime:
             balances.item?.consent_expiration_time ?? item.item.consent_expiration_time ?? null,
           createdAt: existingConnection?.createdAt ?? syncedAt,
@@ -514,8 +548,9 @@ export const createOpenBankingService = (dependencies: {
       }
     },
 
-    async refreshConnection(principal, connectionId) {
+    async refreshConnection(principal, connectionId, connectionEnvironment) {
       const configuration = readPlaidPilotConfiguration();
+      requireFrontendEnvironment(connectionEnvironment, configuration.environment);
       const stored = await requireOwnedConnection(
         dependencies.store,
         principal,
@@ -528,6 +563,7 @@ export const createOpenBankingService = (dependencies: {
         const syncedAt = now().toISOString();
         const accounts = dependencies.plaid.mapAccounts({
           userId: principal.userId,
+          providerEnvironment: configuration.environment,
           connectionId: stored.id,
           institutionName: stored.institutionName,
           institutionId: stored.institutionId,
@@ -535,7 +571,12 @@ export const createOpenBankingService = (dependencies: {
           selectedAccountIds: stored.selectedAccountIds,
           syncedAt,
         });
-        const updated = await dependencies.store.updateOwned(principal.userId, stored.id, {
+        const updated = await dependencies.store.updateOwned({
+          userId: principal.userId,
+          id: stored.id,
+          providerName: 'plaid',
+          environment: configuration.environment,
+        }, {
           selectedAccountIds: stored.selectedAccountIds,
           consentExpirationTime: balances.item?.consent_expiration_time ?? null,
           updatedAt: syncedAt,
@@ -547,7 +588,12 @@ export const createOpenBankingService = (dependencies: {
       } catch (error) {
         if (!dependencies.plaid.isLoginRequiredError(error)) throw error;
         const updatedAt = now().toISOString();
-        const updated = await dependencies.store.updateOwned(principal.userId, stored.id, {
+        const updated = await dependencies.store.updateOwned({
+          userId: principal.userId,
+          id: stored.id,
+          providerName: 'plaid',
+          environment: configuration.environment,
+        }, {
           updatedAt,
         });
         return {
@@ -555,6 +601,7 @@ export const createOpenBankingService = (dependencies: {
             id: updated.id,
             userId: updated.userId,
             providerName: updated.providerName,
+            providerEnvironment: updated.environment,
             institutionName: updated.institutionName,
             institutionId: updated.institutionId,
             connectionStatus: 'needs-reauthentication',
@@ -571,8 +618,9 @@ export const createOpenBankingService = (dependencies: {
       }
     },
 
-    async syncTransactions(principal, connectionId, cursor) {
+    async syncTransactions(principal, connectionId, connectionEnvironment) {
       const configuration = readPlaidPilotConfiguration();
+      requireFrontendEnvironment(connectionEnvironment, configuration.environment);
       const stored = await requireOwnedConnection(
         dependencies.store,
         principal,
@@ -598,7 +646,8 @@ export const createOpenBankingService = (dependencies: {
 
       const transactions: ProviderTransactionPage['transactions'] = [];
       const removedTransactions: NonNullable<ProviderTransactionPage['removedTransactions']> = [];
-      let nextCursor = cursor ?? null;
+      const previousCursor = stored.transactionSyncCursor;
+      let nextCursor = previousCursor;
       let pageCount = 0;
       let hasMore = false;
 
@@ -627,16 +676,28 @@ export const createOpenBankingService = (dependencies: {
         nextCursor = page.nextCursor ?? nextCursor;
       } while (hasMore);
 
+      await dependencies.store.advanceTransactionCursorOwned({
+        userId: principal.userId,
+        id: stored.id,
+        providerName: 'plaid',
+        environment: configuration.environment,
+      }, {
+        expectedItemId: liveItem.itemId,
+        expectedCursor: previousCursor,
+        nextCursor,
+        updatedAt: now().toISOString(),
+      });
+
       return {
         transactions,
         removedTransactions,
-        nextCursor,
         hasMore: false,
       };
     },
 
-    async disconnectConnection(principal, connectionId) {
+    async disconnectConnection(principal, connectionId, connectionEnvironment) {
       const configuration = readPlaidPilotConfiguration();
+      requireFrontendEnvironment(connectionEnvironment, configuration.environment);
       const stored = await requireOwnedConnection(
         dependencies.store,
         principal,
@@ -649,22 +710,35 @@ export const createOpenBankingService = (dependencies: {
       const liveItem = requireLiveProviderItem(stored);
       await dependencies.plaid.removeItem(liveItem.accessToken);
       const revokedAt = now().toISOString();
-      await dependencies.store.markDisconnectedOwned(principal.userId, stored.id, {
+      await dependencies.store.markDisconnectedOwned({
+        userId: principal.userId,
+        id: stored.id,
+        providerName: 'plaid',
+        environment: configuration.environment,
+      }, {
         revokedAt,
         expectedItemId: liveItem.itemId,
       });
       return { ok: true, connectionId: stored.id };
     },
 
-    async deleteDisconnectedConnection(principal, connectionId) {
-      const stored = await dependencies.store.loadOwned(principal.userId, connectionId);
+    async deleteDisconnectedConnection(principal, connectionId, connectionEnvironment) {
+      const configuration = readPlaidPilotConfiguration();
+      requireFrontendEnvironment(connectionEnvironment, configuration.environment);
+      const scope = {
+        userId: principal.userId,
+        id: connectionId,
+        providerName: 'plaid' as const,
+        environment: configuration.environment,
+      };
+      const stored = await dependencies.store.loadOwned(scope);
       if (!stored) return { ok: true, connectionId, deleted: false };
       if (stored.providerItemStatus !== 'disconnected') {
         throw new OpenBankingConnectionStateError(
           'Only a disconnected open banking connection can be deleted.'
         );
       }
-      const deleted = await dependencies.store.deleteOwned(principal.userId, connectionId);
+      const deleted = await dependencies.store.deleteOwned(scope);
       return { ok: true, connectionId, deleted };
     },
   };

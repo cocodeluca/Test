@@ -332,18 +332,16 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       return;
     }
     const beforeFetch = bankingStateRef.current;
-    const previousState = beforeFetch.bankTransactionSyncStates.find(
-      (state) => state.connectionId === connection.id
-    );
     const syncedAt = new Date().toISOString();
     try {
       const connectionAccounts = beforeFetch.cashAccounts.filter(
         (account) => account.connectionId === connection.id
       );
-      const page = await adapter.fetchTransactions(connection, connectionAccounts, previousState?.cursor);
+      const page = await adapter.fetchTransactions(connection, connectionAccounts);
       const snapshot = getActiveFxSnapshot(settings);
       const normalized = normalizeProviderTransactions(page.transactions, {
         providerName: connection.providerName,
+        providerEnvironment: connection.providerEnvironment,
         connectionId: connection.id,
         accounts: bankingStateRef.current.cashAccounts,
         reportingCurrency: settings.currency,
@@ -355,7 +353,6 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         connection,
         incomingTransactions: normalized,
         removedTransactions: page.removedTransactions,
-        cursor: page.nextCursor,
         syncedAt,
       }));
     } catch (error) {
@@ -548,6 +545,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           institutionId: currentConnection.institutionId,
           scenario: 'success',
           connectionId: currentConnection.id,
+          providerEnvironment: currentConnection.providerEnvironment,
           connectionStatus: currentConnection.connectionStatus,
         });
         const result = await adapter.completeConnection(session, {

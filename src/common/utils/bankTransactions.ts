@@ -3,6 +3,7 @@ import type {
   BankTransactionSyncState,
   CashAccount,
   OpenBankingProviderName,
+  PlaidEnvironment,
   SyncStatus,
 } from '../types';
 import type { DisplayCurrency } from '../types/settings';
@@ -48,6 +49,7 @@ export interface BankTransactionLifecycleEvent {
 
 export interface BankTransactionNormalizationContext {
   providerName: OpenBankingProviderName;
+  providerEnvironment?: PlaidEnvironment | null;
   connectionId: string;
   accounts: CashAccount[];
   reportingCurrency: DisplayCurrency;
@@ -57,7 +59,7 @@ export interface BankTransactionNormalizationContext {
 }
 
 export const getBankTransactionIdentity = (
-  transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'> &
+  transaction: Pick<BankTransaction, 'providerName' | 'providerEnvironment' | 'externalAccountId' | 'externalTransactionId'> &
     Partial<Pick<BankTransaction, 'cashAccountId' | 'connectionId'>>
 ) => {
   const accountIdentity = transaction.externalAccountId
@@ -66,25 +68,30 @@ export const getBankTransactionIdentity = (
   const connectionIdentity = transaction.connectionId
     ? `connection:${transaction.connectionId}`
     : 'legacy-connection';
-  return `${connectionIdentity}:${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
+  const environmentIdentity = transaction.providerEnvironment ??
+    (transaction.providerName === 'plaid' ? 'sandbox' : 'local');
+  return `${environmentIdentity}:${connectionIdentity}:${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
 };
 
 const getLegacyBankTransactionIdentity = (
-  transaction: Pick<BankTransaction, 'providerName' | 'externalAccountId' | 'externalTransactionId'> &
+  transaction: Pick<BankTransaction, 'providerName' | 'providerEnvironment' | 'externalAccountId' | 'externalTransactionId'> &
     Partial<Pick<BankTransaction, 'cashAccountId'>>
 ) => {
   const accountIdentity = transaction.externalAccountId
     ? `external:${transaction.externalAccountId}`
     : `cash:${transaction.cashAccountId ?? 'unknown-account'}`;
-  return `${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
+  const environmentIdentity = transaction.providerEnvironment ??
+    (transaction.providerName === 'plaid' ? 'sandbox' : 'local');
+  return `${environmentIdentity}:${transaction.providerName}:${accountIdentity}:${transaction.externalTransactionId}`;
 };
 
 const buildTransactionId = (
+  providerEnvironment: PlaidEnvironment | null | undefined,
   connectionId: string,
   providerName: OpenBankingProviderName,
   externalAccountId: string,
   externalTransactionId: string
-) => `bank-tx:${encodeURIComponent(connectionId)}:${encodeURIComponent(providerName)}:${encodeURIComponent(externalAccountId)}:${encodeURIComponent(externalTransactionId)}`;
+) => `bank-tx:${encodeURIComponent(providerEnvironment ?? (providerName === 'plaid' ? 'sandbox' : 'local'))}:${encodeURIComponent(connectionId)}:${encodeURIComponent(providerName)}:${encodeURIComponent(externalAccountId)}:${encodeURIComponent(externalTransactionId)}`;
 
 export const normalizeProviderTransactions = (
   records: ProviderTransactionRecord[],
@@ -95,6 +102,9 @@ export const normalizeProviderTransactions = (
       .filter((account) =>
         account.connectionId === context.connectionId &&
         account.providerName === context.providerName &&
+        (context.providerName !== 'plaid' ||
+          (account.providerEnvironment ?? 'sandbox') ===
+            (context.providerEnvironment ?? 'sandbox')) &&
         account.status === 'active'
       )
       .map((account) => [account.externalAccountId, account] as const)
@@ -125,12 +135,15 @@ export const normalizeProviderTransactions = (
 
     return {
       id: buildTransactionId(
+        context.providerEnvironment,
         context.connectionId,
         context.providerName,
         record.externalAccountId,
         record.externalTransactionId
       ),
       providerName: context.providerName,
+      providerEnvironment:
+        context.providerEnvironment ?? (context.providerName === 'plaid' ? 'sandbox' : null),
       connectionId: context.connectionId,
       externalTransactionId: record.externalTransactionId,
       pendingExternalTransactionId: record.pendingExternalTransactionId ?? null,
@@ -212,6 +225,7 @@ export const upsertBankTransactions = (
       if (transaction.pending || !transaction.pendingExternalTransactionId) return [];
       const pendingIdentity = getBankTransactionIdentity({
         providerName: transaction.providerName,
+        providerEnvironment: transaction.providerEnvironment,
         externalAccountId: transaction.externalAccountId,
         cashAccountId: transaction.cashAccountId,
         connectionId: transaction.connectionId,
@@ -220,6 +234,7 @@ export const upsertBankTransactions = (
       const pendingTransaction = existingByIdentity.get(pendingIdentity) ??
         legacyExistingByIdentity.get(getLegacyBankTransactionIdentity({
           providerName: transaction.providerName,
+          providerEnvironment: transaction.providerEnvironment,
           externalAccountId: transaction.externalAccountId,
           cashAccountId: transaction.cashAccountId,
           externalTransactionId: transaction.pendingExternalTransactionId,
@@ -247,6 +262,7 @@ export const upsertBankTransactions = (
       const linkedPendingIdentity = !transaction.pending && transaction.pendingExternalTransactionId
         ? getBankTransactionIdentity({
           providerName: transaction.providerName,
+          providerEnvironment: transaction.providerEnvironment,
           externalAccountId: transaction.externalAccountId,
           cashAccountId: transaction.cashAccountId,
           connectionId: transaction.connectionId,
@@ -257,6 +273,7 @@ export const upsertBankTransactions = (
         ? existingByIdentity.get(linkedPendingIdentity) ??
           legacyExistingByIdentity.get(getLegacyBankTransactionIdentity({
             providerName: transaction.providerName,
+            providerEnvironment: transaction.providerEnvironment,
             externalAccountId: transaction.externalAccountId,
             cashAccountId: transaction.cashAccountId,
             externalTransactionId: transaction.pendingExternalTransactionId!,
@@ -295,6 +312,7 @@ export const applyBankTransactionProviderLifecycle = (args: {
   incomingTransactions: BankTransaction[];
   removedTransactions?: ProviderRemovedTransactionRecord[];
   providerName: OpenBankingProviderName;
+  providerEnvironment?: PlaidEnvironment | null;
   connectionId: string;
   syncedAt: string;
 }): { transactions: BankTransaction[]; lifecycleEvents: BankTransactionLifecycleEvent[] } => {
@@ -304,6 +322,8 @@ export const applyBankTransactionProviderLifecycle = (args: {
   for (const removed of args.removedTransactions ?? []) {
     const candidates = transactions.filter((transaction) =>
       transaction.providerName === args.providerName &&
+      (transaction.providerEnvironment ?? (transaction.providerName === 'plaid' ? 'sandbox' : null)) ===
+        (args.providerEnvironment ?? (args.providerName === 'plaid' ? 'sandbox' : null)) &&
       (!transaction.connectionId || transaction.connectionId === args.connectionId) &&
       transaction.externalTransactionId === removed.externalTransactionId &&
       (!removed.externalAccountId || transaction.externalAccountId === removed.externalAccountId)
@@ -331,6 +351,7 @@ export const applyBankTransactionProviderLifecycle = (args: {
   for (const reversal of reversalTransactions) {
     const originalIdentity = getBankTransactionIdentity({
       providerName: reversal.providerName,
+      providerEnvironment: reversal.providerEnvironment,
       connectionId: reversal.connectionId,
       externalAccountId: reversal.externalAccountId,
       cashAccountId: reversal.cashAccountId,
@@ -338,6 +359,7 @@ export const applyBankTransactionProviderLifecycle = (args: {
     });
     const originalLegacyIdentity = getLegacyBankTransactionIdentity({
       providerName: reversal.providerName,
+      providerEnvironment: reversal.providerEnvironment,
       externalAccountId: reversal.externalAccountId,
       cashAccountId: reversal.cashAccountId,
       externalTransactionId: reversal.reversesExternalTransactionId!,
@@ -386,30 +408,36 @@ export const upsertBankTransactionSyncState = (
   next: {
     connectionId: string;
     providerName: OpenBankingProviderName;
-    cursor?: string | null;
+    providerEnvironment?: PlaidEnvironment | null;
     syncStatus: SyncStatus;
     errorMessage?: string | null;
     errorCode?: string | null;
     syncedAt: string;
   }
 ): BankTransactionSyncState[] => {
+  const providerEnvironment = next.providerEnvironment ??
+    (next.providerName === 'plaid' ? 'sandbox' : null);
   const value: BankTransactionSyncState = {
     connectionId: next.connectionId,
     providerName: next.providerName,
-    cursor: next.cursor ?? null,
+    providerEnvironment,
     lastSuccessfulSyncAt: next.syncStatus === 'success' ? next.syncedAt : null,
     syncStatus: next.syncStatus,
     errorMessage: next.errorMessage ?? null,
     errorCode: next.errorCode ?? null,
     updatedAt: next.syncedAt,
   };
-  const existing = states.find((state) => state.connectionId === next.connectionId);
+  const isSameProviderSyncState = (state: BankTransactionSyncState) =>
+    state.connectionId === next.connectionId &&
+    state.providerName === next.providerName &&
+    (state.providerEnvironment ?? (state.providerName === 'plaid' ? 'sandbox' : null)) ===
+      providerEnvironment;
+  const existing = states.find(isSameProviderSyncState);
   if (existing && next.syncStatus !== 'success') {
     value.lastSuccessfulSyncAt = existing.lastSuccessfulSyncAt ?? null;
-    value.cursor = existing.cursor ?? value.cursor;
   }
   return [
-    ...states.filter((state) => state.connectionId !== next.connectionId),
+    ...states.filter((state) => !isSameProviderSyncState(state)),
     value,
   ];
 };

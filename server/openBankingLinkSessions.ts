@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PlaidEnvironment } from '../src/common/types';
 
 export type OpenBankingLinkSessionIntent =
   | 'connect'
@@ -6,16 +7,17 @@ export type OpenBankingLinkSessionIntent =
   | 'transactions-consent';
 
 export interface OpenBankingLinkSession {
-  id: string;
-  ownerUserId: string;
-  providerName: 'plaid';
-  countryCode: 'ES';
-  institutionId: 'ins_65';
-  intent: OpenBankingLinkSessionIntent;
-  connectionId: string | null;
-  mode: 'create' | 'update';
-  createdAt: string;
-  expiresAt: string;
+  readonly id: string;
+  readonly ownerUserId: string;
+  readonly providerName: 'plaid';
+  readonly environment: PlaidEnvironment;
+  readonly countryCode: 'ES';
+  readonly institutionId: 'ins_65';
+  readonly intent: OpenBankingLinkSessionIntent;
+  readonly connectionId: string | null;
+  readonly mode: 'create' | 'update';
+  readonly createdAt: string;
+  readonly expiresAt: string;
 }
 
 export class OpenBankingLinkSessionError extends Error {
@@ -30,6 +32,7 @@ export class OpenBankingLinkSessionError extends Error {
 export interface OpenBankingLinkSessionStore {
   create(input: {
     ownerUserId: string;
+    environment: PlaidEnvironment;
     connectionId?: string | null;
     mode?: 'create' | 'update';
     intent?: OpenBankingLinkSessionIntent;
@@ -48,13 +51,14 @@ export const createOpenBankingLinkSessionStore = (options: {
   const sessions = new Map<string, OpenBankingLinkSession>();
 
   return {
-    create({ ownerUserId, connectionId = null, mode, intent }) {
+    create({ ownerUserId, environment, connectionId = null, mode, intent }) {
       const createdAt = now();
       const resolvedMode = mode ?? (connectionId ? 'update' : 'create');
-      const session: OpenBankingLinkSession = {
+      const session: OpenBankingLinkSession = Object.freeze({
         id: createId(),
         ownerUserId,
         providerName: 'plaid',
+        environment,
         countryCode: 'ES',
         institutionId: 'ins_65',
         intent: intent ?? (resolvedMode === 'update' ? 'reauthentication' : 'connect'),
@@ -62,7 +66,7 @@ export const createOpenBankingLinkSessionStore = (options: {
         mode: resolvedMode,
         createdAt: createdAt.toISOString(),
         expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
-      };
+      });
       sessions.set(session.id, session);
       return session;
     },

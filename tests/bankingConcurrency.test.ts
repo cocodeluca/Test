@@ -100,7 +100,6 @@ interface RefreshCompletion {
   connection: BankConnection;
   account: CashAccount;
   transaction: BankTransaction;
-  cursor: string;
   syncedAt: string;
 }
 
@@ -119,7 +118,6 @@ const applyRefreshCompletion = (
   return applyBankConnectionTransactionResult(withAccounts, {
     connection: currentConnection,
     incomingTransactions: [completion.transaction],
-    cursor: completion.cursor,
     syncedAt: completion.syncedAt,
   });
 };
@@ -137,7 +135,6 @@ const completionFor = (
     connection: { ...connection, lastSyncedAt: syncedAt, updatedAt: syncedAt },
     account,
     transaction: transactionFor(connection, account),
-    cursor: `cursor-${connection.id}`,
     syncedAt,
   };
 };
@@ -242,7 +239,6 @@ test('a transaction-sync failure preserves refreshed accounts, transactions, and
     bankTransactionSyncStates: [{
       connectionId: connectionA.id,
       providerName: connectionA.providerName,
-      cursor: 'last-safe-cursor',
       lastSuccessfulSyncAt: '2026-09-17T12:00:00.000Z',
       syncStatus: 'success',
       errorMessage: null,
@@ -266,7 +262,7 @@ test('a transaction-sync failure preserves refreshed accounts, transactions, and
   );
   assert.strictEqual(failed.rentPayments, state.rentPayments);
   assert.strictEqual(failed.expensePayments, state.expensePayments);
-  assert.equal(failed.bankTransactionSyncStates[0].cursor, 'last-safe-cursor');
+  assert.equal('cursor' in failed.bankTransactionSyncStates[0], false);
   assert.equal(failed.bankTransactionSyncStates[0].lastSuccessfulSyncAt, '2026-09-17T12:00:00.000Z');
   assert.equal(failed.bankTransactionSyncStates[0].syncStatus, 'error');
   assert.equal(

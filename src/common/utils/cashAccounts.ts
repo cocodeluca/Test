@@ -5,6 +5,7 @@ import type {
   CashAccountSourceType,
   CashAccountType,
   OpenBankingProviderName,
+  PlaidEnvironment,
   SyncStatus,
 } from '../types';
 import type { DisplayCurrency } from '../types/settings';
@@ -15,6 +16,16 @@ const buildId = (prefix: string) =>
 
 const normalizeBalance = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+const normalizeProviderEnvironment = (
+  providerName: OpenBankingProviderName | null | undefined,
+  environment: PlaidEnvironment | null | undefined
+): PlaidEnvironment | null => {
+  if (providerName !== 'plaid') return null;
+  if (environment === 'sandbox' || environment === 'production') return environment;
+  // All frontend Plaid records created before environment tagging were local Sandbox data.
+  return 'sandbox';
+};
 
 const createTranslationRecord = <TKey extends string>(prefix: string) =>
   new Proxy({} as Record<TKey, string>, {
@@ -57,6 +68,10 @@ export const normalizeCashAccount = (account: Partial<CashAccount> & { id: strin
     availableBalance,
     sourceType,
     providerName: account.providerName ?? null,
+    providerEnvironment: normalizeProviderEnvironment(
+      account.providerName,
+      account.providerEnvironment
+    ),
     externalAccountId: account.externalAccountId ?? null,
     institutionId: account.institutionId ?? null,
     maskedReference: account.maskedReference ?? null,
@@ -83,6 +98,10 @@ export const normalizeBankConnection = (
     id: connection.id,
     userId: connection.userId,
     providerName: connection.providerName ?? 'mock-bank',
+    providerEnvironment: normalizeProviderEnvironment(
+      connection.providerName ?? 'mock-bank',
+      connection.providerEnvironment
+    ),
     institutionName:
       connection.institutionName ??
       translateCurrentLanguage('cashAccounts.defaults.connectedInstitution'),
@@ -135,6 +154,7 @@ export const createLinkedCashAccount = (overrides: Partial<CashAccount> = {}): C
     status: overrides.status ?? 'active',
     syncStatus: overrides.syncStatus ?? 'success',
     providerName: overrides.providerName ?? 'mock-bank',
+    providerEnvironment: overrides.providerEnvironment,
     externalAccountId: overrides.externalAccountId ?? buildId('external'),
     institutionId: overrides.institutionId ?? null,
     maskedReference: overrides.maskedReference ?? null,
@@ -151,6 +171,7 @@ export const createBankConnection = (
   normalizeBankConnection({
     id: overrides.id ?? buildId('connection'),
     providerName: overrides.providerName ?? 'mock-bank',
+    providerEnvironment: overrides.providerEnvironment,
     institutionName:
       overrides.institutionName ??
       translateCurrentLanguage('cashAccounts.defaults.connectedInstitution'),
@@ -204,17 +225,17 @@ export const groupCashAccountsByCurrency = (accounts: CashAccount[]) =>
   }, {} as Record<DisplayCurrency, number>);
 
 export const getLinkedCashAccountIdentity = (
-  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'externalAccountId' | 'connectionId'>
+  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'providerEnvironment' | 'externalAccountId' | 'connectionId'>
 ): string | null =>
   account.sourceType === 'linked' && account.providerName && account.externalAccountId
-    ? `${account.connectionId ? `connection:${account.connectionId}` : 'legacy-connection'}:${account.providerName}:${account.externalAccountId}`
+    ? `${normalizeProviderEnvironment(account.providerName, account.providerEnvironment) ?? 'local'}:${account.connectionId ? `connection:${account.connectionId}` : 'legacy-connection'}:${account.providerName}:${account.externalAccountId}`
     : null;
 
 const getLegacyLinkedCashAccountIdentity = (
-  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'externalAccountId'>
+  account: Pick<CashAccount, 'sourceType' | 'providerName' | 'providerEnvironment' | 'externalAccountId'>
 ): string | null =>
   account.sourceType === 'linked' && account.providerName && account.externalAccountId
-    ? `${account.providerName}:${account.externalAccountId}`
+    ? `${normalizeProviderEnvironment(account.providerName, account.providerEnvironment) ?? 'local'}:${account.providerName}:${account.externalAccountId}`
     : null;
 
 export const upsertLinkedCashAccounts = (
@@ -267,6 +288,8 @@ export const upsertLinkedCashAccounts = (
       candidate.status === 'inactive' &&
       candidate.connectionId === account.connectionId &&
       candidate.providerName === account.providerName &&
+      normalizeProviderEnvironment(candidate.providerName, candidate.providerEnvironment) ===
+        normalizeProviderEnvironment(account.providerName, account.providerEnvironment) &&
       candidate.institutionId === account.institutionId &&
       candidate.accountType === account.accountType &&
       candidate.currency === account.currency &&

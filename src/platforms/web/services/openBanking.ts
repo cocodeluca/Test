@@ -1,4 +1,4 @@
-import type { BankConnection, CashAccount, OpenBankingProviderName } from '../../../common/types';
+import type { BankConnection, CashAccount, OpenBankingProviderName, PlaidEnvironment } from '../../../common/types';
 import {
   connectionStatusFromSync,
   createBankConnection,
@@ -62,6 +62,7 @@ declare global {
 export interface ProviderConnectionSession {
   sessionId: string;
   providerName: OpenBankingProviderName;
+  providerEnvironment?: PlaidEnvironment | null;
   status: 'created' | 'redirect-required' | 'completed' | 'mock';
   redirectUrl?: string | null;
   createdAt: string;
@@ -95,6 +96,7 @@ export interface ProviderAdapter {
     institutionId?: string;
     scenario?: 'success' | 'needs-reauth' | 'error';
     connectionId?: string;
+    providerEnvironment?: PlaidEnvironment | null;
     connectionStatus?: BankConnection['connectionStatus'];
     intent?: OpenBankingLinkIntent;
   }) => Promise<ProviderConnectionSession>;
@@ -132,6 +134,7 @@ export const runTransactionsConsentUpdate = async (input: {
     institutionName: input.connection.institutionName,
     institutionId: input.connection.institutionId,
     connectionId: input.connection.id,
+    providerEnvironment: input.connection.providerEnvironment,
     connectionStatus: input.connection.connectionStatus,
     intent: 'transactions-consent',
   });
@@ -413,6 +416,8 @@ const buildMockRemovedTransactions = (institutionId: string) => [
   },
 ];
 
+const mockTransactionSyncState = new Set<string>();
+
 const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapter => ({
   providerName,
   async createConnectionSession({
@@ -420,6 +425,7 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
     institutionId,
     scenario = 'success',
     connectionId,
+    providerEnvironment,
     connectionStatus,
     intent,
   }) {
@@ -432,6 +438,7 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
       createdAt: new Date().toISOString(),
       mode: connectionId && connectionStatus !== 'disconnected' ? 'update' : 'create',
       connectionId: connectionId ?? null,
+      providerEnvironment: providerName === 'plaid' ? providerEnvironment ?? 'sandbox' : null,
       intent: intent ?? (connectionId && connectionStatus !== 'disconnected'
         ? 'reauthentication'
         : 'connect'),
@@ -484,9 +491,10 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
   },
   ...(providerName === 'mock-bank'
     ? {
-        async fetchTransactions(connection: BankConnection, _accounts: CashAccount[], cursor?: string | null) {
+        async fetchTransactions(connection: BankConnection, _accounts: CashAccount[], _cursor?: string | null) {
           await delay(320);
-          const lifecycle = cursor ? 'posted' : 'pending';
+          const lifecycle = mockTransactionSyncState.has(connection.id) ? 'posted' : 'pending';
+          mockTransactionSyncState.add(connection.id);
           return {
             transactions: buildMockTransactions(connection.institutionId, lifecycle),
             removedTransactions: lifecycle === 'posted'
@@ -538,10 +546,11 @@ const createMockAdapter = (providerName: OpenBankingProviderName): ProviderAdapt
 
 const plaidAdapter: ProviderAdapter = {
   providerName: 'plaid',
-  async createConnectionSession({ connectionId, intent }) {
+  async createConnectionSession({ connectionId, providerEnvironment, intent }) {
     return jsonRequest<ProviderConnectionSession>('/api/open-banking/session/create', {
       providerName: 'plaid',
       connectionId: connectionId ?? null,
+      connectionEnvironment: connectionId ? providerEnvironment : null,
       intent,
     });
   },
@@ -559,6 +568,7 @@ const plaidAdapter: ProviderAdapter = {
   async fetchAccounts(connection) {
     const result = await jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
       connectionId: connection.id,
+      connectionEnvironment: connection.providerEnvironment,
     });
     return result.accounts;
   },
@@ -568,23 +578,26 @@ const plaidAdapter: ProviderAdapter = {
     }
     const result = await jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
       connectionId: accounts[0].connectionId,
+      connectionEnvironment: accounts[0].providerEnvironment,
     });
     return result.accounts;
   },
   async refreshConnection(connection, _accounts) {
     return jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
       connectionId: connection.id,
+      connectionEnvironment: connection.providerEnvironment,
     });
   },
-  async fetchTransactions(connection, _accounts, cursor) {
+  async fetchTransactions(connection, _accounts, _cursor) {
     return jsonRequest<ProviderTransactionPage>('/api/open-banking/transactions/sync', {
       connectionId: connection.id,
-      cursor: cursor ?? null,
+      connectionEnvironment: connection.providerEnvironment,
     });
   },
   async disconnectConnection(connection) {
     await jsonRequest<{ ok: boolean; connectionId: string }>('/api/open-banking/connection/disconnect', {
       connectionId: connection.id,
+      connectionEnvironment: connection.providerEnvironment,
     });
     return normalizeBankConnection({
       ...connection,
@@ -598,7 +611,10 @@ const plaidAdapter: ProviderAdapter = {
   async deleteConnection(connection) {
     await jsonRequest<{ ok: boolean; connectionId: string; deleted: boolean }>(
       '/api/open-banking/connection/delete',
-      { connectionId: connection.id }
+      {
+        connectionId: connection.id,
+        connectionEnvironment: connection.providerEnvironment,
+      }
     );
   },
 };

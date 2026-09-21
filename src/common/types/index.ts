@@ -76,6 +76,7 @@ export type OpenBankingProviderName =
   | 'yapily'
   | 'plaid'
   | 'other';
+export type PlaidEnvironment = 'sandbox' | 'production';
 export type BankConnectionStatus =
   | 'not-connected'
   | 'connecting'
@@ -549,6 +550,7 @@ export interface CashAccount {
   availableBalance?: number | null;
   sourceType: CashAccountSourceType;
   providerName?: OpenBankingProviderName | null;
+  providerEnvironment?: PlaidEnvironment | null;
   externalAccountId?: string | null;
   institutionId?: string | null;
   maskedReference?: string | null;
@@ -570,6 +572,7 @@ export interface BankConnection {
   id: string;
   userId?: string;
   providerName: OpenBankingProviderName;
+  providerEnvironment: PlaidEnvironment | null;
   institutionName: string;
   institutionId: string;
   connectionStatus: BankConnectionStatus;
@@ -588,6 +591,7 @@ export type BankTransactionLifecycleStatus = 'active' | 'removed' | 'reversed' |
 export interface BankTransaction {
   id: string;
   providerName: OpenBankingProviderName;
+  providerEnvironment?: PlaidEnvironment | null;
   connectionId: string;
   externalTransactionId: string;
   /** Provider-supplied predecessor ID when a posted transaction replaces a pending transaction. */
@@ -624,7 +628,7 @@ export interface BankTransaction {
 export interface BankTransactionSyncState {
   connectionId: string;
   providerName: OpenBankingProviderName;
-  cursor?: string | null;
+  providerEnvironment?: PlaidEnvironment | null;
   lastSuccessfulSyncAt?: string | null;
   syncStatus: SyncStatus;
   errorMessage?: string | null;

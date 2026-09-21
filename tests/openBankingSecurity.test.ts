@@ -1,11 +1,12 @@
-import test, { type TestContext } from 'node:test';
+﻿import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { createCipheriv, randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import type { CashAccount } from '../src/common/types';
+import type { CashAccount, PlaidEnvironment } from '../src/common/types';
 import {
   applyBankConnectionAccountResult,
   applyBankConnectionTransactionResult,
@@ -42,7 +43,10 @@ import {
 } from '../server/openBankingService';
 import {
   createOpenBankingConnectionStore,
+  OpenBankingCursorStateError,
   OpenBankingConnectionOwnershipError,
+  OpenBankingEnvironmentMismatchError,
+  OpenBankingLegacyEnvironmentError,
   OpenBankingVaultError,
   type OpenBankingConnectionStore,
   type StoredOpenBankingConnection,
@@ -94,7 +98,10 @@ test.after(() => {
   }
 });
 
-const createStoreFixture = async (context: TestContext) => {
+const createStoreFixture = async (
+  context: TestContext,
+  expectedEnvironment: PlaidEnvironment = 'sandbox'
+) => {
   const directory = await mkdtemp(path.join(tmpdir(), 're-open-banking-'));
   context.after(async () => {
     await rm(directory, { recursive: true, force: true });
@@ -105,6 +112,7 @@ const createStoreFixture = async (context: TestContext) => {
     store: createOpenBankingConnectionStore({
       filePath,
       encodedMasterKey: TEST_MASTER_KEY,
+      expectedEnvironment,
     }),
   };
 };
@@ -115,6 +123,7 @@ const storedConnection = (
   id: 'connection-santander-1',
   userId: 'owner-a',
   providerName: 'plaid',
+  environment: 'sandbox',
   institutionName: 'Banco Santander',
   institutionId: 'ins_65',
   accessToken: 'access-production-secret-value',
@@ -123,11 +132,41 @@ const storedConnection = (
   disconnectedAt: null,
   revokedItems: [],
   selectedAccountIds: ['plaid-account-1'],
+  transactionSyncCursor: null,
   consentExpirationTime: null,
   createdAt: FIXED_NOW,
   updatedAt: FIXED_NOW,
   ...overrides,
 });
+
+const createLegacyPersistedRecord = (
+  connection: StoredOpenBankingConnection
+): Record<string, unknown> => {
+  const { accessToken, environment: _environment, transactionSyncCursor: _cursor, ...metadata } =
+    connection;
+  const associatedData = JSON.stringify({
+    id: connection.id,
+    userId: connection.userId,
+    providerName: connection.providerName,
+    institutionId: connection.institutionId,
+    itemId: connection.itemId,
+  });
+  if (!accessToken) return { ...metadata, encryptedAccessToken: null };
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', Buffer.from(TEST_MASTER_KEY, 'base64'), iv);
+  cipher.setAAD(Buffer.from(associatedData, 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(accessToken, 'utf8'), cipher.final()]);
+  return {
+    ...metadata,
+    encryptedAccessToken: {
+      version: 1,
+      algorithm: 'aes-256-gcm',
+      iv: iv.toString('base64'),
+      authTag: cipher.getAuthTag().toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+    },
+  };
+};
 
 const plaidAccount = {
   account_id: 'plaid-account-1',
@@ -199,6 +238,7 @@ const makeGateway = (
       id: `provider-${account.account_id}-fresh`,
       userId: input.userId,
       providerName: 'plaid',
+      providerEnvironment: input.providerEnvironment,
       connectionId: input.connectionId,
       institutionName: input.institutionName,
       institutionId: input.institutionId,
@@ -244,6 +284,22 @@ const withSandboxTransactions = async (operation: () => Promise<void>) => {
   }
 };
 
+const recordScope = (
+  connection: Pick<StoredOpenBankingConnection, 'id' | 'userId' | 'providerName' | 'environment'>
+) => ({
+  userId: connection.userId,
+  id: connection.id,
+  providerName: connection.providerName,
+  environment: connection.environment,
+});
+
+const sandboxScope = (userId: string, id: string) => ({
+  userId,
+  id,
+  providerName: 'plaid' as const,
+  environment: 'sandbox' as const,
+});
+
 const plaidTransaction = (
   overrides: Partial<PlaidTransaction> = {}
 ): PlaidTransaction => ({
@@ -286,16 +342,24 @@ test('encrypted vault round-trips tokens without storing plaintext', async (cont
   assert.equal(fileContent.includes(connection.accessToken!), false);
   assert.equal(fileContent.includes('"accessToken"'), false);
   assert.match(fileContent, /"algorithm": "aes-256-gcm"/);
-  assert.equal((await store.loadOwned(connection.userId, connection.id))?.accessToken, connection.accessToken);
+  assert.equal((await store.loadOwned(recordScope(connection)))?.accessToken, connection.accessToken);
 });
 
 test('missing or invalid vault encryption keys fail closed', () => {
   assert.throws(
-    () => createOpenBankingConnectionStore({ filePath: 'unused', encodedMasterKey: undefined }),
+    () => createOpenBankingConnectionStore({
+      filePath: 'unused',
+      encodedMasterKey: undefined,
+      expectedEnvironment: 'sandbox',
+    }),
     OpenBankingVaultError
   );
   assert.throws(
-    () => createOpenBankingConnectionStore({ filePath: 'unused', encodedMasterKey: 'dG9vLXNob3J0' }),
+    () => createOpenBankingConnectionStore({
+      filePath: 'unused',
+      encodedMasterKey: 'dG9vLXNob3J0',
+      expectedEnvironment: 'sandbox',
+    }),
     OpenBankingVaultError
   );
 });
@@ -308,10 +372,146 @@ test('corrupted ciphertext and malformed stores fail closed', async (context) =>
   }>;
   parsed[0].encryptedAccessToken.authTag = Buffer.alloc(16, 99).toString('base64');
   await writeFile(filePath, JSON.stringify(parsed), 'utf8');
-  await assert.rejects(store.list(), OpenBankingVaultError);
+  await assert.rejects(store.list('plaid', 'sandbox'), OpenBankingVaultError);
 
   await writeFile(filePath, '{not-json', 'utf8');
-  await assert.rejects(store.list(), OpenBankingVaultError);
+  await assert.rejects(store.list('plaid', 'sandbox'), OpenBankingVaultError);
+});
+
+test('provider records are immutable by environment and cross-environment AAD fails closed', async (context) => {
+  const sandboxFixture = await createStoreFixture(context, 'sandbox');
+  const sandbox = storedConnection();
+  await sandboxFixture.store.save(sandbox);
+  assert.equal(
+    (await sandboxFixture.store.loadOwned(recordScope(sandbox)))?.accessToken,
+    sandbox.accessToken
+  );
+
+  await assert.rejects(
+    sandboxFixture.store.save({ ...sandbox, environment: 'production' }),
+    OpenBankingEnvironmentMismatchError
+  );
+  assert.equal(
+    (await sandboxFixture.store.loadOwned(recordScope(sandbox)))?.environment,
+    'sandbox'
+  );
+
+  const sandboxCiphertext = JSON.parse(
+    await readFile(sandboxFixture.filePath, 'utf8')
+  ) as Array<Record<string, unknown>>;
+  const productionReader = createOpenBankingConnectionStore({
+    filePath: sandboxFixture.filePath,
+    encodedMasterKey: TEST_MASTER_KEY,
+    expectedEnvironment: 'production',
+  });
+  await assert.rejects(
+    productionReader.loadOwned({ ...recordScope(sandbox), environment: 'production' }),
+    OpenBankingEnvironmentMismatchError
+  );
+  sandboxCiphertext[0].environment = 'production';
+  await writeFile(sandboxFixture.filePath, JSON.stringify(sandboxCiphertext), 'utf8');
+  await assert.rejects(
+    productionReader.loadOwned({ ...recordScope(sandbox), environment: 'production' }),
+    OpenBankingVaultError
+  );
+
+  const productionFixture = await createStoreFixture(context, 'production');
+  const production = storedConnection({
+    id: 'connection-production',
+    environment: 'production',
+  });
+  await productionFixture.store.save(production);
+  const sandboxReader = createOpenBankingConnectionStore({
+    filePath: productionFixture.filePath,
+    encodedMasterKey: TEST_MASTER_KEY,
+    expectedEnvironment: 'sandbox',
+  });
+  await assert.rejects(
+    sandboxReader.loadOwned({ ...recordScope(production), environment: 'sandbox' }),
+    OpenBankingEnvironmentMismatchError
+  );
+  const productionCiphertext = JSON.parse(
+    await readFile(productionFixture.filePath, 'utf8')
+  ) as Array<Record<string, unknown>>;
+  productionCiphertext[0].environment = 'sandbox';
+  await writeFile(productionFixture.filePath, JSON.stringify(productionCiphertext), 'utf8');
+  await assert.rejects(
+    sandboxReader.loadOwned({ ...recordScope(production), environment: 'sandbox' }),
+    OpenBankingVaultError
+  );
+});
+
+test('environment mismatch is rejected before token decryption', async (context) => {
+  const { store, filePath } = await createStoreFixture(context);
+  const connection = storedConnection();
+  await store.save(connection);
+  const records = JSON.parse(await readFile(filePath, 'utf8')) as Array<{
+    encryptedAccessToken: { authTag: string };
+  }>;
+  records[0].encryptedAccessToken.authTag = Buffer.alloc(16, 77).toString('base64');
+  await writeFile(filePath, JSON.stringify(records), 'utf8');
+  const beforeMismatch = await readFile(filePath, 'utf8');
+
+  await assert.rejects(
+    store.loadOwned({ ...recordScope(connection), environment: 'production' }),
+    OpenBankingEnvironmentMismatchError
+  );
+  assert.equal(await readFile(filePath, 'utf8'), beforeMismatch);
+  await assert.rejects(store.loadOwned(recordScope(connection)), OpenBankingVaultError);
+});
+
+test('legacy Plaid records migrate only under unambiguous Sandbox provenance', async (context) => {
+  const sandboxFixture = await createStoreFixture(context, 'sandbox');
+  const legacy = storedConnection({ transactionSyncCursor: 'must-not-be-inferred' });
+  await writeFile(
+    sandboxFixture.filePath,
+    JSON.stringify([createLegacyPersistedRecord(legacy)]),
+    'utf8'
+  );
+  const migrated = await sandboxFixture.store.loadOwned(recordScope(legacy));
+  assert.equal(migrated?.environment, 'sandbox');
+  assert.equal(migrated?.transactionSyncCursor, null);
+  assert.equal(migrated?.accessToken, legacy.accessToken);
+  const migratedFile = await readFile(sandboxFixture.filePath, 'utf8');
+  assert.match(migratedFile, /"environment": "sandbox"/);
+  assert.equal(migratedFile.includes(legacy.accessToken!), false);
+
+  const productionFixture = await createStoreFixture(context, 'production');
+  await writeFile(
+    productionFixture.filePath,
+    JSON.stringify([createLegacyPersistedRecord(legacy)]),
+    'utf8'
+  );
+  await assert.rejects(
+    productionFixture.store.list('plaid', 'production'),
+    OpenBankingLegacyEnvironmentError
+  );
+
+  const unknownFixture = await createStoreFixture(context, 'sandbox');
+  await writeFile(
+    unknownFixture.filePath,
+    JSON.stringify([{
+      ...createLegacyPersistedRecord(legacy),
+      providerName: 'mock-bank',
+    }]),
+    'utf8'
+  );
+  await assert.rejects(
+    unknownFixture.store.list('plaid', 'sandbox'),
+    OpenBankingLegacyEnvironmentError
+  );
+});
+
+test('corrupt or unavailable server cursor state fails closed', async (context) => {
+  const { store, filePath } = await createStoreFixture(context);
+  await store.save(storedConnection());
+  const records = JSON.parse(await readFile(filePath, 'utf8')) as Array<Record<string, unknown>>;
+  delete records[0].transactionSyncCursor;
+  await writeFile(filePath, JSON.stringify(records), 'utf8');
+  await assert.rejects(
+    store.list('plaid', 'sandbox'),
+    OpenBankingCursorStateError
+  );
 });
 
 test('server Link sessions reject wrong owners, expiry, and replay', () => {
@@ -322,14 +522,54 @@ test('server Link sessions reject wrong owners, expiry, and replay', () => {
     now: () => currentTime,
     createId: () => `session-${++sequence}`,
   });
-  const first = sessions.create({ ownerUserId: 'owner-a' });
+  const first = sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
   assert.throws(() => sessions.consume(first.id, 'owner-b'), OpenBankingLinkSessionError);
   assert.equal(sessions.consume(first.id, 'owner-a').ownerUserId, 'owner-a');
   assert.throws(() => sessions.consume(first.id, 'owner-a'), OpenBankingLinkSessionError);
 
-  const expired = sessions.create({ ownerUserId: 'owner-a' });
+  const expired = sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
   currentTime = new Date('2026-09-17T15:00:02.000Z');
   assert.throws(() => sessions.consume(expired.id, 'owner-a'), OpenBankingLinkSessionError);
+});
+
+test('Link sessions bind environment and consume a mismatch before token exchange', async (context) => {
+  const { store } = await createStoreFixture(context);
+  let exchangeCalls = 0;
+  const service = makeService(store, makeGateway({
+    async exchangePublicToken() {
+      exchangeCalls += 1;
+      return { access_token: 'must-not-be-issued', item_id: 'must-not-be-issued' };
+    },
+  }));
+  const session = await service.createConnectionSession(
+    { userId: 'owner-a' },
+    { providerName: 'plaid' }
+  );
+  assert.equal(session.providerEnvironment, 'sandbox');
+
+  process.env.PLAID_ENV = 'production';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  try {
+    await assert.rejects(
+      service.completeConnection(
+        { userId: 'owner-a' },
+        { sessionId: session.sessionId, publicToken: 'public-token' }
+      ),
+      OpenBankingEnvironmentMismatchError
+    );
+  } finally {
+    process.env.PLAID_ENV = 'sandbox';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+  }
+  assert.equal(exchangeCalls, 0);
+  await assert.rejects(
+    service.completeConnection(
+      { userId: 'owner-a' },
+      { sessionId: session.sessionId, publicToken: 'public-token' }
+    ),
+    OpenBankingLinkSessionError
+  );
+  assert.equal(exchangeCalls, 0);
 });
 
 test('pilot configuration permits read-only Sandbox transactions while keeping Production unchanged', () => {
@@ -550,12 +790,13 @@ test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycl
     const firstPage = await service.syncTransactions(
       { userId: stored.userId },
       stored.id,
-      null
+      'sandbox'
     );
 
     assert.deepEqual(requestedCursors, [null, 'cursor-page-1']);
     assert.equal(firstPage.hasMore, false);
-    assert.equal(firstPage.nextCursor, 'cursor-page-2');
+    assert.equal('nextCursor' in firstPage, false);
+    assert.equal((await store.loadOwned(recordScope(stored)))?.transactionSyncCursor, 'cursor-page-2');
     assert.equal(firstPage.transactions.length, 5);
     assert.deepEqual(firstPage.removedTransactions, [{
       externalTransactionId: 'removed-transaction-1',
@@ -641,12 +882,11 @@ test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycl
       connection,
       incomingTransactions: normalized,
       removedTransactions: firstPage.removedTransactions,
-      cursor: firstPage.nextCursor,
       syncedAt: FIXED_NOW,
     });
 
     assert.equal(synced.bankTransactions.length, 4);
-    assert.equal(synced.bankTransactionSyncStates[0].cursor, 'cursor-page-2');
+    assert.equal('cursor' in synced.bankTransactionSyncStates[0], false);
     assert.equal(synced.rentPayments.length, 0);
     assert.equal(synced.expensePayments.length, 0);
     assert.equal(
@@ -685,7 +925,7 @@ test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycl
     const repeatedPage = await service.syncTransactions(
       { userId: stored.userId },
       stored.id,
-      firstPage.nextCursor
+      'sandbox'
     );
     const repeated = applyBankConnectionTransactionResult(synced, {
       connection,
@@ -698,7 +938,6 @@ test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycl
         syncedAt: FIXED_NOW,
       }),
       removedTransactions: repeatedPage.removedTransactions,
-      cursor: repeatedPage.nextCursor,
       syncedAt: FIXED_NOW,
     });
     assert.deepEqual(
@@ -706,6 +945,78 @@ test('Plaid Sandbox sync paginates and reuses the canonical transaction lifecycl
       synced.bankTransactions.map((transaction) => transaction.id).sort()
     );
     assert.equal(repeated.bankTransactions.length, synced.bankTransactions.length);
+  });
+});
+
+test('failed pagination preserves the server cursor and cursor CAS is scope-bound', async (context) => {
+  await withSandboxTransactions(async () => {
+    const { store } = await createStoreFixture(context);
+    const active = storedConnection({ transactionSyncCursor: 'cursor-stable' });
+    await store.save(active);
+    let providerCalls = 0;
+    const service = makeService(store, makeGateway({
+      async fetchTransactions(_accessToken, cursor) {
+        providerCalls += 1;
+        if (cursor === 'cursor-stable') {
+          return mapPlaidTransactionsSyncPage(plaidSyncPage({
+            next_cursor: 'cursor-uncommitted',
+            has_more: true,
+          }));
+        }
+        throw new Error('sanitized pagination failure');
+      },
+    }));
+
+    await assert.rejects(
+      service.syncTransactions({ userId: active.userId }, active.id, 'sandbox'),
+      /sanitized pagination failure/
+    );
+    assert.equal(providerCalls, 2);
+    assert.equal(
+      (await store.loadOwned(recordScope(active)))?.transactionSyncCursor,
+      'cursor-stable'
+    );
+
+    await assert.rejects(
+      store.advanceTransactionCursorOwned(
+        sandboxScope('owner-b', active.id),
+        {
+          expectedItemId: active.itemId!,
+          expectedCursor: 'cursor-stable',
+          nextCursor: 'owner-crossing',
+          updatedAt: FIXED_NOW,
+        }
+      ),
+      OpenBankingConnectionOwnershipError
+    );
+    await assert.rejects(
+      store.advanceTransactionCursorOwned(
+        { ...recordScope(active), environment: 'production' },
+        {
+          expectedItemId: active.itemId!,
+          expectedCursor: 'cursor-stable',
+          nextCursor: 'environment-crossing',
+          updatedAt: FIXED_NOW,
+        }
+      ),
+      OpenBankingEnvironmentMismatchError
+    );
+    await assert.rejects(
+      store.advanceTransactionCursorOwned(
+        recordScope(active),
+        {
+          expectedItemId: 'different-item',
+          expectedCursor: 'cursor-stable',
+          nextCursor: 'item-crossing',
+          updatedAt: FIXED_NOW,
+        }
+      ),
+      OpenBankingCursorStateError
+    );
+    assert.equal(
+      (await store.loadOwned(recordScope(active)))?.transactionSyncCursor,
+      'cursor-stable'
+    );
   });
 });
 
@@ -725,16 +1036,20 @@ test('Plaid transaction sync skips out-of-scope accounts while preserving owner 
     const filtered = await unmappedService.syncTransactions(
       { userId: active.userId },
       active.id,
-      null
+      'sandbox'
     );
     assert.deepEqual(filtered.transactions, []);
-    assert.equal(filtered.nextCursor, 'cursor-final');
+    assert.equal('nextCursor' in filtered, false);
+    assert.equal(
+      (await activeFixture.store.loadOwned(recordScope(active)))?.transactionSyncCursor,
+      'cursor-final'
+    );
     assert.equal(filtered.hasMore, false);
     await assert.rejects(
-      unmappedService.syncTransactions({ userId: 'owner-b' }, active.id, null),
+      unmappedService.syncTransactions({ userId: 'owner-b' }, active.id, 'sandbox'),
       OpenBankingConnectionOwnershipError
     );
-    assert.equal((await activeFixture.store.loadOwned(active.userId, active.id))?.accessToken, active.accessToken);
+    assert.equal((await activeFixture.store.loadOwned(recordScope(active)))?.accessToken, active.accessToken);
 
     const disconnectedFixture = await createStoreFixture(context);
     const disconnected = storedConnection({
@@ -750,7 +1065,7 @@ test('Plaid transaction sync skips out-of-scope accounts while preserving owner 
       makeService(disconnectedFixture.store).syncTransactions(
         { userId: disconnected.userId },
         disconnected.id,
-        null
+        'sandbox'
       ),
       OpenBankingConnectionStateError
     );
@@ -770,7 +1085,7 @@ test('Plaid transaction sync stays disabled until the read-only Sandbox product 
   }));
 
   await assert.rejects(
-    service.syncTransactions({ userId: active.userId }, active.id, null),
+    service.syncTransactions({ userId: active.userId }, active.id, 'sandbox'),
     OpenBankingConfigurationError
   );
   assert.equal(providerCalls, 0);
@@ -905,6 +1220,7 @@ test('Transactions consent accepts the canonical scope plus extras without expan
       {
         providerName: 'plaid',
         connectionId: stored.id,
+        connectionEnvironment: 'sandbox',
         intent: 'transactions-consent',
       }
     );
@@ -921,6 +1237,7 @@ test('Transactions consent accepts the canonical scope plus extras without expan
       {
         providerName: 'plaid',
         connectionId: stored.id,
+        connectionEnvironment: 'sandbox',
         intent: 'transactions-consent',
       }
     );
@@ -932,7 +1249,7 @@ test('Transactions consent accepts the canonical scope plus extras without expan
         selectedAccountIds: [...stored.selectedAccountIds, extraProviderAccount.account_id],
       }
     );
-    const retained = await store.loadOwned(stored.userId, stored.id);
+    const retained = await store.loadOwned(recordScope(stored));
 
     assert.equal(exactSession.intent, 'transactions-consent');
     assert.equal(exactSession.mode, 'update');
@@ -944,7 +1261,7 @@ test('Transactions consent accepts the canonical scope plus extras without expan
       intent: 'transactions-consent',
     });
     assert.equal(exchangeCalls, 0);
-    assert.equal((await store.list()).length, 1);
+    assert.equal((await store.list('plaid', 'sandbox')).length, 1);
     assert.equal(retained?.id, stored.id);
     assert.equal(retained?.accessToken, stored.accessToken);
     assert.equal(retained?.itemId, stored.itemId);
@@ -1021,6 +1338,7 @@ test('Transactions consent fails closed when an existing provider account is mis
       {
         providerName: 'plaid',
         connectionId: stored.id,
+        connectionEnvironment: 'sandbox',
         intent: 'transactions-consent',
       }
     );
@@ -1036,7 +1354,7 @@ test('Transactions consent fails closed when an existing provider account is mis
       OpenBankingAccountScopeError
     );
 
-    const retained = await store.loadOwned(stored.userId, stored.id);
+    const retained = await store.loadOwned(recordScope(stored));
     assert.equal(providerReads, 0);
     assert.deepEqual(retained, stored);
   });
@@ -1062,6 +1380,7 @@ test('Transactions consent verifies the canonical scope against provider balance
       {
         providerName: 'plaid',
         connectionId: stored.id,
+        connectionEnvironment: 'sandbox',
         intent: 'transactions-consent',
       }
     );
@@ -1076,7 +1395,7 @@ test('Transactions consent verifies the canonical scope against provider balance
       ),
       OpenBankingAccountScopeError
     );
-    assert.deepEqual(await store.loadOwned(stored.userId, stored.id), stored);
+    assert.deepEqual(await store.loadOwned(recordScope(stored)), stored);
   });
 });
 
@@ -1096,7 +1415,12 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
     await assert.rejects(
       service.createConnectionSession(
         { userId: 'owner-b' },
-        { providerName: 'plaid', connectionId: active.id, intent: 'transactions-consent' }
+        {
+          providerName: 'plaid',
+          connectionId: active.id,
+          connectionEnvironment: 'sandbox',
+          intent: 'transactions-consent',
+        }
       ),
       OpenBankingConnectionOwnershipError
     );
@@ -1117,6 +1441,7 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
         {
           providerName: 'plaid',
           connectionId: disconnected.id,
+          connectionEnvironment: 'sandbox',
           intent: 'transactions-consent',
         }
       ),
@@ -1132,9 +1457,14 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
       await assert.rejects(
         service.createConnectionSession(
           { userId: active.userId },
-          { providerName: 'plaid', connectionId: active.id, intent: 'transactions-consent' }
+          {
+            providerName: 'plaid',
+            connectionId: active.id,
+            connectionEnvironment: 'production',
+            intent: 'transactions-consent',
+          }
         ),
-        OpenBankingConfigurationError
+        OpenBankingEnvironmentMismatchError
       );
     } finally {
       process.env.PLAID_ENV = 'sandbox';
@@ -1148,6 +1478,7 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
 
 test('sanitized additional-consent errors remain actionable without provider identifiers', async () => {
   const handlers = new Map<string, (request: IncomingMessage, response: TestResponse) => Promise<void>>();
+  let syncCalls = 0;
   const plugin = brokerApiPlugin({
     openBankingAuthenticator: {
       async authenticate() {
@@ -1156,6 +1487,7 @@ test('sanitized additional-consent errors remain actionable without provider ide
     },
     openBankingService: {
       async syncTransactions() {
+        syncCalls += 1;
         throw new PlaidProviderError(
           'raw provider message must not escape',
           'ADDITIONAL_CONSENT_REQUIRED',
@@ -1173,7 +1505,35 @@ test('sanitized additional-consent errors remain actionable without provider ide
       },
     },
   });
-  const request = Readable.from([JSON.stringify({ connectionId: 'connection-safe' })]) as unknown as IncomingMessage;
+  const cursorRequest = Readable.from([JSON.stringify({
+    connectionId: 'connection-safe',
+    connectionEnvironment: 'sandbox',
+    cursor: 'browser-controlled-cursor',
+  })]) as unknown as IncomingMessage;
+  Object.assign(cursorRequest, {
+    method: 'POST',
+    headers: {
+      origin: 'http://localhost:5173',
+      host: 'localhost:5173',
+      'content-type': 'application/json',
+    },
+    socket: { remoteAddress: '127.0.0.1' },
+  });
+  const cursorResponse: TestResponse = {
+    statusCode: 0,
+    body: '',
+    setHeader() {},
+    end(value) { this.body = value ?? ''; },
+  };
+  await handlers.get('/api/open-banking/transactions/sync')!(cursorRequest, cursorResponse);
+  assert.equal(cursorResponse.statusCode, 400);
+  assert.equal(syncCalls, 0);
+  assert.equal(cursorResponse.body.includes('browser-controlled-cursor'), false);
+
+  const request = Readable.from([JSON.stringify({
+    connectionId: 'connection-safe',
+    connectionEnvironment: 'sandbox',
+  })]) as unknown as IncomingMessage;
   Object.assign(request, {
     method: 'POST',
     headers: {
@@ -1199,6 +1559,7 @@ test('sanitized additional-consent errors remain actionable without provider ide
 
   const payload = JSON.parse(response.body) as Record<string, unknown>;
   assert.equal(response.statusCode, 502);
+  assert.equal(syncCalls, 1);
   assert.equal(payload.error, 'Transaction access requires additional bank consent.');
   assert.deepEqual(payload.providerError, {
     errorType: 'INVALID_INPUT',
@@ -1448,16 +1809,71 @@ test('another user cannot refresh or disconnect a connection by ID', async (cont
   const service = makeService(store, gateway);
 
   await assert.rejects(
-    service.refreshConnection({ userId: 'owner-b' }, 'connection-santander-1'),
+    service.refreshConnection({ userId: 'owner-b' }, 'connection-santander-1', 'sandbox'),
     OpenBankingConnectionOwnershipError
   );
   await assert.rejects(
-    service.disconnectConnection({ userId: 'owner-b' }, 'connection-santander-1'),
+    service.disconnectConnection({ userId: 'owner-b' }, 'connection-santander-1', 'sandbox'),
     OpenBankingConnectionOwnershipError
   );
   assert.equal(balanceCalls, 0);
   assert.equal(removeCalls, 0);
-  assert.ok(await store.loadOwned('owner-a', 'connection-santander-1'));
+  assert.ok(await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1')));
+});
+
+test('refresh, reauthentication, disconnect, and delete reject a record from another environment before Plaid', async (context) => {
+  const { store } = await createStoreFixture(context, 'sandbox');
+  const active = storedConnection();
+  await store.save(active);
+  let providerCalls = 0;
+  const service = makeService(store, makeGateway({
+    async createLinkToken() {
+      providerCalls += 1;
+      return { linkToken: 'unexpected', mode: 'update' };
+    },
+    async fetchBalances() {
+      providerCalls += 1;
+      return { accounts: [plaidAccount] };
+    },
+    async removeItem() {
+      providerCalls += 1;
+      return { removed: true };
+    },
+  }));
+
+  process.env.PLAID_ENV = 'production';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  try {
+    await assert.rejects(
+      service.refreshConnection({ userId: active.userId }, active.id, 'production'),
+      OpenBankingEnvironmentMismatchError
+    );
+    await assert.rejects(
+      service.createConnectionSession(
+        { userId: active.userId },
+        {
+          providerName: 'plaid',
+          connectionId: active.id,
+          connectionEnvironment: 'production',
+        }
+      ),
+      OpenBankingEnvironmentMismatchError
+    );
+    await assert.rejects(
+      service.disconnectConnection({ userId: active.userId }, active.id, 'production'),
+      OpenBankingEnvironmentMismatchError
+    );
+    await assert.rejects(
+      service.deleteDisconnectedConnection({ userId: active.userId }, active.id, 'production'),
+      OpenBankingEnvironmentMismatchError
+    );
+  } finally {
+    process.env.PLAID_ENV = 'sandbox';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+  }
+
+  assert.equal(providerCalls, 0);
+  assert.equal((await store.loadOwned(recordScope(active)))?.environment, 'sandbox');
 });
 
 test('Link completion uses provider institution metadata and returns no access token', async (context) => {
@@ -1577,7 +1993,7 @@ test('Production rejects non-Santander Link completion and removes its Item', as
       OpenBankingConfigurationError
     );
     assert.equal(removeCalls, 1);
-    assert.deepEqual(await store.list(), []);
+    assert.deepEqual(await store.list('plaid', 'sandbox'), []);
   } finally {
     process.env.PLAID_ENV = 'sandbox';
     process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
@@ -1639,9 +2055,9 @@ test('connect then disconnect revokes the Plaid Item and retains owner-scoped au
     { sessionId: session.sessionId, publicToken: 'public-token' }
   );
 
-  await service.disconnectConnection({ userId: 'owner-a' }, connected.connection.id);
+  await service.disconnectConnection({ userId: 'owner-a' }, connected.connection.id, 'sandbox');
 
-  const retained = await store.loadOwned('owner-a', connected.connection.id);
+  const retained = await store.loadOwned(sandboxScope('owner-a', connected.connection.id));
   assert.deepEqual(removedTokens, ['access-from-exchange']);
   assert.equal(retained?.providerItemStatus, 'disconnected');
   assert.equal(retained?.accessToken, null);
@@ -1666,11 +2082,15 @@ test('a revoked provider Item cannot create an update-mode Link session', async 
       return { linkToken: accessToken ? 'link-update' : 'link-create', mode: accessToken ? 'update' : 'create' };
     },
   }));
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
 
   const session = await service.createConnectionSession(
     { userId: 'owner-a' },
-    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+    {
+      providerName: 'plaid',
+      connectionId: 'connection-santander-1',
+      connectionEnvironment: 'sandbox',
+    }
   );
 
   assert.equal(session.mode, 'create');
@@ -1688,17 +2108,21 @@ test('connect again uses standard Link and rebinds the new Item to the logical c
       return { access_token: 'access-reconnected', item_id: 'item-reconnected' };
     },
   }));
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
   const session = await service.createConnectionSession(
     { userId: 'owner-a' },
-    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+    {
+      providerName: 'plaid',
+      connectionId: 'connection-santander-1',
+      connectionEnvironment: 'sandbox',
+    }
   );
 
   const result = await service.completeConnection(
     { userId: 'owner-a' },
     { sessionId: session.sessionId, publicToken: 'public-reconnected' }
   );
-  const rebound = await store.loadOwned('owner-a', 'connection-santander-1');
+  const rebound = await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1'));
 
   assert.equal(session.mode, 'create');
   assert.deepEqual(exchangedPublicTokens, ['public-reconnected']);
@@ -1726,10 +2150,14 @@ test('connect again refuses a different institution before changing logical iden
       return { removed: true };
     },
   }));
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
   const session = await service.createConnectionSession(
     { userId: 'owner-a' },
-    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+    {
+      providerName: 'plaid',
+      connectionId: 'connection-santander-1',
+      connectionEnvironment: 'sandbox',
+    }
   );
 
   await assert.rejects(
@@ -1740,7 +2168,7 @@ test('connect again refuses a different institution before changing logical iden
     OpenBankingConnectionStateError
   );
 
-  const retained = await store.loadOwned('owner-a', 'connection-santander-1');
+  const retained = await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1'));
   assert.deepEqual(removedTokens, [
     'access-production-secret-value',
     'access-from-exchange',
@@ -1778,10 +2206,14 @@ test('connect again never reuses the revoked access token', async (context) => {
     },
   }));
 
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
   const session = await service.createConnectionSession(
     { userId: 'owner-a' },
-    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+    {
+      providerName: 'plaid',
+      connectionId: 'connection-santander-1',
+      connectionEnvironment: 'sandbox',
+    }
   );
   await service.completeConnection(
     { userId: 'owner-a' },
@@ -1805,10 +2237,10 @@ test('repeated disconnect is idempotent and does not revoke the same Item twice'
     },
   }));
 
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
 
-  const retained = await store.loadOwned('owner-a', 'connection-santander-1');
+  const retained = await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1'));
   assert.equal(removeCalls, 1);
   assert.equal(retained?.providerItemStatus, 'disconnected');
   assert.equal(retained?.revokedItems.length, 1);
@@ -1820,20 +2252,21 @@ test('only a disconnected owner-scoped provider record can be deleted', async (c
   const service = makeService(store);
 
   await assert.rejects(
-    service.deleteDisconnectedConnection({ userId: 'owner-a' }, 'connection-santander-1'),
+    service.deleteDisconnectedConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox'),
     OpenBankingConnectionStateError
   );
-  assert.ok(await store.loadOwned('owner-a', 'connection-santander-1'));
+  assert.ok(await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1')));
 
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
   assert.deepEqual(
-    await service.deleteDisconnectedConnection({ userId: 'owner-b' }, 'connection-santander-1'),
+    await service.deleteDisconnectedConnection({ userId: 'owner-b' }, 'connection-santander-1', 'sandbox'),
     { ok: true, connectionId: 'connection-santander-1', deleted: false }
   );
-  assert.ok(await store.loadOwned('owner-a', 'connection-santander-1'));
+  assert.ok(await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1')));
   const result = await service.deleteDisconnectedConnection(
     { userId: 'owner-a' },
-    'connection-santander-1'
+    'connection-santander-1',
+    'sandbox'
   );
 
   assert.deepEqual(result, {
@@ -1841,7 +2274,7 @@ test('only a disconnected owner-scoped provider record can be deleted', async (c
     connectionId: 'connection-santander-1',
     deleted: true,
   });
-  assert.equal(await store.loadOwned('owner-a', 'connection-santander-1'), null);
+  assert.equal(await store.loadOwned(sandboxScope('owner-a', 'connection-santander-1')), null);
 });
 
 test('deleting a missing disconnected provider record is idempotent for pre-fix connections', async (context) => {
@@ -1850,7 +2283,8 @@ test('deleting a missing disconnected provider record is idempotent for pre-fix 
 
   const result = await service.deleteDisconnectedConnection(
     { userId: 'owner-a' },
-    'connection-pre-fix'
+    'connection-pre-fix',
+    'sandbox'
   );
 
   assert.deepEqual(result, {
@@ -1870,10 +2304,10 @@ test('refresh is blocked while disconnected without calling Plaid', async (conte
       return { accounts: [plaidAccount], item: { institution_id: 'ins_65' } };
     },
   }));
-  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1');
+  await service.disconnectConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox');
 
   await assert.rejects(
-    service.refreshConnection({ userId: 'owner-a' }, 'connection-santander-1'),
+    service.refreshConnection({ userId: 'owner-a' }, 'connection-santander-1', 'sandbox'),
     OpenBankingConnectionStateError
   );
   assert.equal(balanceCalls, 0);
@@ -1896,7 +2330,11 @@ test('live Item reauthentication uses update mode, preserves connection ID, and 
   }));
   const session = await service.createConnectionSession(
     { userId: 'owner-a' },
-    { providerName: 'plaid', connectionId: 'connection-santander-1' }
+    {
+      providerName: 'plaid',
+      connectionId: 'connection-santander-1',
+      connectionEnvironment: 'sandbox',
+    }
   );
   const result = await service.completeConnection(
     { userId: 'owner-a' },
@@ -1907,7 +2345,7 @@ test('live Item reauthentication uses update mode, preserves connection ID, and 
   assert.equal(updateAccessToken, 'access-production-secret-value');
   assert.equal(exchangeCalls, 0);
   assert.equal(result.connection.id, 'connection-santander-1');
-  assert.equal((await store.list()).length, 1);
+  assert.equal((await store.list('plaid', 'sandbox')).length, 1);
 
   const existingAccount = createLinkedCashAccount({
     id: 'canonical-cash-account',
