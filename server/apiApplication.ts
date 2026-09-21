@@ -39,6 +39,7 @@ import {
 import {
   OpenBankingAccountScopeError,
   OpenBankingConnectionStateError,
+  OpenBankingOAuthStateError,
   createOpenBankingService,
   type OpenBankingService,
 } from './openBankingService';
@@ -59,7 +60,10 @@ import {
   ServerAuthError,
   type ServerAuthService,
 } from './serverAuth';
-import type { OperationalStores } from './operationalStore';
+import {
+  createFileOAuthRecoveryStore,
+  type OperationalStores,
+} from './operationalStore';
 
 const json = (response: ServerResponse, statusCode: number, payload: unknown) => {
   response.statusCode = statusCode;
@@ -154,6 +158,10 @@ interface OpenBankingCompleteBody {
   sessionId?: string;
   publicToken?: string;
   selectedAccountIds?: unknown;
+}
+
+interface OpenBankingOAuthResumeBody {
+  receivedRedirectUri?: string;
 }
 
 const parseConnectionEnvironment = (value: unknown): PlaidEnvironment | null => {
@@ -410,6 +418,13 @@ const jsonOpenBankingError = (
     });
     return;
   }
+  if (error instanceof OpenBankingOAuthStateError) {
+    json(response, error.code === 'OPEN_BANKING_OAUTH_STATE_CONSUMED' ? 409 : 400, {
+      error: 'The bank sign-in return cannot be resumed safely.',
+      code: error.code,
+    });
+    return;
+  }
   if (error instanceof OpenBankingLinkSessionError) {
     json(response, 400, {
       error: 'Bank connection session is invalid or expired.',
@@ -529,6 +544,21 @@ const handleCompleteOpenBankingConnection = async (
   json(response, 200, result);
 };
 
+const handleResumeOpenBankingOAuth = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  service: OpenBankingService,
+  authenticator: OpenBankingRequestAuthenticator
+) => {
+  assertSameOriginRequest(request);
+  assertJsonRequest(request);
+  const principal = await authenticator.authenticate(request);
+  const body = await readJsonBody<OpenBankingOAuthResumeBody>(request, 16 * 1024);
+  json(response, 200, await service.resumeOAuth(principal, {
+    receivedRedirectUri: body.receivedRedirectUri,
+  }));
+};
+
 const handleRefreshOpenBankingConnection = async (
   request: IncomingMessage,
   response: ServerResponse,
@@ -634,6 +664,9 @@ const createDefaultOpenBankingService = (stores?: OperationalStores) => createOp
   linkSessions: stores?.linkSessions ?? createFileOpenBankingLinkSessionStore({
     filePath: path.resolve(process.cwd(), '.data', 'open-banking-link-sessions.json'),
   }),
+  oauthRecovery: stores?.oauthRecovery ?? createFileOAuthRecoveryStore(
+    path.resolve(process.cwd(), '.data', 'open-banking-oauth-recovery.json')
+  ),
   plaid: {
     createLinkToken: createPlaidLinkToken,
     exchangePublicToken: exchangePlaidPublicToken,
@@ -730,6 +763,9 @@ export const createBrokerApiApplication = (
         request, response, openBankingService, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/complete', 'POST', 'connection-complete',
       (request, response) => handleCompleteOpenBankingConnection(
+        request, response, openBankingService, openBankingAuthenticator)),
+    bankingRoute('/api/open-banking/oauth/resume', 'POST', 'oauth-resume',
+      (request, response) => handleResumeOpenBankingOAuth(
         request, response, openBankingService, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/refresh', 'POST', 'connection-refresh',
       (request, response) => handleRefreshOpenBankingConnection(

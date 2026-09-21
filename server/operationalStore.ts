@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { PlaidEnvironment } from '../src/common/types';
 import {
   createFileOpenBankingLinkSessionStore,
+  type OpenBankingLinkSessionIntent,
   type OpenBankingLinkSessionStore,
 } from './openBankingLinkSessions';
 import {
@@ -36,7 +37,15 @@ export interface OAuthRecoveryRecord {
   ownerUserId: string;
   providerName: 'plaid';
   environment: PlaidEnvironment;
+  intent: OpenBankingLinkSessionIntent;
   connectionId: string | null;
+  linkSessionId: string;
+  linkToken: string;
+  redirectUri: string;
+  providerOAuthStateId: string | null;
+  receivedRedirectUri: string | null;
+  callbackReceivedAt: string | null;
+  completedConnectionId: string | null;
   createdAt: string;
   expiresAt: string;
   consumedAt: string | null;
@@ -44,16 +53,39 @@ export interface OAuthRecoveryRecord {
 
 export interface OAuthRecoveryStore {
   save(record: OAuthRecoveryRecord): void;
+  loadOwned(input: {
+    id: string;
+    ownerUserId: string;
+    environment: PlaidEnvironment;
+  }): OAuthRecoveryRecord | null;
+  loadByLinkSessionOwned(input: {
+    linkSessionId: string;
+    ownerUserId: string;
+    environment: PlaidEnvironment;
+  }): OAuthRecoveryRecord | null;
+  recordCallbackOwned(input: {
+    id: string;
+    ownerUserId: string;
+    environment: PlaidEnvironment;
+    providerOAuthStateId: string;
+    receivedRedirectUri: string;
+    now: Date;
+  }): OAuthRecoveryRecord | null;
   consumeOwned(input: {
     id: string;
     ownerUserId: string;
     environment: PlaidEnvironment;
+    completedConnectionId: string | null;
     now: Date;
   }): OAuthRecoveryRecord | null;
   listRecoverableOwned(input: {
     ownerUserId: string;
     environment: PlaidEnvironment;
     now: Date;
+  }): OAuthRecoveryRecord[];
+  listOwned(input: {
+    ownerUserId: string;
+    environment: PlaidEnvironment;
   }): OAuthRecoveryRecord[];
 }
 
@@ -81,11 +113,90 @@ const isOAuthRecord = (value: unknown): value is OAuthRecoveryRecord => {
   return typeof record.id === 'string' && typeof record.ownerUserId === 'string' &&
     record.providerName === 'plaid' &&
     (record.environment === 'sandbox' || record.environment === 'production') &&
+    (record.intent === 'connect' || record.intent === 'reauthentication' ||
+      record.intent === 'transactions-consent') &&
     (record.connectionId === null || typeof record.connectionId === 'string') &&
+    typeof record.linkSessionId === 'string' && record.linkSessionId.length > 0 &&
+    typeof record.linkToken === 'string' && record.linkToken.length > 0 &&
+    typeof record.redirectUri === 'string' && record.redirectUri.length > 0 &&
+    (record.providerOAuthStateId === null || typeof record.providerOAuthStateId === 'string') &&
+    (record.receivedRedirectUri === null || typeof record.receivedRedirectUri === 'string') &&
+    (record.callbackReceivedAt === null ||
+      (typeof record.callbackReceivedAt === 'string' &&
+        Number.isFinite(Date.parse(record.callbackReceivedAt)))) &&
+    (record.completedConnectionId === null || typeof record.completedConnectionId === 'string') &&
     typeof record.createdAt === 'string' && Number.isFinite(Date.parse(record.createdAt)) &&
     typeof record.expiresAt === 'string' && Number.isFinite(Date.parse(record.expiresAt)) &&
     (record.consumedAt === null ||
       (typeof record.consumedAt === 'string' && Number.isFinite(Date.parse(record.consumedAt))));
+};
+
+export const createMemoryOAuthRecoveryStore = (): OAuthRecoveryStore => {
+  const records = new Map<string, OAuthRecoveryRecord>();
+  return {
+    save(record) {
+      if (!isOAuthRecord(record)) {
+        throw new OperationalStoreConfigurationError('OAuth recovery record is invalid.');
+      }
+      records.set(record.id, { ...record });
+    },
+    loadOwned(input) {
+      const record = records.get(input.id);
+      return record?.ownerUserId === input.ownerUserId &&
+        record.environment === input.environment ? { ...record } : null;
+    },
+    loadByLinkSessionOwned(input) {
+      const matching = [...records.values()].filter((candidate) =>
+        candidate.linkSessionId === input.linkSessionId &&
+        candidate.ownerUserId === input.ownerUserId &&
+        candidate.environment === input.environment
+      );
+      const record = matching.find((candidate) => candidate.consumedAt === null) ?? matching[0];
+      return record ? { ...record } : null;
+    },
+    recordCallbackOwned(input) {
+      const record = records.get(input.id);
+      if (!record || record.ownerUserId !== input.ownerUserId ||
+          record.environment !== input.environment || record.consumedAt !== null ||
+          Date.parse(record.expiresAt) <= input.now.getTime() ||
+          (record.providerOAuthStateId !== null &&
+            record.providerOAuthStateId !== input.providerOAuthStateId) ||
+          (record.receivedRedirectUri !== null &&
+            record.receivedRedirectUri !== input.receivedRedirectUri)) return null;
+      const updated = {
+        ...record,
+        providerOAuthStateId: input.providerOAuthStateId,
+        receivedRedirectUri: input.receivedRedirectUri,
+        callbackReceivedAt: record.callbackReceivedAt ?? input.now.toISOString(),
+      };
+      records.set(updated.id, updated);
+      return { ...updated };
+    },
+    consumeOwned(input) {
+      const record = records.get(input.id);
+      if (!record || record.ownerUserId !== input.ownerUserId ||
+          record.environment !== input.environment || record.consumedAt !== null ||
+          Date.parse(record.expiresAt) <= input.now.getTime()) return null;
+      const consumed = {
+        ...record,
+        consumedAt: input.now.toISOString(),
+        completedConnectionId: input.completedConnectionId,
+      };
+      records.set(consumed.id, consumed);
+      return { ...consumed };
+    },
+    listRecoverableOwned(input) {
+      return [...records.values()].filter((record) =>
+        record.ownerUserId === input.ownerUserId && record.environment === input.environment &&
+        record.consumedAt === null && Date.parse(record.expiresAt) > input.now.getTime()
+      ).map((record) => ({ ...record }));
+    },
+    listOwned(input) {
+      return [...records.values()].filter((record) =>
+        record.ownerUserId === input.ownerUserId && record.environment === input.environment
+      ).map((record) => ({ ...record }));
+    },
+  };
 };
 
 export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecoveryStore => {
@@ -123,6 +234,42 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
       const records = readRecords();
       writeRecords([...records.filter((candidate) => candidate.id !== record.id), record]);
     },
+    loadOwned(input) {
+      return readRecords().find((record) =>
+        record.id === input.id && record.ownerUserId === input.ownerUserId &&
+        record.environment === input.environment
+      ) ?? null;
+    },
+    loadByLinkSessionOwned(input) {
+      const matching = readRecords().filter((record) =>
+        record.linkSessionId === input.linkSessionId &&
+        record.ownerUserId === input.ownerUserId &&
+        record.environment === input.environment
+      );
+      return matching.find((record) => record.consumedAt === null) ?? matching[0] ?? null;
+    },
+    recordCallbackOwned(input) {
+      const records = readRecords();
+      const index = records.findIndex((record) =>
+        record.id === input.id && record.ownerUserId === input.ownerUserId &&
+        record.environment === input.environment && record.consumedAt === null
+      );
+      if (index < 0 || Date.parse(records[index].expiresAt) <= input.now.getTime()) return null;
+      const existing = records[index];
+      if ((existing.providerOAuthStateId &&
+           existing.providerOAuthStateId !== input.providerOAuthStateId) ||
+          (existing.receivedRedirectUri &&
+           existing.receivedRedirectUri !== input.receivedRedirectUri)) return null;
+      const updated = {
+        ...existing,
+        providerOAuthStateId: input.providerOAuthStateId,
+        receivedRedirectUri: input.receivedRedirectUri,
+        callbackReceivedAt: existing.callbackReceivedAt ?? input.now.toISOString(),
+      };
+      records[index] = updated;
+      writeRecords(records);
+      return updated;
+    },
     consumeOwned(input) {
       const records = readRecords();
       const index = records.findIndex((record) =>
@@ -130,7 +277,11 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
         record.environment === input.environment && record.consumedAt === null
       );
       if (index < 0 || Date.parse(records[index].expiresAt) <= input.now.getTime()) return null;
-      const consumed = { ...records[index], consumedAt: input.now.toISOString() };
+      const consumed = {
+        ...records[index],
+        consumedAt: input.now.toISOString(),
+        completedConnectionId: input.completedConnectionId,
+      };
       records[index] = consumed;
       writeRecords(records);
       return consumed;
@@ -139,6 +290,11 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
       return readRecords().filter((record) =>
         record.ownerUserId === input.ownerUserId && record.environment === input.environment &&
         record.consumedAt === null && Date.parse(record.expiresAt) > input.now.getTime()
+      );
+    },
+    listOwned(input) {
+      return readRecords().filter((record) =>
+        record.ownerUserId === input.ownerUserId && record.environment === input.environment
       );
     },
   };

@@ -38,7 +38,9 @@ export interface OpenBankingLinkSessionStore {
     connectionId?: string | null;
     mode?: 'create' | 'update';
     intent?: OpenBankingLinkSessionIntent;
+    expiresAt?: string;
   }): OpenBankingLinkSession;
+  loadOwned(sessionId: string, ownerUserId: string): OpenBankingLinkSession | null;
   consume(sessionId: string, ownerUserId: string): OpenBankingLinkSession;
 }
 
@@ -65,6 +67,7 @@ const buildLinkSession = (
     connectionId?: string | null;
     mode?: 'create' | 'update';
     intent?: OpenBankingLinkSessionIntent;
+    expiresAt?: string;
   },
   now: () => Date,
   ttlMs: number,
@@ -72,6 +75,10 @@ const buildLinkSession = (
 ): OpenBankingLinkSession => {
   const createdAt = now();
   const resolvedMode = input.mode ?? (input.connectionId ? 'update' : 'create');
+  const requestedExpiry = input.expiresAt ? Date.parse(input.expiresAt) : Number.NaN;
+  const expiresAt = Number.isFinite(requestedExpiry) && requestedExpiry > createdAt.getTime()
+    ? new Date(requestedExpiry)
+    : new Date(createdAt.getTime() + ttlMs);
   return Object.freeze({
     id: createId(),
     ownerUserId: input.ownerUserId,
@@ -83,7 +90,7 @@ const buildLinkSession = (
     connectionId: input.connectionId ?? null,
     mode: resolvedMode,
     createdAt: createdAt.toISOString(),
-    expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
+    expiresAt: expiresAt.toISOString(),
   });
 };
 
@@ -106,6 +113,13 @@ export const createOpenBankingLinkSessionStore = (options: {
         createId
       );
       sessions.set(session.id, session);
+      return session;
+    },
+
+    loadOwned(sessionId, ownerUserId) {
+      const session = sessions.get(sessionId);
+      if (!session || session.ownerUserId !== ownerUserId ||
+          new Date(session.expiresAt).getTime() <= now().getTime()) return null;
       return session;
     },
 
@@ -172,6 +186,12 @@ export const createFileOpenBankingLinkSessionStore = (options: {
       const session = buildLinkSession(input, now, ttlMs, createId);
       sessions.push(session);
       writeSessions(sessions);
+      return session;
+    },
+    loadOwned(sessionId, ownerUserId) {
+      const session = readSessions().find((candidate) => candidate.id === sessionId);
+      if (!session || session.ownerUserId !== ownerUserId ||
+          new Date(session.expiresAt).getTime() <= now().getTime()) return null;
       return session;
     },
     consume(sessionId, ownerUserId) {

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { BankConnection, CashAccount, PlaidEnvironment } from '../src/common/types';
 import type { ProviderTransactionPage } from '../src/common/utils/bankTransactions';
 import type { AuthenticatedOpenBankingPrincipal } from './openBankingAuth';
@@ -6,6 +6,7 @@ import type {
   OpenBankingLinkSessionIntent,
   OpenBankingLinkSessionStore,
 } from './openBankingLinkSessions';
+import { OpenBankingLinkSessionError } from './openBankingLinkSessions';
 import {
   OpenBankingConfigurationError,
   inspectPlaidPilotConfiguration,
@@ -23,6 +24,11 @@ import {
   type StoredOpenBankingConnection,
 } from './openBankingStore';
 import type { PlaidAccount, PlaidAccountsBalanceResponse, PlaidItemGetResponse } from './plaid';
+import {
+  createMemoryOAuthRecoveryStore,
+  type OAuthRecoveryRecord,
+  type OAuthRecoveryStore,
+} from './operationalStore';
 
 export interface SanitizedProviderConnectionResult {
   connection: BankConnection;
@@ -37,6 +43,7 @@ export interface SanitizedOwnedProviderConnection {
   institutionId: string;
   status: StoredOpenBankingConnection['providerItemStatus'];
   recoveryRequired: boolean;
+  recoverySafe: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,11 +112,28 @@ export interface OpenBankingService {
     providerName: 'plaid';
     providerEnvironment: PlaidEnvironment;
     status: 'redirect-required';
+    createdAt: string;
     linkToken: string;
     expiration: string | null;
     mode: 'create' | 'update';
     connectionId: string | null;
     intent: OpenBankingLinkSessionIntent;
+  }>;
+  resumeOAuth(
+    principal: AuthenticatedOpenBankingPrincipal,
+    input: { receivedRedirectUri?: string }
+  ): Promise<{
+    sessionId: string;
+    providerName: 'plaid';
+    providerEnvironment: PlaidEnvironment;
+    status: 'redirect-required';
+    createdAt: string;
+    linkToken: string;
+    expiration: string;
+    mode: 'create' | 'update';
+    connectionId: string | null;
+    intent: OpenBankingLinkSessionIntent;
+    receivedRedirectUri: string;
   }>;
   completeConnection(
     principal: AuthenticatedOpenBankingPrincipal,
@@ -159,6 +183,21 @@ export class OpenBankingAccountScopeError extends Error {
   constructor() {
     super('Plaid account access changed. Review the connection before syncing transactions.');
     this.name = 'OpenBankingAccountScopeError';
+  }
+}
+
+export class OpenBankingOAuthStateError extends Error {
+  constructor(
+    readonly code:
+      | 'OPEN_BANKING_OAUTH_CALLBACK_INVALID'
+      | 'OPEN_BANKING_OAUTH_STATE_INVALID'
+      | 'OPEN_BANKING_OAUTH_STATE_EXPIRED'
+      | 'OPEN_BANKING_OAUTH_STATE_CONSUMED'
+      | 'OPEN_BANKING_OAUTH_STATE_MISMATCH',
+    message: string
+  ) {
+    super(message);
+    this.name = 'OpenBankingOAuthStateError';
   }
 }
 
@@ -245,6 +284,7 @@ const sanitizeOwnedProviderConnection = (
   recoveryRequired:
     stored.providerItemStatus === 'disconnect_requested' ||
     stored.providerItemStatus === 'provider_revoked',
+  recoverySafe: stored.providerItemStatus === 'active',
   createdAt: stored.createdAt,
   updatedAt: stored.updatedAt,
 });
@@ -252,12 +292,33 @@ const sanitizeOwnedProviderConnection = (
 export const createOpenBankingService = (dependencies: {
   store: OpenBankingConnectionStore;
   linkSessions: OpenBankingLinkSessionStore;
+  oauthRecovery?: OAuthRecoveryStore;
   plaid: PlaidPilotGateway;
   now?: () => Date;
   createConnectionId?: () => string;
+  createOAuthStateId?: () => string;
 }): OpenBankingService => {
   const now = dependencies.now ?? (() => new Date());
   const createConnectionId = dependencies.createConnectionId ?? (() => `connection-${randomUUID()}`);
+  const createOAuthStateId = dependencies.createOAuthStateId ??
+    (() => randomBytes(32).toString('base64url'));
+  const oauthRecovery = dependencies.oauthRecovery ?? createMemoryOAuthRecoveryStore();
+
+  const requireMatchingOAuthState = (
+    record: OAuthRecoveryRecord,
+    session: NonNullable<ReturnType<OpenBankingLinkSessionStore['loadOwned']>>
+  ) => {
+    if (
+      record.linkSessionId !== session.id || record.environment !== session.environment ||
+      record.intent !== session.intent || record.connectionId !== session.connectionId ||
+      record.ownerUserId !== session.ownerUserId
+    ) {
+      throw new OpenBankingOAuthStateError(
+        'OPEN_BANKING_OAUTH_STATE_MISMATCH',
+        'The OAuth recovery state does not match its Link session.'
+      );
+    }
+  };
 
   return {
     async getSantanderPreflight(_principal) {
@@ -334,6 +395,16 @@ export const createOpenBankingService = (dependencies: {
       if (input.providerName !== 'plaid') {
         throw new OpenBankingConfigurationError('Only Plaid is permitted for this banking flow.');
       }
+      if (oauthRecovery.listRecoverableOwned({
+        ownerUserId: principal.userId,
+        environment: configuration.environment,
+        now: now(),
+      }).length > 0) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_MISMATCH',
+          'Finish or allow the current bank sign-in session to expire before starting another.'
+        );
+      }
 
       const existingConnection = input.connectionId
         ? await requireOwnedConnection(
@@ -395,12 +466,39 @@ export const createOpenBankingService = (dependencies: {
         connectionId: existingConnection?.id ?? null,
         mode,
         intent,
+        expiresAt: linkResult.expiration,
+      });
+      const oauthStateId = createOAuthStateId();
+      const oauthExpiresAt = new Date(Math.min(
+        Date.parse(session.expiresAt),
+        linkResult.expiration ? Date.parse(linkResult.expiration) : Number.POSITIVE_INFINITY
+      ));
+      oauthRecovery.save({
+        id: oauthStateId,
+        ownerUserId: principal.userId,
+        providerName: 'plaid',
+        environment: configuration.environment,
+        intent,
+        connectionId: existingConnection?.id ?? null,
+        linkSessionId: session.id,
+        linkToken: linkResult.linkToken,
+        redirectUri: configuration.redirectUri,
+        providerOAuthStateId: null,
+        receivedRedirectUri: null,
+        callbackReceivedAt: null,
+        completedConnectionId: null,
+        createdAt: session.createdAt,
+        expiresAt: Number.isFinite(oauthExpiresAt.getTime())
+          ? oauthExpiresAt.toISOString()
+          : session.expiresAt,
+        consumedAt: null,
       });
       return {
         sessionId: session.id,
         providerName: 'plaid',
         providerEnvironment: configuration.environment,
         status: 'redirect-required',
+        createdAt: session.createdAt,
         linkToken: linkResult.linkToken,
         expiration: linkResult.expiration ?? null,
         mode,
@@ -409,11 +507,130 @@ export const createOpenBankingService = (dependencies: {
       };
     },
 
+    async resumeOAuth(principal, input) {
+      const configuration = readPlaidPilotConfiguration();
+      if (!input.receivedRedirectUri || input.receivedRedirectUri.length > 4096) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_CALLBACK_INVALID',
+          'The OAuth callback URL is invalid.'
+        );
+      }
+      let received: URL;
+      let configured: URL;
+      try {
+        received = new URL(input.receivedRedirectUri);
+        configured = new URL(configuration.redirectUri);
+      } catch {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_CALLBACK_INVALID',
+          'The OAuth callback URL is invalid.'
+        );
+      }
+      const stateIds = received.searchParams.getAll('oauth_state_id');
+      if (
+        received.username || received.password || received.hash ||
+        received.origin !== configured.origin || received.pathname !== configured.pathname ||
+        stateIds.length !== 1 || !/^[A-Za-z0-9_-]{16,256}$/.test(stateIds[0])
+      ) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_CALLBACK_INVALID',
+          'The OAuth callback URL is invalid.'
+        );
+      }
+      const candidates = oauthRecovery.listOwned({
+        ownerUserId: principal.userId,
+        environment: configuration.environment,
+      });
+      const matchingCandidates = candidates.filter((candidate) =>
+        candidate.providerOAuthStateId === stateIds[0] ||
+        (candidate.providerOAuthStateId === null && candidate.receivedRedirectUri === null &&
+          candidate.consumedAt === null)
+      );
+      if (matchingCandidates.length !== 1) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_INVALID',
+          'The OAuth state is unavailable for this authenticated owner.'
+        );
+      }
+      const record = matchingCandidates[0];
+      if (record.consumedAt) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_CONSUMED',
+          'The OAuth state was already completed.'
+        );
+      }
+      if (Date.parse(record.expiresAt) <= now().getTime()) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_EXPIRED',
+          'The OAuth state expired.'
+        );
+      }
+      if (record.redirectUri !== configuration.redirectUri) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_MISMATCH',
+          'The OAuth redirect configuration changed.'
+        );
+      }
+      const session = dependencies.linkSessions.loadOwned(record.linkSessionId, principal.userId);
+      if (!session) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_EXPIRED',
+          'The Link session expired.'
+        );
+      }
+      requireMatchingOAuthState(record, session);
+      const recorded = oauthRecovery.recordCallbackOwned({
+        id: record.id,
+        ownerUserId: principal.userId,
+        environment: configuration.environment,
+        providerOAuthStateId: stateIds[0],
+        receivedRedirectUri: received.href,
+        now: now(),
+      });
+      if (!recorded) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_MISMATCH',
+          'The OAuth callback cannot be resumed.'
+        );
+      }
+      return {
+        sessionId: session.id,
+        providerName: 'plaid',
+        providerEnvironment: configuration.environment,
+        status: 'redirect-required',
+        createdAt: session.createdAt,
+        linkToken: recorded.linkToken,
+        expiration: recorded.expiresAt,
+        mode: session.mode,
+        connectionId: session.connectionId,
+        intent: session.intent,
+        receivedRedirectUri: recorded.receivedRedirectUri!,
+      };
+    },
+
     async completeConnection(principal, input) {
       const configuration = readPlaidPilotConfiguration();
       if (!input.sessionId) {
         throw new OpenBankingConfigurationError('A server-issued Link session is required.');
       }
+      const pendingSession = dependencies.linkSessions.loadOwned(input.sessionId, principal.userId);
+      if (!pendingSession) throw new OpenBankingLinkSessionError();
+      if (pendingSession.environment !== configuration.environment) {
+        dependencies.linkSessions.consume(input.sessionId, principal.userId);
+        throw new OpenBankingEnvironmentMismatchError();
+      }
+      const priorOAuthState = oauthRecovery.loadByLinkSessionOwned({
+        linkSessionId: input.sessionId,
+        ownerUserId: principal.userId,
+        environment: configuration.environment,
+      });
+      if (!priorOAuthState) {
+        throw new OpenBankingOAuthStateError(
+          'OPEN_BANKING_OAUTH_STATE_INVALID',
+          'The Link completion state is invalid or expired.'
+        );
+      }
+      requireMatchingOAuthState(priorOAuthState, pendingSession);
       const session = dependencies.linkSessions.consume(input.sessionId, principal.userId);
       if (session.environment !== configuration.environment) {
         throw new OpenBankingEnvironmentMismatchError();
@@ -466,6 +683,8 @@ export const createOpenBankingService = (dependencies: {
 
       let exchangedAccessToken: string | null = null;
       let exchangedItemId: string | null = null;
+      let providerRecordPersisted = false;
+      let persistedConnectionId: string | null = null;
       if (session.mode === 'create') {
         const exchanged = await dependencies.plaid.exchangePublicToken(input.publicToken!);
         exchangedAccessToken = exchanged.access_token;
@@ -563,18 +782,40 @@ export const createOpenBankingService = (dependencies: {
           createdAt: existingConnection?.createdAt ?? syncedAt,
           updatedAt: syncedAt,
         });
+        providerRecordPersisted = true;
+        persistedConnectionId = stored.id;
+        const completedOAuthState = oauthRecovery.consumeOwned({
+          id: priorOAuthState.id,
+          ownerUserId: principal.userId,
+          environment: configuration.environment,
+          completedConnectionId: stored.id,
+          now: now(),
+        });
+        if (!completedOAuthState) {
+          throw new OpenBankingOAuthStateError(
+            'OPEN_BANKING_OAUTH_STATE_INVALID',
+            'The OAuth completion state is invalid or expired.'
+          );
+        }
         return {
           connection: sanitizeConnection(stored, accounts, syncedAt),
           accounts,
         };
       } catch (error) {
-        if (session.mode === 'create' && exchangedAccessToken) {
+        if (session.mode === 'create' && exchangedAccessToken && !providerRecordPersisted) {
           try {
             await dependencies.plaid.removeItem(exchangedAccessToken);
           } catch {
             // The original validation/provider error remains authoritative.
           }
         }
+        oauthRecovery.consumeOwned({
+          id: priorOAuthState.id,
+          ownerUserId: principal.userId,
+          environment: configuration.environment,
+          completedConnectionId: persistedConnectionId,
+          now: now(),
+        });
         throw error;
       }
     },

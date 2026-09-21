@@ -46,6 +46,7 @@ declare global {
     Plaid?: {
       create: (config: {
         token: string;
+        receivedRedirectUri?: string;
         onSuccess: (
           publicToken: string,
           metadata: {
@@ -70,6 +71,7 @@ export interface ProviderConnectionSession {
   mode?: 'create' | 'update';
   connectionId?: string | null;
   intent?: OpenBankingLinkIntent;
+  receivedRedirectUri?: string;
 }
 
 export interface ProviderConnectionResult {
@@ -174,6 +176,18 @@ const jsonRequest = async <T>(url: string, body: Record<string, unknown>): Promi
   return payload;
 };
 
+const jsonGet = async <T>(url: string): Promise<T> => {
+  const response = await fetch(url);
+  const payload = (await response.json()) as T & { error?: string; code?: string };
+  if (!response.ok) {
+    throw new OpenBankingRequestError(
+      payload.error || 'Open banking request failed',
+      payload.code
+    );
+  }
+  return payload;
+};
+
 const loadPlaidScript = async () => {
   if (typeof window === 'undefined') {
     throw new Error('Plaid Link is only available in the browser.');
@@ -207,7 +221,7 @@ const loadPlaidScript = async () => {
   return window.Plaid;
 };
 
-export const launchPlaidLink = async (linkToken: string) => {
+export const launchPlaidLink = async (linkToken: string, receivedRedirectUri?: string) => {
   const Plaid = await loadPlaidScript();
 
   return new Promise<{
@@ -218,6 +232,7 @@ export const launchPlaidLink = async (linkToken: string) => {
   }>((resolve, reject) => {
     const handler = Plaid.create({
       token: linkToken,
+      ...(receivedRedirectUri ? { receivedRedirectUri } : {}),
       onSuccess: (publicToken, metadata) => {
         handler.destroy();
         resolve({
@@ -230,14 +245,23 @@ export const launchPlaidLink = async (linkToken: string) => {
       onExit: (error) => {
         handler.destroy();
         if (error?.error_code === 'INVALID_LINK_TOKEN') {
-          reject(new Error('The connection session expired. Please try again.'));
+          reject(new OpenBankingRequestError(
+            'The connection session expired. Please try again.',
+            'OPEN_BANKING_OAUTH_STATE_EXPIRED'
+          ));
           return;
         }
         if (error?.error_message) {
-          reject(new Error('The bank connection flow could not be completed.'));
+          reject(new OpenBankingRequestError(
+            'The bank connection flow could not be completed.',
+            'OPEN_BANKING_OAUTH_PROVIDER_FAILED'
+          ));
           return;
         }
-        reject(new Error('The bank connection flow was canceled.'));
+        reject(new OpenBankingRequestError(
+          'The bank connection flow was canceled.',
+          'OPEN_BANKING_OAUTH_CANCELLED'
+        ));
       },
     });
 
@@ -559,7 +583,10 @@ const plaidAdapter: ProviderAdapter = {
       throw new Error('Missing Plaid link token.');
     }
 
-    const linkResult = await launchPlaidLink(session.linkToken);
+    const linkResult = await launchPlaidLink(
+      session.linkToken,
+      session.receivedRedirectUri
+    );
     return jsonRequest<ProviderConnectionResult>(
       '/api/open-banking/connection/complete',
       buildPlaidConnectionCompletionPayload(session, linkResult)
@@ -617,6 +644,64 @@ const plaidAdapter: ProviderAdapter = {
       }
     );
   },
+};
+
+export interface SanitizedOwnedProviderConnection {
+  id: string;
+  providerName: 'plaid';
+  providerEnvironment: PlaidEnvironment;
+  institutionName: string;
+  institutionId: string;
+  status: 'active' | 'disconnect_requested' | 'provider_revoked' | 'disconnected';
+  recoveryRequired: boolean;
+  recoverySafe: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const resumePlaidOAuthReturn = async (): Promise<ProviderConnectionResult | null> => {
+  if (typeof window === 'undefined' || window.location.pathname !== '/oauth/plaid') return null;
+  const stateIds = new URLSearchParams(window.location.search).getAll('oauth_state_id');
+  if (stateIds.length !== 1) {
+    throw new OpenBankingRequestError(
+      'The bank sign-in return is invalid.',
+      'OPEN_BANKING_OAUTH_CALLBACK_INVALID'
+    );
+  }
+  const session = await jsonRequest<ProviderConnectionSession>(
+    '/api/open-banking/oauth/resume',
+    { receivedRedirectUri: window.location.href }
+  );
+  if (!session.linkToken || !session.receivedRedirectUri) {
+    throw new OpenBankingRequestError(
+      'The bank sign-in return is unavailable.',
+      'OPEN_BANKING_OAUTH_STATE_INVALID'
+    );
+  }
+  const result = await plaidAdapter.completeConnection(session, {
+    userId: '',
+    institutionName: '',
+  });
+  window.history.replaceState(null, '', '/');
+  return result;
+};
+
+export const recoverOwnedPlaidConnections = async (
+  localConnectionIds: ReadonlySet<string>
+): Promise<ProviderConnectionResult[]> => {
+  const { connections } = await jsonGet<{ connections: SanitizedOwnedProviderConnection[] }>(
+    '/api/open-banking/connections'
+  );
+  const recoverable = connections.filter((connection) =>
+    connection.recoverySafe && connection.status === 'active' &&
+    !localConnectionIds.has(connection.id)
+  );
+  return Promise.all(recoverable.map((connection) =>
+    jsonRequest<ProviderConnectionResult>('/api/open-banking/connection/refresh', {
+      connectionId: connection.id,
+      connectionEnvironment: connection.providerEnvironment,
+    })
+  ));
 };
 
 export const openBankingAdapters: Record<OpenBankingProviderName, ProviderAdapter> = {

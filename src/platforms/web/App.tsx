@@ -106,6 +106,12 @@ import { GALLERY_SAFE_MODE } from './utils/gallerySafeMode';
 import { APP_RECOVERY_MODE } from './utils/appRecoveryMode';
 import { migrateLegacyGalleryUrls } from './services/galleryMediaStore';
 import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from './services/portfolioPersistenceTrace';
+import {
+  OpenBankingRequestError,
+  recoverOwnedPlaidConnections,
+  resumePlaidOAuthReturn,
+} from './services/openBanking';
+import { applyRecoveredBankConnectionResults } from '../../common/utils/bankingConnectionOperations';
 
 const Layout = lazy(() => import('../web/components/Layout').then((module) => ({ default: module.Layout })));
 const AuthScreen = lazy(() =>
@@ -790,6 +796,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const [bankConnections, setBankConnections] = useState<BankConnection[]>(
     initialPortfolioData.bankConnections ?? []
   );
+  const [openBankingRecoveryNotice, setOpenBankingRecoveryNotice] = useState<string | null>(null);
+  const openBankingRecoveryStartedRef = useRef(false);
   const [bankTransactions, setBankTransactions] = useState<BankTransaction[]>(
     initialPortfolioData.bankTransactions ?? []
   );
@@ -1122,6 +1130,61 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
   const effectivePropertyExpenseRules = effectivePortfolio?.propertyExpenseRules ?? propertyExpenseRules;
   const effectiveExpenseObligations = effectivePortfolio?.expenseObligations ?? expenseObligations;
   const effectiveExpensePayments = effectivePortfolio?.expensePayments ?? expensePayments;
+  useEffect(() => {
+    if (!isBootSettled || appRecoveryMode || openBankingRecoveryStartedRef.current) return;
+    openBankingRecoveryStartedRef.current = true;
+    const recover = async () => {
+      const recoveredResults = [];
+      const isOAuthReturn = typeof window !== 'undefined' &&
+        window.location.pathname === '/oauth/plaid';
+      try {
+        const oauthResult = await resumePlaidOAuthReturn();
+        if (oauthResult) recoveredResults.push(oauthResult);
+      } catch (error) {
+        const code = error instanceof OpenBankingRequestError ? error.code : null;
+        if (
+          isOAuthReturn && typeof window !== 'undefined' &&
+          code !== 'OPEN_BANKING_OAUTH_CANCELLED' &&
+          code !== 'OPEN_BANKING_OAUTH_PROVIDER_FAILED'
+        ) {
+          window.history.replaceState(null, '', '/');
+        }
+        const messageKey = code === 'OPEN_BANKING_OAUTH_STATE_EXPIRED'
+          ? 'cashAccounts.oauthExpired'
+          : code === 'OPEN_BANKING_OAUTH_STATE_CONSUMED'
+          ? 'cashAccounts.oauthAlreadyCompleted'
+          : code === 'OPEN_BANKING_OAUTH_CANCELLED'
+          ? 'cashAccounts.oauthCancelled'
+          : code === 'OPEN_BANKING_OAUTH_STATE_INVALID' ||
+            code === 'OPEN_BANKING_OAUTH_STATE_MISMATCH'
+          ? 'cashAccounts.oauthOwnerMismatch'
+          : 'cashAccounts.oauthRecoveryFailed';
+        setOpenBankingRecoveryNotice(t(messageKey));
+      }
+
+      try {
+        const localIds = new Set([
+          ...bankConnections.map((connection) => connection.id),
+          ...recoveredResults.map((result) => result.connection.id),
+        ]);
+        recoveredResults.push(...await recoverOwnedPlaidConnections(localIds));
+        if (recoveredResults.length === 0) return;
+        const merged = applyRecoveredBankConnectionResults(
+          { cashAccounts, bankConnections },
+          recoveredResults
+        );
+        setCashAccounts(merged.cashAccounts);
+        setBankConnections(merged.bankConnections);
+        setOpenBankingRecoveryNotice(t('cashAccounts.connectionRecovered'));
+        setCurrentPage('cash-accounts');
+      } catch {
+        if (!openBankingRecoveryNotice) {
+          setOpenBankingRecoveryNotice(t('cashAccounts.oauthRecoveryFailed'));
+        }
+      }
+    };
+    void recover();
+  }, [appRecoveryMode, isBootSettled, user.id]);
   const syncedProperties = useMemo(
     () =>
       normalizeProperties(
@@ -2890,6 +2953,12 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     >
       <>
         {isPortfolioTransition && <div role="status" tabIndex={-1} ref={element => element?.focus()} onKeyDown={event => event.preventDefault()} className="fixed inset-0 z-[110] flex items-center justify-center bg-white/90 text-slate-900">{t('persistence.saving')}</div>}
+        {openBankingRecoveryNotice && (
+          <div role="status" className="fixed left-1/2 top-3 z-[105] flex max-w-xl -translate-x-1/2 items-center gap-3 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-lg">
+            <span>{openBankingRecoveryNotice}</span>
+            <button type="button" className="underline" onClick={() => setOpenBankingRecoveryNotice(null)}>{t('common.close')}</button>
+          </div>
+        )}
         <div role={persistenceStatus === 'error' ? 'alert' : 'status'} className="fixed bottom-3 right-3 z-[100] max-w-lg rounded-lg bg-white px-4 py-2 text-sm text-slate-900 shadow dark:bg-slate-800 dark:text-white">
           {persistenceStatus === 'error' ? t('persistence.error') : persistenceStatus === 'saving' ? t('persistence.saving') : t('persistence.saved')}
           {persistenceStatus === 'error' && <button className="ml-3 underline" onClick={() => { void persistence.save(currentPortfolioData).catch(() => undefined); }}>{t('persistence.retry')}</button>}

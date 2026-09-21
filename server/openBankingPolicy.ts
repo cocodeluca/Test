@@ -79,24 +79,23 @@ const isValidVaultKey = (value: string | undefined) => {
 
 const isSafeRedirectUri = (
   value: string | undefined,
-  plaidEnvironment: PlaidEnvironment | null
+  plaidEnvironment: PlaidEnvironment | null,
+  publicOrigin: string | undefined
 ) => {
   const normalized = value?.trim();
   if (!normalized) return false;
 
   try {
     const redirectUri = new URL(normalized);
-    const sandboxLocalhost =
-      plaidEnvironment === 'sandbox' &&
-      redirectUri.protocol === 'http:' &&
-      ['localhost', '127.0.0.1', '[::1]'].includes(redirectUri.hostname);
-    return (
-      (redirectUri.protocol === 'https:' || sandboxLocalhost) &&
-      !redirectUri.username &&
-      !redirectUri.password &&
-      !redirectUri.search &&
-      !redirectUri.hash
-    );
+    if (redirectUri.username || redirectUri.password || redirectUri.search ||
+        redirectUri.hash || redirectUri.pathname !== '/oauth/plaid') return false;
+    if (plaidEnvironment === 'sandbox') {
+      return redirectUri.href === 'http://localhost:5173/oauth/plaid';
+    }
+    if (plaidEnvironment !== 'production' || redirectUri.protocol !== 'https:') return false;
+    const normalizedPublicOrigin = publicOrigin?.trim();
+    if (!normalizedPublicOrigin) return true;
+    return redirectUri.origin === normalizedPublicOrigin;
   } catch {
     return false;
   }
@@ -129,7 +128,11 @@ export const inspectPlaidPilotConfiguration = (
     ? countryCodes.length > 0 && countryCodes.every((value) => /^[A-Z]{2}$/.test(value))
     : countryCodes.length === 1 && countryCodes[0] === SANTANDER_SPAIN_COUNTRY_CODE;
   const redirectUriConfigured = isConfigured(environment.PLAID_REDIRECT_URI);
-  const redirectUriSafe = isSafeRedirectUri(environment.PLAID_REDIRECT_URI, plaidEnvironment);
+  const redirectUriSafe = isSafeRedirectUri(
+    environment.PLAID_REDIRECT_URI,
+    plaidEnvironment,
+    environment.PUBLIC_ORIGIN
+  );
 
   if (!clientIdConfigured) issues.push('PLAID_CLIENT_ID_MISSING');
   if (!secretConfigured) issues.push('PLAID_SECRET_MISSING');

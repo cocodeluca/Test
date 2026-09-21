@@ -62,7 +62,7 @@ const withSandboxConfiguration = async (operation: () => Promise<void>) => {
     PLAID_ENV: 'sandbox',
     PLAID_PRODUCTS: 'auth',
     PLAID_COUNTRY_CODES: 'ES',
-    PLAID_REDIRECT_URI: 'http://localhost:5173/plaid-oauth',
+    PLAID_REDIRECT_URI: 'http://localhost:5173/oauth/plaid',
     OPEN_BANKING_VAULT_KEY: VAULT_KEY,
   });
   try {
@@ -106,6 +106,27 @@ test('standalone health endpoint is minimal and contains no sensitive state', as
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(body), { status: 'ready' });
   assert.doesNotMatch(body, /token|secret|environment|database|plaid/i);
+});
+
+test('standalone server serves the frontend shell for the Plaid OAuth callback', async (context) => {
+  const directory = await fixtureDirectory(context, 're-oauth-shell-');
+  const indexPath = path.join(directory, 'index.html');
+  await writeFile(indexPath, '<!doctype html><div id="root"></div>', 'utf8');
+  const application = createBrokerApiApplication({
+    authService: {} as ServerAuthService,
+    openBankingService: {} as OpenBankingService,
+    openBankingAuthenticator: {} as OpenBankingRequestAuthenticator,
+  });
+  const server = createStandaloneServer({ application, frontendIndexHtmlPath: indexPath });
+  context.after(() => server.close());
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const response = await fetch(
+    `http://127.0.0.1:${port}/oauth/plaid?oauth_state_id=provider-state`
+  );
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /id="root"/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
 test('trusted HTTPS proxy headers drive secure cookies without weakening canonical origin', () => {
@@ -312,7 +333,7 @@ test('Production startup rejects unsafe storage and keeps Transactions disabled'
     OPERATIONAL_STORE_MODULE: './production-store.mjs',
     PLAID_CLIENT_ID: 'configured', PLAID_SECRET: 'configured', PLAID_ENV: 'production',
     PLAID_PRODUCTS: 'auth', PLAID_COUNTRY_CODES: 'ES',
-    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',
     OPEN_BANKING_VAULT_KEY: VAULT_KEY,
   };
   assert.deepEqual(validateProductionServerEnvironment(productionEnvironment), {
@@ -320,6 +341,13 @@ test('Production startup rejects unsafe storage and keeps Transactions disabled'
   });
   assert.throws(
     () => validateProductionServerEnvironment({ ...productionEnvironment, OPERATIONAL_STORE_MODULE: '' }),
+    OperationalStoreConfigurationError
+  );
+  assert.throws(
+    () => validateProductionServerEnvironment({
+      ...productionEnvironment,
+      PLAID_REDIRECT_URI: 'https://other.example.com/oauth/plaid',
+    }),
     OperationalStoreConfigurationError
   );
   assert.throws(

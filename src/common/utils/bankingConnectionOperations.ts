@@ -78,6 +78,31 @@ export const applyBankConnectionAccountResult = (
   };
 };
 
+export const applyRecoveredBankConnectionResults = (
+  state: Pick<BankingConnectionOperationState, 'cashAccounts' | 'bankConnections'>,
+  results: Array<{ connection: BankConnection; accounts: CashAccount[] }>
+) => results.reduce(
+  (current, result) => {
+    const cashAccounts = upsertLinkedCashAccounts(current.cashAccounts, result.accounts);
+    const linkedAccountIds = result.accounts
+      .map((candidate) => {
+        const identity = getLinkedCashAccountIdentity(candidate);
+        return cashAccounts.find(
+          (account) => getLinkedCashAccountIdentity(account) === identity
+        )?.id;
+      })
+      .filter((id): id is string => Boolean(id));
+    return {
+      cashAccounts,
+      bankConnections: upsertConnection(current.bankConnections, {
+        ...result.connection,
+        linkedAccountIds,
+      }),
+    };
+  },
+  state
+);
+
 export const applyBankConnectionTransactionResult = (
   state: BankingConnectionOperationState,
   args: {

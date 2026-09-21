@@ -88,7 +88,7 @@ test.before(() => {
   process.env.PLAID_CLIENT_ID = 'test-client-id';
   process.env.PLAID_SECRET = 'test-secret';
   process.env.OPEN_BANKING_VAULT_KEY = TEST_MASTER_KEY;
-  process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+  process.env.PLAID_REDIRECT_URI = 'http://localhost:5173/oauth/plaid';
 });
 
 test.after(() => {
@@ -548,7 +548,7 @@ test('Link sessions bind environment and consume a mismatch before token exchang
   assert.equal(session.providerEnvironment, 'sandbox');
 
   process.env.PLAID_ENV = 'production';
-  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/oauth/plaid';
   try {
     await assert.rejects(
       service.completeConnection(
@@ -559,7 +559,7 @@ test('Link sessions bind environment and consume a mismatch before token exchang
     );
   } finally {
     process.env.PLAID_ENV = 'sandbox';
-    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:5173/oauth/plaid';
   }
   assert.equal(exchangeCalls, 0);
   await assert.rejects(
@@ -580,14 +580,24 @@ test('pilot configuration permits read-only Sandbox transactions while keeping P
     PLAID_CLIENT_ID: 'client-id',
     PLAID_SECRET: 'secret',
     OPEN_BANKING_VAULT_KEY: TEST_MASTER_KEY,
-    PLAID_REDIRECT_URI: 'http://localhost:8081/plaid-oauth',
+    PLAID_REDIRECT_URI: 'http://localhost:5173/oauth/plaid',
   };
   assert.deepEqual(readPlaidPilotConfiguration(validEnvironment), {
     environment: 'sandbox',
     products: ['auth'],
     countryCodes: ['ES'],
-    redirectUri: 'http://localhost:8081/plaid-oauth',
+    redirectUri: 'http://localhost:5173/oauth/plaid',
   });
+  for (const redirectUri of [
+    'http://127.0.0.1:5173/oauth/plaid',
+    'http://localhost:8081/oauth/plaid',
+    'http://localhost:5173/plaid-oauth',
+  ]) {
+    assert.throws(() => readPlaidPilotConfiguration({
+      ...validEnvironment,
+      PLAID_REDIRECT_URI: redirectUri,
+    }), OpenBankingConfigurationError);
+  }
   assert.throws(() => readPlaidPilotConfiguration({}), OpenBankingConfigurationError);
   assert.deepEqual(readPlaidPilotConfiguration({
     ...validEnvironment,
@@ -622,13 +632,13 @@ test('pilot configuration permits read-only Sandbox transactions while keeping P
     ...validEnvironment,
     PLAID_ENV: 'production',
     PLAID_PRODUCTS: 'auth,transactions',
-    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',
     PLAID_COUNTRY_CODES: 'ES',
   }), OpenBankingConfigurationError);
   assert.throws(() => readPlaidPilotConfiguration({
     ...validEnvironment,
     PLAID_ENV: 'production',
-    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',
     PLAID_COUNTRY_CODES: 'US,ES',
   }), OpenBankingConfigurationError);
 });
@@ -638,7 +648,7 @@ test('preflight configuration reports missing secrets without returning secret v
     PLAID_ENV: 'production',
     PLAID_PRODUCTS: 'auth',
     PLAID_COUNTRY_CODES: 'ES',
-    PLAID_REDIRECT_URI: 'https://portfolio.example.com/plaid-oauth',
+    PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',
   });
 
   assert.equal(status.ready, false);
@@ -658,13 +668,16 @@ test('OAuth redirect validation fails closed for unsafe production URLs', () => 
     PLAID_CLIENT_ID: 'client-id',
     PLAID_SECRET: 'secret',
     OPEN_BANKING_VAULT_KEY: TEST_MASTER_KEY,
+    PUBLIC_ORIGIN: 'https://portfolio.example.com',
   };
   for (const redirectUri of [
     undefined,
-    'http://portfolio.example.com/plaid-oauth',
-    'https://user:password@portfolio.example.com/plaid-oauth',
-    'https://portfolio.example.com/plaid-oauth?token=secret',
-    'https://portfolio.example.com/plaid-oauth#token',
+    'http://portfolio.example.com/oauth/plaid',
+    'https://user:password@portfolio.example.com/oauth/plaid',
+    'https://portfolio.example.com/oauth/plaid?token=secret',
+    'https://portfolio.example.com/oauth/plaid#token',
+    'https://portfolio.example.com/plaid-oauth',
+    'https://other.example.com/oauth/plaid',
   ]) {
     const status = inspectPlaidPilotConfiguration({
       ...base,
@@ -1452,7 +1465,7 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
     process.env.PLAID_ENV = 'production';
     process.env.PLAID_PRODUCTS = 'auth';
     process.env.PLAID_COUNTRY_CODES = 'ES';
-    process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+    process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/oauth/plaid';
     try {
       await assert.rejects(
         service.createConnectionSession(
@@ -1470,7 +1483,7 @@ test('Transactions consent rejects wrong owners, disconnected Items, and Product
       process.env.PLAID_ENV = 'sandbox';
       process.env.PLAID_PRODUCTS = 'auth,transactions';
       process.env.PLAID_COUNTRY_CODES = 'ES';
-      process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+      process.env.PLAID_REDIRECT_URI = 'http://localhost:5173/oauth/plaid';
     }
     assert.equal(linkCalls, 0);
   });
@@ -1784,6 +1797,55 @@ test('Santander preflight route requires a backend-authenticated owner', async (
   assert.equal(JSON.parse(response.body).code, 'OPEN_BANKING_AUTHENTICATION_REQUIRED');
 });
 
+test('OAuth resume route preserves recovery state when authentication is missing', async () => {
+  let resumeCalls = 0;
+  const handlers = new Map<string, (request: IncomingMessage, response: TestResponse) => Promise<void>>();
+  const plugin = brokerApiPlugin({
+    openBankingAuthenticator: unavailableOpenBankingAuthenticator,
+    openBankingService: {
+      async resumeOAuth() {
+        resumeCalls += 1;
+        throw new Error('must not be reached');
+      },
+    } as unknown as OpenBankingService,
+  });
+  (plugin.configureServer as (server: unknown) => void)({
+    middlewares: {
+      use(pathname: string, handler: (request: IncomingMessage, response: TestResponse) => Promise<void>) {
+        handlers.set(pathname, handler);
+      },
+    },
+  });
+  const request = Readable.from([JSON.stringify({
+    receivedRedirectUri: 'http://localhost:5173/oauth/plaid?oauth_state_id=state',
+  })]) as unknown as IncomingMessage;
+  Object.assign(request, {
+    method: 'POST',
+    headers: {
+      origin: 'http://localhost:5173',
+      host: 'localhost:5173',
+      'content-type': 'application/json',
+    },
+    socket: { remoteAddress: '127.0.0.1' },
+  });
+  const response: TestResponse = {
+    statusCode: 0,
+    body: '',
+    setHeader() {},
+    end(value) { this.body = value ?? ''; },
+  };
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    await handlers.get('/api/open-banking/oauth/resume')!(request, response);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.equal(response.statusCode, 401);
+  assert.equal(resumeCalls, 0);
+  assert.equal(JSON.parse(response.body).code, 'OPEN_BANKING_AUTHENTICATION_REQUIRED');
+});
+
 test('browser-local identity cannot authenticate open banking requests', async () => {
   await assert.rejects(
     unavailableOpenBankingAuthenticator.authenticate({} as never),
@@ -1842,7 +1904,7 @@ test('refresh, reauthentication, disconnect, and delete reject a record from ano
   }));
 
   process.env.PLAID_ENV = 'production';
-  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/oauth/plaid';
   try {
     await assert.rejects(
       service.refreshConnection({ userId: active.userId }, active.id, 'production'),
@@ -1869,7 +1931,7 @@ test('refresh, reauthentication, disconnect, and delete reject a record from ano
     );
   } finally {
     process.env.PLAID_ENV = 'sandbox';
-    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:5173/oauth/plaid';
   }
 
   assert.equal(providerCalls, 0);
@@ -1978,7 +2040,7 @@ test('Production rejects non-Santander Link completion and removes its Item', as
     },
   }));
   process.env.PLAID_ENV = 'production';
-  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/plaid-oauth';
+  process.env.PLAID_REDIRECT_URI = 'https://portfolio.example.com/oauth/plaid';
   try {
     const session = await service.createConnectionSession(
       { userId: 'owner-a' },
@@ -1996,7 +2058,7 @@ test('Production rejects non-Santander Link completion and removes its Item', as
     assert.deepEqual(await store.list('plaid', 'sandbox'), []);
   } finally {
     process.env.PLAID_ENV = 'sandbox';
-    process.env.PLAID_REDIRECT_URI = 'http://localhost:8081/plaid-oauth';
+    process.env.PLAID_REDIRECT_URI = 'http://localhost:5173/oauth/plaid';
   }
 });
 

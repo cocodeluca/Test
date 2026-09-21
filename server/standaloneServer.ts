@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -16,6 +17,7 @@ import { inspectPlaidPilotConfiguration } from './openBankingPolicy';
 
 export interface StandaloneServerOptions extends BrokerApiPluginOptions {
   application?: BrokerApiApplication;
+  frontendIndexHtmlPath?: string;
 }
 
 export const createStandaloneServer = (options: StandaloneServerOptions = {}): Server => {
@@ -23,6 +25,16 @@ export const createStandaloneServer = (options: StandaloneServerOptions = {}): S
   return createServer(async (request, response) => {
     try {
       if (await application.handle(request, response)) return;
+      const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+      if (request.method === 'GET' && requestUrl.pathname === '/oauth/plaid' &&
+          options.frontendIndexHtmlPath) {
+        const indexHtml = await readFile(path.resolve(options.frontendIndexHtmlPath), 'utf8');
+        response.statusCode = 200;
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.setHeader('Cache-Control', 'no-store');
+        response.end(indexHtml);
+        return;
+      }
       response.statusCode = 404;
       response.setHeader('Content-Type', 'application/json; charset=utf-8');
       response.end(JSON.stringify({ error: 'Not found' }));
@@ -109,7 +121,10 @@ export const startProductionServer = async (
 ): Promise<Server> => {
   const { port, host } = validateProductionServerEnvironment(environment);
   const operationalStores = await loadProductionOperationalStores(environment);
-  const server = createStandaloneServer({ operationalStores });
+  const server = createStandaloneServer({
+    operationalStores,
+    frontendIndexHtmlPath: path.resolve(process.cwd(), 'dist', 'index.html'),
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
