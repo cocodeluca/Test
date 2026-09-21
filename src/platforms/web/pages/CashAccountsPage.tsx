@@ -257,6 +257,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     expenseObligations,
     expensePayments,
     cashAccounts,
+    bankTransactions,
   };
   const handleConfirmTransaction = (
     transaction: BankTransaction,
@@ -277,6 +278,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         expenseObligations,
         expensePayments: current.expensePayments,
         cashAccounts,
+        bankTransactions: current.bankTransactions,
       },
     });
     if (!result) return;

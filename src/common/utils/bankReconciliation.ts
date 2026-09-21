@@ -17,6 +17,12 @@ import { isCashAccountIncludedInPortfolio } from './cashAccounts';
 import { createManualExpensePayment } from './propertyExpenses';
 import { createManualRentPayment } from './rentCollection';
 import { deriveBankReconciliationTargets } from './bankReconciliationTargets';
+import {
+  extractConfirmedBankTransactionPatterns,
+  getExpenseHistoricalPatternEvidence,
+  getRentHistoricalPatternEvidence,
+  type HistoricalPatternEvidence,
+} from './bankTransactionPatterns';
 import type { BankTransactionLifecycleEvent } from './bankTransactions';
 
 export type BankReconciliationReason =
@@ -30,6 +36,10 @@ export type BankReconciliationReason =
   | 'description-match'
   | 'property-context'
   | 'recurring-obligation'
+  | 'previously-confirmed-payer'
+  | 'previously-confirmed-merchant'
+  | 'previously-confirmed-description'
+  | 'repeated-confirmed-property-category'
   | 'unique-eligible-obligation';
 
 export interface BankReconciliationSuggestion {
@@ -63,6 +73,7 @@ export interface BankReconciliationContext {
   expensePayments: ExpensePayment[];
   propertyExpenseRules?: PropertyExpenseRule[];
   cashAccounts?: CashAccount[];
+  bankTransactions?: BankTransaction[];
   today?: Date;
 }
 
@@ -71,6 +82,7 @@ interface Candidate {
   amountReason: Extract<BankReconciliationReason, 'exact-amount' | 'similar-amount' | 'partial-amount'>;
   hasPropertyTextMatch: boolean;
   hasSpecificDescriptionMatch: boolean;
+  hasHistoricalPatternMatch: boolean;
 }
 
 const MAX_DATE_DISTANCE_DAYS = 14;
@@ -208,9 +220,26 @@ const getAmountReason = (transactionAmount: number, outstandingAmount: number) =
     : null;
 };
 
+const getHistoricalReasons = (
+  evidence: HistoricalPatternEvidence | null,
+  actor: 'payer' | 'merchant'
+): BankReconciliationReason[] => evidence ? [
+  ...(evidence.fingerprintTypes.includes('counterparty')
+    ? [actor === 'payer' ? 'previously-confirmed-payer' as const : 'previously-confirmed-merchant' as const]
+    : []),
+  ...(evidence.fingerprintTypes.includes('description')
+    ? ['previously-confirmed-description' as const]
+    : []),
+  ...(actor === 'merchant' && evidence.confirmationCount > 1
+    ? ['repeated-confirmed-property-category' as const]
+    : []),
+] : [];
+
 const selectConservativeCandidate = (candidates: Candidate[]): BankReconciliationSuggestion | null => {
   const strongCandidates = candidates.filter((candidate) => candidate.amountReason !== 'partial-amount');
   let eligible = strongCandidates.length > 0 ? strongCandidates : candidates;
+  const historicallySpecific = eligible.filter((candidate) => candidate.hasHistoricalPatternMatch);
+  if (historicallySpecific.length > 0) eligible = historicallySpecific;
   const propertySpecific = eligible.filter((candidate) => candidate.hasPropertyTextMatch);
   if (propertySpecific.length > 0) eligible = propertySpecific;
   const descriptionSpecific = eligible.filter((candidate) => candidate.hasSpecificDescriptionMatch);
@@ -246,6 +275,7 @@ export const suggestBankTransactionMatch = (
       .map((item) => item.paymentId!)
   );
   const targets = deriveBankReconciliationTargets(context);
+  const historicalPatterns = extractConfirmedBankTransactionPatterns(context, reconciliations);
 
   if (transaction.amount > 0) {
     const receivableViews = targets.rentReceivableViews;
@@ -313,11 +343,19 @@ export const suggestBankTransactionMatch = (
       if (!amountMatch || dateDistance > MAX_DATE_DISTANCE_DAYS) return [];
       const propertyTextMatch = Boolean(property && hasPropertyTextMatch(transaction, property));
       const descriptionMatch = hasRentDescriptionEvidence(transaction, lease);
+      const historicalEvidence = lease ? getRentHistoricalPatternEvidence(
+        transaction,
+        historicalPatterns.rent,
+        historicalPatterns.ambiguousRentFingerprints,
+        receivable.propertyId,
+        lease.id
+      ) : null;
       if (
         amountMatch.reason === 'partial-amount' &&
         !descriptionMatch &&
         !propertyTextMatch &&
-        !propertyContextId
+        !propertyContextId &&
+        !historicalEvidence
       ) return [];
       return [{
         amountReason: amountMatch.reason,
@@ -325,6 +363,7 @@ export const suggestBankTransactionMatch = (
         hasSpecificDescriptionMatch: Boolean(
           lease && hasTokenOverlap(transactionText(transaction), `${lease.name} ${lease.notes ?? ''}`)
         ),
+        hasHistoricalPatternMatch: Boolean(historicalEvidence),
         suggestion: {
           targetType: 'rent-receivable',
           targetId: receivable.id,
@@ -345,6 +384,7 @@ export const suggestBankTransactionMatch = (
             ...(lease ? ['active-lease' as const] : []),
             ...(descriptionMatch ? ['description-match' as const] : []),
             ...(propertyContextId ? ['property-context' as const] : []),
+            ...getHistoricalReasons(historicalEvidence, 'payer'),
           ],
         },
       }];
@@ -414,7 +454,14 @@ export const suggestBankTransactionMatch = (
     const dateDistance = daysBetween(transaction.bookingDate, obligation.dueDate);
     if (!amountMatch || dateDistance > MAX_DATE_DISTANCE_DAYS) return [];
     const descriptionEvidence = getExpenseDescriptionEvidence(transaction, obligation);
-    if (!descriptionEvidence.matches) return [];
+    const historicalEvidence = getExpenseHistoricalPatternEvidence(
+      transaction,
+      historicalPatterns.expense,
+      historicalPatterns.ambiguousExpenseFingerprints,
+      obligation.propertyId,
+      obligation.category
+    );
+    if (!descriptionEvidence.matches && !historicalEvidence) return [];
     const propertyTextMatch = Boolean(property && hasPropertyTextMatch(transaction, property));
     const rule = obligation.expenseRuleId
       ? context.propertyExpenseRules?.find((candidate) => candidate.id === obligation.expenseRuleId)
@@ -423,6 +470,7 @@ export const suggestBankTransactionMatch = (
       amountReason: amountMatch.reason,
       hasPropertyTextMatch: propertyTextMatch,
       hasSpecificDescriptionMatch: descriptionEvidence.isSpecific,
+      hasHistoricalPatternMatch: Boolean(historicalEvidence),
       suggestion: {
         targetType: 'expense-obligation',
         targetId: obligation.id,
@@ -440,9 +488,10 @@ export const suggestBankTransactionMatch = (
           amountMatch.reason,
           'same-currency',
           'date-proximity',
-          'description-match',
+          ...(descriptionEvidence.matches ? ['description-match' as const] : []),
           ...(rule && rule.frequency !== 'ONE_TIME' ? ['recurring-obligation' as const] : []),
           ...(propertyContextId ? ['property-context' as const] : []),
+          ...getHistoricalReasons(historicalEvidence, 'merchant'),
         ],
       },
     }];
