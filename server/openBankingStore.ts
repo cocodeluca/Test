@@ -25,6 +25,7 @@ export interface StoredOpenBankingConnection {
     revokedAt: string;
   }>;
   selectedAccountIds: string[];
+  selectedAccountCurrencies?: Record<string, string>;
   transactionSyncCursor: string | null;
   consentExpirationTime?: string | null;
   createdAt: string;

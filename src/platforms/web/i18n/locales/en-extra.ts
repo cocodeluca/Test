@@ -989,6 +989,7 @@ export const enExtra = {
       restoreTitle: 'Restore server backup',
       restoreDescription: 'Load the latest backup stored on the app server for {{email}}.',
       restoreSuccess: 'Server backup restored into this account.',
+      remoteDisabled: 'Server backup is disabled for this pilot. Local storage and JSON export/import remain available.',
       dataPortabilityTitle: 'Data portability',
       dataPortabilityDescription:
         'A professional app should always let users take their data with them. In this app, the main portability tools are JSON export, JSON import, and server restore by account email.',

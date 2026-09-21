@@ -13,6 +13,7 @@ import {
   saveUserSettings,
 } from '../services/localAccountStore';
 import { loadBackupFromServer } from '../services/accountBackupApi';
+import { isRemoteAccountBackupEnabled } from '../services/runtimeConfiguration';
 import { getPortfolioSnapshotTraceMetadata, tracePortfolioPersistence } from '../services/portfolioPersistenceTrace';
 
 type HydrationResult = {
@@ -74,7 +75,7 @@ export const hydrateAccountWorkspace = async (currentUser: LocalAccountUser): Pr
       let localBackup = await exportUserAccountBackup(currentUser);
       const resolved = await loadUserPortfolioHydrationSnapshot(currentUser.id);
       // Existing local snapshots, including intentional empty ones, win over remote copies.
-      if (!resolved.storageExists) {
+      if (!resolved.storageExists && await isRemoteAccountBackupEnabled()) {
         let payload: UserAccountBackup | null = null;
         try {
           tracePortfolioPersistence('hydration:remote-load', { userId: currentUser.id, accountId: currentUser.id, indexedDbKey: currentUser.id });

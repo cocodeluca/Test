@@ -18,6 +18,7 @@ import { APP_RECOVERY_MODE } from '../src/platforms/web/utils/appRecoveryMode';
 import { normalizePropertyRecord } from '../src/common/utils/calculations';
 import { createBankConnection, createLinkedCashAccount } from '../src/common/utils/cashAccounts';
 import { type PortfolioPersistenceTraceEntry } from '../src/platforms/web/services/portfolioPersistenceTrace';
+import { resetRuntimeConfigurationCache } from '../src/platforms/web/services/runtimeConfiguration';
 
 const user = { id: 'synthetic-a', email: 'synthetic-a@example.test', name: 'Synthetic', createdAt: '2026-01-01' };
 const makePortfolio = (bytes = 100): UserPortfolioData => ({
@@ -29,6 +30,7 @@ const backup = (portfolio = makePortfolio()): UserAccountBackup => ({
 let storage: Map<string, string>;
 const originalFetch = globalThis.fetch;
 test.beforeEach(() => {
+  resetRuntimeConfigurationCache();
   globalThis.indexedDB = new IDBFactory();
   storage = new Map();
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: {
@@ -110,6 +112,9 @@ test('remote large backup save/load/import/readback/hydration uses canonical Ind
   let serverPayload: UserAccountBackup | undefined;
   globalThis.fetch = async (url, init) => {
     assert.notEqual(init?.keepalive, true);
+    if (String(url).endsWith('/api/config')) {
+      return new Response(JSON.stringify({ accountBackupMode: 'enabled' }), { status: 200 });
+    }
     if (String(url).endsWith('/save')) serverPayload = JSON.parse(String(init?.body)).backup;
     return new Response(JSON.stringify({ ok: true, payload: serverPayload }), { status: 200 });
   };
@@ -119,6 +124,18 @@ test('remote large backup save/load/import/readback/hydration uses canonical Ind
   assert.deepEqual(await loadUserPortfolio(user.id), payload.portfolio);
   await hydrateAccountWorkspace(user);
   assert.deepEqual((await loadUserPortfolioHydrationSnapshot(user.id)).portfolio, payload.portfolio);
+});
+
+test('disabled account backup mode skips remote autosave and remote hydration', async () => {
+  const paths: string[] = [];
+  globalThis.fetch = async (url) => {
+    paths.push(String(url));
+    return new Response(JSON.stringify({ accountBackupMode: 'disabled' }));
+  };
+  assert.deepEqual(await saveBackupToServer(backup()), { ok: false, disabled: true });
+  await hydrateAccountWorkspace(user);
+  assert.deepEqual(paths, ['/api/config']);
+  assert.equal((await loadUserPortfolioHydrationSnapshot(user.id)).storageState, 'missing');
 });
 
 test('general backup excludes provider cursor and restored Plaid links require backend revalidation', async () => {
@@ -167,7 +184,9 @@ test('general backup excludes provider cursor and restored Plaid links require b
 
 test('remote-only bootstrap imports large snapshot before publishing authoritative hydration', async () => {
   const payload = backup(makePortfolio(1024 * 1024));
-  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, payload }));
+  globalThis.fetch = async (url) => new Response(JSON.stringify(
+    String(url).endsWith('/api/config') ? { accountBackupMode: 'enabled' } : { ok: true, payload }
+  ));
   await hydrateAccountWorkspace(user);
   assert.deepEqual((await loadUserPortfolioHydrationSnapshot(user.id)).portfolio, payload.portfolio);
 });
@@ -211,7 +230,9 @@ test('corrupt legacy and unavailable storage block hydration', async () => {
 });
 
 test('new account hydrates only after server explicitly reports no backup', async () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'No server backup found for this email.' }), { status: 400 });
+  globalThis.fetch = async (url) => String(url).endsWith('/api/config')
+    ? new Response(JSON.stringify({ accountBackupMode: 'enabled' }))
+    : new Response(JSON.stringify({ error: 'No server backup found for this email.' }), { status: 400 });
   await hydrateAccountWorkspace(user);
   assert.equal((await loadUserPortfolioHydrationSnapshot(user.id)).storageState, 'missing');
 });
@@ -404,6 +425,9 @@ test('remote writes are serialized and retain the last invocation', async () => 
   let started = 0;
   const bodies: UserAccountBackup[] = [];
   globalThis.fetch = async (_url, init) => {
+    if (String(_url).endsWith('/api/config')) {
+      return new Response(JSON.stringify({ accountBackupMode: 'enabled' }));
+    }
     started += 1;
     if (started === 1) await firstGate;
     bodies.push(JSON.parse(String(init?.body)).backup);

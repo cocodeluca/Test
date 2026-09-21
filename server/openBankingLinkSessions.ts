@@ -39,9 +39,9 @@ export interface OpenBankingLinkSessionStore {
     mode?: 'create' | 'update';
     intent?: OpenBankingLinkSessionIntent;
     expiresAt?: string;
-  }): OpenBankingLinkSession;
-  loadOwned(sessionId: string, ownerUserId: string): OpenBankingLinkSession | null;
-  consume(sessionId: string, ownerUserId: string): OpenBankingLinkSession;
+  }): Promise<OpenBankingLinkSession>;
+  loadOwned(sessionId: string, ownerUserId: string): Promise<OpenBankingLinkSession | null>;
+  consume(sessionId: string, ownerUserId: string): Promise<OpenBankingLinkSession>;
 }
 
 const isLinkSession = (value: unknown): value is OpenBankingLinkSession => {
@@ -105,7 +105,7 @@ export const createOpenBankingLinkSessionStore = (options: {
   const sessions = new Map<string, OpenBankingLinkSession>();
 
   return {
-    create({ ownerUserId, environment, connectionId = null, mode, intent }) {
+    async create({ ownerUserId, environment, connectionId = null, mode, intent }) {
       const session = buildLinkSession(
         { ownerUserId, environment, connectionId, mode, intent },
         now,
@@ -116,14 +116,14 @@ export const createOpenBankingLinkSessionStore = (options: {
       return session;
     },
 
-    loadOwned(sessionId, ownerUserId) {
+    async loadOwned(sessionId, ownerUserId) {
       const session = sessions.get(sessionId);
       if (!session || session.ownerUserId !== ownerUserId ||
           new Date(session.expiresAt).getTime() <= now().getTime()) return null;
       return session;
     },
 
-    consume(sessionId, ownerUserId) {
+    async consume(sessionId, ownerUserId) {
       const session = sessions.get(sessionId);
       if (!session || session.ownerUserId !== ownerUserId) {
         throw new OpenBankingLinkSessionError();
@@ -181,20 +181,20 @@ export const createFileOpenBankingLinkSessionStore = (options: {
   };
 
   return {
-    create(input) {
+    async create(input) {
       const sessions = readSessions();
       const session = buildLinkSession(input, now, ttlMs, createId);
       sessions.push(session);
       writeSessions(sessions);
       return session;
     },
-    loadOwned(sessionId, ownerUserId) {
+    async loadOwned(sessionId, ownerUserId) {
       const session = readSessions().find((candidate) => candidate.id === sessionId);
       if (!session || session.ownerUserId !== ownerUserId ||
           new Date(session.expiresAt).getTime() <= now().getTime()) return null;
       return session;
     },
-    consume(sessionId, ownerUserId) {
+    async consume(sessionId, ownerUserId) {
       const sessions = readSessions();
       const index = sessions.findIndex((session) => session.id === sessionId);
       if (index < 0 || sessions[index].ownerUserId !== ownerUserId) {

@@ -258,7 +258,7 @@ test('auth endpoint returns the raw session token only in the HttpOnly cookie', 
     enroll: async () => { throw new Error('not used'); },
     login: async () => { throw new Error('not used'); },
     resolveToken: async () => null,
-    logout: () => undefined,
+    logout: async () => undefined,
   };
   const handlers = new Map<string, (request: IncomingMessage, response: unknown) => Promise<void>>();
   const plugin = brokerApiPlugin({

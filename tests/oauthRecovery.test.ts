@@ -72,15 +72,15 @@ const oauthRecord = (overrides: Partial<OAuthRecoveryRecord> = {}): OAuthRecover
 test('OAuth recovery state persists, binds callback once, and consumes once', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 're-oauth-state-'));
   const filePath = path.join(directory, 'oauth.json');
-  createFileOAuthRecoveryStore(filePath).save(oauthRecord());
+  await createFileOAuthRecoveryStore(filePath).save(oauthRecord());
 
   const restarted = createFileOAuthRecoveryStore(filePath);
-  assert.equal(restarted.listRecoverableOwned({
+  assert.equal((await restarted.listRecoverableOwned({
     ownerUserId: OWNER,
     environment: 'sandbox',
     now: new Date(NOW),
-  })[0]?.linkToken, 'link-original-token');
-  assert.equal(restarted.recordCallbackOwned({
+  }))[0]?.linkToken, 'link-original-token');
+  assert.equal(await restarted.recordCallbackOwned({
     id: 'A'.repeat(43),
     ownerUserId: 'wrong-owner',
     environment: 'sandbox',
@@ -89,7 +89,7 @@ test('OAuth recovery state persists, binds callback once, and consumes once', as
     now: new Date(NOW),
   }), null);
 
-  const callback = restarted.recordCallbackOwned({
+  const callback = await restarted.recordCallbackOwned({
     id: 'A'.repeat(43),
     ownerUserId: OWNER,
     environment: 'sandbox',
@@ -100,7 +100,7 @@ test('OAuth recovery state persists, binds callback once, and consumes once', as
   assert.equal(callback?.providerOAuthStateId, PROVIDER_STATE);
   assert.equal(callback?.receivedRedirectUri, `${REDIRECT}?oauth_state_id=${PROVIDER_STATE}`);
 
-  const consumed = createFileOAuthRecoveryStore(filePath).consumeOwned({
+  const consumed = await createFileOAuthRecoveryStore(filePath).consumeOwned({
     id: 'A'.repeat(43),
     ownerUserId: OWNER,
     environment: 'sandbox',
@@ -108,7 +108,7 @@ test('OAuth recovery state persists, binds callback once, and consumes once', as
     now: new Date(NOW),
   });
   assert.equal(consumed?.completedConnectionId, 'connection-1');
-  assert.equal(createFileOAuthRecoveryStore(filePath).consumeOwned({
+  assert.equal(await createFileOAuthRecoveryStore(filePath).consumeOwned({
     id: 'A'.repeat(43),
     ownerUserId: OWNER,
     environment: 'sandbox',
@@ -120,19 +120,19 @@ test('OAuth recovery state persists, binds callback once, and consumes once', as
 test('OAuth recovery state rejects expiry, environment mismatch, and altered callback replay', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 're-oauth-expiry-'));
   const store = createFileOAuthRecoveryStore(path.join(directory, 'oauth.json'));
-  store.save(oauthRecord({ expiresAt: NOW }));
-  assert.deepEqual(store.listRecoverableOwned({
+  await store.save(oauthRecord({ expiresAt: NOW }));
+  assert.deepEqual(await store.listRecoverableOwned({
     ownerUserId: OWNER,
     environment: 'sandbox',
     now: new Date(NOW),
   }), []);
-  assert.equal(store.recordCallbackOwned({
+  assert.equal(await store.recordCallbackOwned({
     id: 'A'.repeat(43), ownerUserId: OWNER, environment: 'production',
     providerOAuthStateId: PROVIDER_STATE,
     receivedRedirectUri: `${REDIRECT}?oauth_state_id=${PROVIDER_STATE}`,
     now: new Date(NOW),
   }), null);
-  assert.equal(store.recordCallbackOwned({
+  assert.equal(await store.recordCallbackOwned({
     id: 'A'.repeat(43), ownerUserId: OWNER, environment: 'sandbox',
     providerOAuthStateId: PROVIDER_STATE,
     receivedRedirectUri: `${REDIRECT}?oauth_state_id=${PROVIDER_STATE}`,
@@ -286,8 +286,8 @@ test('OAuth resume rejects malformed redirect and Link intent or connection mism
       now: () => new Date(NOW),
       createId: () => 'link-session-1',
     });
-    const session = linkStore.create({ ownerUserId: OWNER, environment: 'sandbox' });
-    oauthStore.save(oauthRecord({
+    const session = await linkStore.create({ ownerUserId: OWNER, environment: 'sandbox' });
+    await oauthStore.save(oauthRecord({
       linkSessionId: session.id,
       intent: 'reauthentication',
       connectionId: 'wrong-connection',

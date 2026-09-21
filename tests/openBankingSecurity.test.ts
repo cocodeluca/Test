@@ -514,7 +514,7 @@ test('corrupt or unavailable server cursor state fails closed', async (context) 
   );
 });
 
-test('server Link sessions reject wrong owners, expiry, and replay', () => {
+test('server Link sessions reject wrong owners, expiry, and replay', async () => {
   let currentTime = new Date(FIXED_NOW);
   let sequence = 0;
   const sessions = createOpenBankingLinkSessionStore({
@@ -522,14 +522,14 @@ test('server Link sessions reject wrong owners, expiry, and replay', () => {
     now: () => currentTime,
     createId: () => `session-${++sequence}`,
   });
-  const first = sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
-  assert.throws(() => sessions.consume(first.id, 'owner-b'), OpenBankingLinkSessionError);
-  assert.equal(sessions.consume(first.id, 'owner-a').ownerUserId, 'owner-a');
-  assert.throws(() => sessions.consume(first.id, 'owner-a'), OpenBankingLinkSessionError);
+  const first = await sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
+  await assert.rejects(() => sessions.consume(first.id, 'owner-b'), OpenBankingLinkSessionError);
+  assert.equal((await sessions.consume(first.id, 'owner-a')).ownerUserId, 'owner-a');
+  await assert.rejects(() => sessions.consume(first.id, 'owner-a'), OpenBankingLinkSessionError);
 
-  const expired = sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
+  const expired = await sessions.create({ ownerUserId: 'owner-a', environment: 'sandbox' });
   currentTime = new Date('2026-09-17T15:00:02.000Z');
-  assert.throws(() => sessions.consume(expired.id, 'owner-a'), OpenBankingLinkSessionError);
+  await assert.rejects(() => sessions.consume(expired.id, 'owner-a'), OpenBankingLinkSessionError);
 });
 
 test('Link sessions bind environment and consume a mismatch before token exchange', async (context) => {

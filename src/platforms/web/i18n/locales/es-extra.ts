@@ -989,6 +989,7 @@ export const esExtra = {
       restoreTitle: 'Restaurar respaldo del servidor',
       restoreDescription: 'Carga el ultimo respaldo guardado en el servidor para {{email}}.',
       restoreSuccess: 'Respaldo del servidor restaurado en esta cuenta.',
+      remoteDisabled: 'El respaldo en el servidor esta desactivado para este piloto. El almacenamiento local y la exportacion/importacion JSON siguen disponibles.',
       dataPortabilityTitle: 'Portabilidad de datos',
       dataPortabilityDescription:
         'Una app profesional siempre debe permitir que las personas se lleven sus datos. Aqui las herramientas principales son exportacion JSON, importacion JSON y restauracion desde servidor por email.',

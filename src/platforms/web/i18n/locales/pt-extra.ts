@@ -3,6 +3,13 @@ import { esExtra } from './es-extra';
 
 export const ptExtra: TranslationTree = {
   ...esExtra,
+  settings: {
+    ...(esExtra.settings as TranslationTree),
+    backupSection: {
+      ...((esExtra.settings as TranslationTree).backupSection as TranslationTree),
+      remoteDisabled: 'O backup no servidor está desativado neste piloto. O armazenamento local e a exportação/importação JSON continuam disponíveis.',
+    },
+  },
   common: {
     ...(esExtra.common as TranslationTree),
     connectAgain: 'Conectar novamente',

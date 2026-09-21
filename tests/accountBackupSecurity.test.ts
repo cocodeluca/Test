@@ -65,7 +65,7 @@ const createAuthService = (): ServerAuthService => ({
   enroll: async () => { throw new Error('not used'); },
   login: async () => { throw new Error('not used'); },
   resolveToken: async (token) => token === 'token-a' ? USER_A : token === 'token-b' ? USER_B : null,
-  logout: () => undefined,
+  logout: async () => undefined,
 });
 
 const createBackupHandlers = (store: AccountBackupStore) => {

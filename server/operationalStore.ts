@@ -23,6 +23,7 @@ export type OperationalStoreKind = 'memory' | 'development-json' | 'production-d
 
 export interface OperationalStoreCapabilities {
   kind: OperationalStoreKind;
+  backend: 'memory' | 'development-json' | 'postgresql';
   persistsAcrossRestart: boolean;
   transactionalWrites: boolean;
   ownerScoped: boolean;
@@ -52,17 +53,17 @@ export interface OAuthRecoveryRecord {
 }
 
 export interface OAuthRecoveryStore {
-  save(record: OAuthRecoveryRecord): void;
+  save(record: OAuthRecoveryRecord): Promise<void>;
   loadOwned(input: {
     id: string;
     ownerUserId: string;
     environment: PlaidEnvironment;
-  }): OAuthRecoveryRecord | null;
+  }): Promise<OAuthRecoveryRecord | null>;
   loadByLinkSessionOwned(input: {
     linkSessionId: string;
     ownerUserId: string;
     environment: PlaidEnvironment;
-  }): OAuthRecoveryRecord | null;
+  }): Promise<OAuthRecoveryRecord | null>;
   recordCallbackOwned(input: {
     id: string;
     ownerUserId: string;
@@ -70,23 +71,23 @@ export interface OAuthRecoveryStore {
     providerOAuthStateId: string;
     receivedRedirectUri: string;
     now: Date;
-  }): OAuthRecoveryRecord | null;
+  }): Promise<OAuthRecoveryRecord | null>;
   consumeOwned(input: {
     id: string;
     ownerUserId: string;
     environment: PlaidEnvironment;
     completedConnectionId: string | null;
     now: Date;
-  }): OAuthRecoveryRecord | null;
+  }): Promise<OAuthRecoveryRecord | null>;
   listRecoverableOwned(input: {
     ownerUserId: string;
     environment: PlaidEnvironment;
     now: Date;
-  }): OAuthRecoveryRecord[];
+  }): Promise<OAuthRecoveryRecord[]>;
   listOwned(input: {
     ownerUserId: string;
     environment: PlaidEnvironment;
-  }): OAuthRecoveryRecord[];
+  }): Promise<OAuthRecoveryRecord[]>;
 }
 
 export interface OperationalStores {
@@ -96,6 +97,8 @@ export interface OperationalStores {
   linkSessions: OpenBankingLinkSessionStore;
   providerConnections: OpenBankingConnectionStore;
   oauthRecovery: OAuthRecoveryStore;
+  assertReady(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export class OperationalStoreConfigurationError extends Error {
@@ -134,18 +137,18 @@ const isOAuthRecord = (value: unknown): value is OAuthRecoveryRecord => {
 export const createMemoryOAuthRecoveryStore = (): OAuthRecoveryStore => {
   const records = new Map<string, OAuthRecoveryRecord>();
   return {
-    save(record) {
+    async save(record) {
       if (!isOAuthRecord(record)) {
         throw new OperationalStoreConfigurationError('OAuth recovery record is invalid.');
       }
       records.set(record.id, { ...record });
     },
-    loadOwned(input) {
+    async loadOwned(input) {
       const record = records.get(input.id);
       return record?.ownerUserId === input.ownerUserId &&
         record.environment === input.environment ? { ...record } : null;
     },
-    loadByLinkSessionOwned(input) {
+    async loadByLinkSessionOwned(input) {
       const matching = [...records.values()].filter((candidate) =>
         candidate.linkSessionId === input.linkSessionId &&
         candidate.ownerUserId === input.ownerUserId &&
@@ -154,7 +157,7 @@ export const createMemoryOAuthRecoveryStore = (): OAuthRecoveryStore => {
       const record = matching.find((candidate) => candidate.consumedAt === null) ?? matching[0];
       return record ? { ...record } : null;
     },
-    recordCallbackOwned(input) {
+    async recordCallbackOwned(input) {
       const record = records.get(input.id);
       if (!record || record.ownerUserId !== input.ownerUserId ||
           record.environment !== input.environment || record.consumedAt !== null ||
@@ -172,7 +175,7 @@ export const createMemoryOAuthRecoveryStore = (): OAuthRecoveryStore => {
       records.set(updated.id, updated);
       return { ...updated };
     },
-    consumeOwned(input) {
+    async consumeOwned(input) {
       const record = records.get(input.id);
       if (!record || record.ownerUserId !== input.ownerUserId ||
           record.environment !== input.environment || record.consumedAt !== null ||
@@ -185,13 +188,13 @@ export const createMemoryOAuthRecoveryStore = (): OAuthRecoveryStore => {
       records.set(consumed.id, consumed);
       return { ...consumed };
     },
-    listRecoverableOwned(input) {
+    async listRecoverableOwned(input) {
       return [...records.values()].filter((record) =>
         record.ownerUserId === input.ownerUserId && record.environment === input.environment &&
         record.consumedAt === null && Date.parse(record.expiresAt) > input.now.getTime()
       ).map((record) => ({ ...record }));
     },
-    listOwned(input) {
+    async listOwned(input) {
       return [...records.values()].filter((record) =>
         record.ownerUserId === input.ownerUserId && record.environment === input.environment
       ).map((record) => ({ ...record }));
@@ -227,20 +230,20 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
     renameSync(temporaryPath, filePath);
   };
   return {
-    save(record) {
+    async save(record) {
       if (!isOAuthRecord(record)) {
         throw new OperationalStoreConfigurationError('OAuth recovery record is invalid.');
       }
       const records = readRecords();
       writeRecords([...records.filter((candidate) => candidate.id !== record.id), record]);
     },
-    loadOwned(input) {
+    async loadOwned(input) {
       return readRecords().find((record) =>
         record.id === input.id && record.ownerUserId === input.ownerUserId &&
         record.environment === input.environment
       ) ?? null;
     },
-    loadByLinkSessionOwned(input) {
+    async loadByLinkSessionOwned(input) {
       const matching = readRecords().filter((record) =>
         record.linkSessionId === input.linkSessionId &&
         record.ownerUserId === input.ownerUserId &&
@@ -248,7 +251,7 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
       );
       return matching.find((record) => record.consumedAt === null) ?? matching[0] ?? null;
     },
-    recordCallbackOwned(input) {
+    async recordCallbackOwned(input) {
       const records = readRecords();
       const index = records.findIndex((record) =>
         record.id === input.id && record.ownerUserId === input.ownerUserId &&
@@ -270,7 +273,7 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
       writeRecords(records);
       return updated;
     },
-    consumeOwned(input) {
+    async consumeOwned(input) {
       const records = readRecords();
       const index = records.findIndex((record) =>
         record.id === input.id && record.ownerUserId === input.ownerUserId &&
@@ -286,13 +289,13 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
       writeRecords(records);
       return consumed;
     },
-    listRecoverableOwned(input) {
+    async listRecoverableOwned(input) {
       return readRecords().filter((record) =>
         record.ownerUserId === input.ownerUserId && record.environment === input.environment &&
         record.consumedAt === null && Date.parse(record.expiresAt) > input.now.getTime()
       );
     },
-    listOwned(input) {
+    async listOwned(input) {
       return readRecords().filter((record) =>
         record.ownerUserId === input.ownerUserId && record.environment === input.environment
       );
@@ -302,6 +305,7 @@ export const createFileOAuthRecoveryStore = (filePathInput: string): OAuthRecove
 
 export const DEVELOPMENT_STORE_CAPABILITIES: OperationalStoreCapabilities = Object.freeze({
   kind: 'development-json',
+  backend: 'development-json',
   persistsAcrossRestart: true,
   transactionalWrites: false,
   ownerScoped: true,
@@ -333,6 +337,8 @@ export const createDevelopmentOperationalStores = (options: {
     oauthRecovery: createFileOAuthRecoveryStore(
       path.join(dataDirectory, 'open-banking-oauth-recovery.json')
     ),
+    async assertReady() {},
+    async close() {},
   };
 };
 
@@ -342,6 +348,7 @@ export const assertProductionOperationalStores = (
   const capabilities = stores?.capabilities;
   if (
     !capabilities || capabilities.kind !== 'production-durable' ||
+    capabilities.backend !== 'postgresql' ||
     !capabilities.persistsAcrossRestart || !capabilities.transactionalWrites ||
     !capabilities.ownerScoped || !capabilities.environmentScoped ||
     !capabilities.compareAndSwap || !capabilities.expiringOneTimeRecords ||
@@ -352,7 +359,8 @@ export const assertProductionOperationalStores = (
     );
   }
   if (!stores.users || !stores.sessions || !stores.linkSessions ||
-      !stores.providerConnections || !stores.oauthRecovery) {
+      !stores.providerConnections || !stores.oauthRecovery ||
+      typeof stores.assertReady !== 'function' || typeof stores.close !== 'function') {
     throw new OperationalStoreConfigurationError(
       'Production operational-store adapter does not implement the complete contract.'
     );

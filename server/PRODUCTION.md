@@ -19,19 +19,36 @@ Required production configuration:
 - `PLAID_REDIRECT_URI` as the exact `${PUBLIC_ORIGIN}/oauth/plaid` HTTPS URL,
   with no credentials, query, or fragment
 - `OPERATIONAL_STORE_MODULE`, an absolute or working-directory-relative path
-  to a server-side JavaScript module
+  to `dist-server/postgresOperationalStore.mjs`
+- `DATABASE_URL`, a PostgreSQL connection string available only to the backend
+- `ACCOUNT_BACKUP_MODE=disabled`; Production has no JSON account-backup fallback
 
 The operational-store module must export `createOperationalStores({ environment })`.
 It must return the complete `OperationalStores` contract from
-`operationalStore.ts` and declare `kind: "production-durable"` with every
-capability enabled. The adapter is responsible for durable transactions,
+`operationalStore.ts`, declare `kind: "production-durable"` and
+`backend: "postgresql"`, and enable every capability. The adapter is responsible for durable transactions,
 owner and environment scoping, compare-and-swap cursor advancement, expiry,
 atomic one-time OAuth consumption, lookup by Link session, callback binding,
 and encrypted provider secrets. OAuth recovery records persist the temporary
 Link token but never an access token, public token, Item ID, provider secret,
 credential, or session cookie. A conventional
-relational database is the intended implementation, but no cloud vendor or
-database driver is coupled to Stage 2A.
+PostgreSQL is the required Production implementation.
+
+Run `npm run db:migrate` explicitly before starting a release. Migrations are
+ordered, checksummed, transactional, and idempotent; startup refuses missing,
+changed, or unknown migration history. `npm run build:server` emits the API,
+PostgreSQL adapter, migration runner, user bootstrap CLI, and SQL migration
+files in `dist-server/`.
+
+Create the initial Production user only after migrations are current:
+
+`npm run user:bootstrap:production -- --email owner@example.com --name "Owner"`
+
+The CLI reads the password from a hidden terminal prompt (or stdin), never from
+an argument, and creates no session. Public registration and legacy enrollment
+are disabled in Production. eToro and FX auxiliary routes require an
+authenticated server session. `/api/health` exposes only `ready` or
+`unavailable` and verifies PostgreSQL connectivity plus migration currency.
 
 Production startup refuses memory stores, development JSON stores, incomplete
 adapters, insecure cookie/proxy configuration, invalid Plaid Production

@@ -91,6 +91,14 @@ export const validateProductionServerEnvironment = (
       'OPERATIONAL_STORE_MODULE must select a Production durable-store adapter.'
     );
   }
+  if (!environment.DATABASE_URL?.trim()) {
+    throw new OperationalStoreConfigurationError('DATABASE_URL is required in Production.');
+  }
+  if (environment.ACCOUNT_BACKUP_MODE !== 'disabled') {
+    throw new OperationalStoreConfigurationError(
+      'ACCOUNT_BACKUP_MODE=disabled is required in Production.'
+    );
+  }
   const plaid = inspectPlaidPilotConfiguration(environment);
   if (!plaid.ready || plaid.environment !== 'production') {
     throw new OperationalStoreConfigurationError('Production Plaid configuration is missing or invalid.');
@@ -113,7 +121,11 @@ export const loadProductionOperationalStores = async (
       'Production operational-store module must export createOperationalStores().'
     );
   }
-  return assertProductionOperationalStores(await loaded.createOperationalStores({ environment }));
+  const stores = assertProductionOperationalStores(
+    await loaded.createOperationalStores({ environment })
+  );
+  await stores.assertReady();
+  return stores;
 };
 
 export const startProductionServer = async (
@@ -123,15 +135,24 @@ export const startProductionServer = async (
   const operationalStores = await loadProductionOperationalStores(environment);
   const server = createStandaloneServer({
     operationalStores,
+    environment,
     frontendIndexHtmlPath: path.resolve(process.cwd(), 'dist', 'index.html'),
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, host, () => {
-      server.off('error', reject);
-      resolve();
-    });
+  server.once('close', () => {
+    void operationalStores.close();
   });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, host, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+  } catch (error) {
+    await operationalStores.close();
+    throw error;
+  }
   console.info(`[api] Production server listening on ${host}:${port}.`);
   return server;
 };

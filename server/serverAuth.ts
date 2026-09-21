@@ -25,7 +25,7 @@ export interface AuthenticatedServerUser {
   createdAt: string;
 }
 
-interface StoredPasswordHash {
+export interface StoredPasswordHash {
   algorithm: 'scrypt';
   salt: string;
   hash: string;
@@ -35,7 +35,7 @@ interface StoredPasswordHash {
   p: 1;
 }
 
-interface StoredServerUser extends AuthenticatedServerUser {
+export interface StoredServerUser extends AuthenticatedServerUser {
   passwordHash: StoredPasswordHash;
 }
 
@@ -258,10 +258,10 @@ export interface StoredServerSession {
 }
 
 export interface ServerSessionStore {
-  create(userId: string): { token: string; expiresAt: string };
-  resolve(token: string): StoredServerSession | null;
-  revoke(token: string): void;
-  revokeUser(userId: string): void;
+  create(userId: string): Promise<{ token: string; expiresAt: string }>;
+  resolve(token: string): Promise<StoredServerSession | null>;
+  revoke(token: string): Promise<void>;
+  revokeUser(userId: string): Promise<void>;
 }
 
 interface StoredServerSessionFile {
@@ -282,7 +282,7 @@ export const createServerSessionStore = (options: {
   const sessions = new Map<string, StoredServerSession>();
 
   return {
-    create(userId) {
+    async create(userId) {
       const token = createToken();
       if (Buffer.from(token, 'base64url').length < 32) {
         throw new ServerAuthStoreError('Session token generator returned insufficient entropy.');
@@ -297,7 +297,7 @@ export const createServerSessionStore = (options: {
       sessions.set(session.tokenDigest, session);
       return { token, expiresAt: session.expiresAt };
     },
-    resolve(token) {
+    async resolve(token) {
       if (!token) return null;
       const digest = digestSessionToken(token);
       const session = sessions.get(digest);
@@ -308,10 +308,10 @@ export const createServerSessionStore = (options: {
       }
       return session;
     },
-    revoke(token) {
+    async revoke(token) {
       if (token) sessions.delete(digestSessionToken(token));
     },
-    revokeUser(userId) {
+    async revokeUser(userId) {
       for (const [digest, session] of sessions) {
         if (session.userId === userId) sessions.delete(digest);
       }
@@ -382,7 +382,7 @@ export const createFileServerSessionStore = (options: {
   };
 
   return {
-    create(userId) {
+    async create(userId) {
       const token = createToken();
       if (Buffer.from(token, 'base64url').length < 32) {
         throw new ServerAuthStoreError('Session token generator returned insufficient entropy.');
@@ -397,7 +397,7 @@ export const createFileServerSessionStore = (options: {
       mutate((sessions) => { sessions.push(session); });
       return { token, expiresAt: session.expiresAt };
     },
-    resolve(token) {
+    async resolve(token) {
       if (!token) return null;
       const digest = digestSessionToken(token);
       let resolved: StoredServerSession | null = null;
@@ -412,7 +412,7 @@ export const createFileServerSessionStore = (options: {
       });
       return resolved;
     },
-    revoke(token) {
+    async revoke(token) {
       if (!token) return;
       const digest = digestSessionToken(token);
       mutate((sessions) => {
@@ -420,7 +420,7 @@ export const createFileServerSessionStore = (options: {
         if (index >= 0) sessions.splice(index, 1);
       });
     },
-    revokeUser(userId) {
+    async revokeUser(userId) {
       mutate((sessions) => {
         for (let index = sessions.length - 1; index >= 0; index -= 1) {
           if (sessions[index].userId === userId) sessions.splice(index, 1);
@@ -491,7 +491,7 @@ export interface ServerAuthService {
     expiresAt: string;
   }>;
   resolveToken(token: string): Promise<AuthenticatedServerUser | null>;
-  logout(token: string): void;
+  logout(token: string): Promise<void>;
 }
 
 export const createServerAuthService = (dependencies: {
@@ -519,7 +519,7 @@ export const createServerAuthService = (dependencies: {
       passwordHash,
       createdAt: now().toISOString(),
     });
-    const session = dependencies.sessions.create(stored.id);
+    const session = await dependencies.sessions.create(stored.id);
     return { user: toPublicUser(stored), ...session };
   };
 
@@ -540,21 +540,21 @@ export const createServerAuthService = (dependencies: {
         throw new ServerAuthInvalidCredentialsError();
       }
       throttle.clear(key);
-      const session = dependencies.sessions.create(user.id);
+      const session = await dependencies.sessions.create(user.id);
       return { user: toPublicUser(user), ...session };
     },
     async resolveToken(token) {
-      const session = dependencies.sessions.resolve(token);
+      const session = await dependencies.sessions.resolve(token);
       if (!session) return null;
       const user = await dependencies.users.findById(session.userId);
       if (!user) {
-        dependencies.sessions.revoke(token);
+        await dependencies.sessions.revoke(token);
         return null;
       }
       return toPublicUser(user);
     },
-    logout(token) {
-      dependencies.sessions.revoke(token);
+    async logout(token) {
+      await dependencies.sessions.revoke(token);
     },
   };
 };

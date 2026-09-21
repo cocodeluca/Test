@@ -198,9 +198,9 @@ test('Link session survives restart and one-time consumption survives another re
     now: () => new Date(NOW),
     createId: () => 'restart-link-session',
   });
-  const created = makeStore().create({ ownerUserId: OWNER_ID, environment: 'sandbox' });
-  assert.equal(makeStore().consume(created.id, OWNER_ID).environment, 'sandbox');
-  assert.throws(() => makeStore().consume(created.id, OWNER_ID), OpenBankingLinkSessionError);
+  const created = await makeStore().create({ ownerUserId: OWNER_ID, environment: 'sandbox' });
+  assert.equal((await makeStore().consume(created.id, OWNER_ID)).environment, 'sandbox');
+  await assert.rejects(() => makeStore().consume(created.id, OWNER_ID), OpenBankingLinkSessionError);
 });
 
 test('provider record and authoritative cursor survive adapter restart', async (context) => {
@@ -238,11 +238,11 @@ test('corrupted persisted auth and Link operational state fail closed', async (c
   const linksPath = path.join(directory, 'links.json');
   await writeFile(sessionsPath, '{bad json', 'utf8');
   await writeFile(linksPath, '{bad json', 'utf8');
-  assert.throws(
+  await assert.rejects(
     () => createFileServerSessionStore({ filePath: sessionsPath }).resolve('token'),
     ServerAuthStoreError
   );
-  assert.throws(
+  await assert.rejects(
     () => createFileOpenBankingLinkSessionStore({ filePath: linksPath }).consume('id', OWNER_ID),
     OpenBankingLinkSessionError
   );
@@ -331,6 +331,8 @@ test('Production startup rejects unsafe storage and keeps Transactions disabled'
     NODE_ENV: 'production', PORT: '8080', HOST: '127.0.0.1',
     SESSION_COOKIE_SECURE: 'true', TRUST_PROXY: '1', PUBLIC_ORIGIN: 'https://portfolio.example.com',
     OPERATIONAL_STORE_MODULE: './production-store.mjs',
+    DATABASE_URL: 'postgresql://database.invalid/portfolio',
+    ACCOUNT_BACKUP_MODE: 'disabled',
     PLAID_CLIENT_ID: 'configured', PLAID_SECRET: 'configured', PLAID_ENV: 'production',
     PLAID_PRODUCTS: 'auth', PLAID_COUNTRY_CODES: 'ES',
     PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',

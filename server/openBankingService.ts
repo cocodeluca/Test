@@ -306,7 +306,7 @@ export const createOpenBankingService = (dependencies: {
 
   const requireMatchingOAuthState = (
     record: OAuthRecoveryRecord,
-    session: NonNullable<ReturnType<OpenBankingLinkSessionStore['loadOwned']>>
+    session: NonNullable<Awaited<ReturnType<OpenBankingLinkSessionStore['loadOwned']>>>
   ) => {
     if (
       record.linkSessionId !== session.id || record.environment !== session.environment ||
@@ -395,11 +395,11 @@ export const createOpenBankingService = (dependencies: {
       if (input.providerName !== 'plaid') {
         throw new OpenBankingConfigurationError('Only Plaid is permitted for this banking flow.');
       }
-      if (oauthRecovery.listRecoverableOwned({
+      if ((await oauthRecovery.listRecoverableOwned({
         ownerUserId: principal.userId,
         environment: configuration.environment,
         now: now(),
-      }).length > 0) {
+      })).length > 0) {
         throw new OpenBankingOAuthStateError(
           'OPEN_BANKING_OAUTH_STATE_MISMATCH',
           'Finish or allow the current bank sign-in session to expire before starting another.'
@@ -460,7 +460,7 @@ export const createOpenBankingService = (dependencies: {
           'Plaid Link mode did not match the connection lifecycle.'
         );
       }
-      const session = dependencies.linkSessions.create({
+      const session = await dependencies.linkSessions.create({
         ownerUserId: principal.userId,
         environment: configuration.environment,
         connectionId: existingConnection?.id ?? null,
@@ -473,7 +473,7 @@ export const createOpenBankingService = (dependencies: {
         Date.parse(session.expiresAt),
         linkResult.expiration ? Date.parse(linkResult.expiration) : Number.POSITIVE_INFINITY
       ));
-      oauthRecovery.save({
+      await oauthRecovery.save({
         id: oauthStateId,
         ownerUserId: principal.userId,
         providerName: 'plaid',
@@ -537,7 +537,7 @@ export const createOpenBankingService = (dependencies: {
           'The OAuth callback URL is invalid.'
         );
       }
-      const candidates = oauthRecovery.listOwned({
+      const candidates = await oauthRecovery.listOwned({
         ownerUserId: principal.userId,
         environment: configuration.environment,
       });
@@ -571,7 +571,10 @@ export const createOpenBankingService = (dependencies: {
           'The OAuth redirect configuration changed.'
         );
       }
-      const session = dependencies.linkSessions.loadOwned(record.linkSessionId, principal.userId);
+      const session = await dependencies.linkSessions.loadOwned(
+        record.linkSessionId,
+        principal.userId
+      );
       if (!session) {
         throw new OpenBankingOAuthStateError(
           'OPEN_BANKING_OAUTH_STATE_EXPIRED',
@@ -579,7 +582,7 @@ export const createOpenBankingService = (dependencies: {
         );
       }
       requireMatchingOAuthState(record, session);
-      const recorded = oauthRecovery.recordCallbackOwned({
+      const recorded = await oauthRecovery.recordCallbackOwned({
         id: record.id,
         ownerUserId: principal.userId,
         environment: configuration.environment,
@@ -613,13 +616,16 @@ export const createOpenBankingService = (dependencies: {
       if (!input.sessionId) {
         throw new OpenBankingConfigurationError('A server-issued Link session is required.');
       }
-      const pendingSession = dependencies.linkSessions.loadOwned(input.sessionId, principal.userId);
+      const pendingSession = await dependencies.linkSessions.loadOwned(
+        input.sessionId,
+        principal.userId
+      );
       if (!pendingSession) throw new OpenBankingLinkSessionError();
       if (pendingSession.environment !== configuration.environment) {
-        dependencies.linkSessions.consume(input.sessionId, principal.userId);
+        await dependencies.linkSessions.consume(input.sessionId, principal.userId);
         throw new OpenBankingEnvironmentMismatchError();
       }
-      const priorOAuthState = oauthRecovery.loadByLinkSessionOwned({
+      const priorOAuthState = await oauthRecovery.loadByLinkSessionOwned({
         linkSessionId: input.sessionId,
         ownerUserId: principal.userId,
         environment: configuration.environment,
@@ -631,7 +637,7 @@ export const createOpenBankingService = (dependencies: {
         );
       }
       requireMatchingOAuthState(priorOAuthState, pendingSession);
-      const session = dependencies.linkSessions.consume(input.sessionId, principal.userId);
+      const session = await dependencies.linkSessions.consume(input.sessionId, principal.userId);
       if (session.environment !== configuration.environment) {
         throw new OpenBankingEnvironmentMismatchError();
       }
@@ -775,6 +781,10 @@ export const createOpenBankingService = (dependencies: {
           disconnectedAt: null,
           revokedItems: existingConnection?.revokedItems ?? [],
           selectedAccountIds,
+          selectedAccountCurrencies: Object.fromEntries(
+            accounts.filter((account) => account.externalAccountId)
+              .map((account) => [account.externalAccountId!, account.currency])
+          ),
           transactionSyncCursor:
             session.mode === 'update' ? existingConnection?.transactionSyncCursor ?? null : null,
           consentExpirationTime:
@@ -784,7 +794,7 @@ export const createOpenBankingService = (dependencies: {
         });
         providerRecordPersisted = true;
         persistedConnectionId = stored.id;
-        const completedOAuthState = oauthRecovery.consumeOwned({
+        const completedOAuthState = await oauthRecovery.consumeOwned({
           id: priorOAuthState.id,
           ownerUserId: principal.userId,
           environment: configuration.environment,
@@ -809,7 +819,7 @@ export const createOpenBankingService = (dependencies: {
             // The original validation/provider error remains authoritative.
           }
         }
-        oauthRecovery.consumeOwned({
+        await oauthRecovery.consumeOwned({
           id: priorOAuthState.id,
           ownerUserId: principal.userId,
           environment: configuration.environment,

@@ -358,7 +358,7 @@ const handleAuthLogout = async (
   authService: ServerAuthService
 ) => {
   requireAuthMutationRequest(request);
-  authService.logout(getSessionTokenFromRequest(request));
+  await authService.logout(getSessionTokenFromRequest(request));
   response.setHeader('Set-Cookie', serializeExpiredSessionCookie(isSecureRequest(request)));
   json(response, 200, { ok: true });
 };
@@ -657,6 +657,7 @@ export interface BrokerApiPluginOptions {
   openBankingAuthenticator?: OpenBankingRequestAuthenticator;
   openBankingService?: OpenBankingService;
   operationalStores?: OperationalStores;
+  environment?: NodeJS.ProcessEnv;
 }
 
 const createDefaultOpenBankingService = (stores?: OperationalStores) => createOpenBankingService({
@@ -700,7 +701,12 @@ export interface BrokerApiApplication {
 export const createBrokerApiApplication = (
   options: BrokerApiPluginOptions = {}
 ): BrokerApiApplication => {
-  const accountBackupStore = options.accountBackupStore ?? defaultAccountBackupStore;
+  const environment = options.environment ?? process.env;
+  const production = environment.NODE_ENV === 'production';
+  const accountBackupEnabled = environment.ACCOUNT_BACKUP_MODE !== 'disabled';
+  const accountBackupStore = accountBackupEnabled
+    ? options.accountBackupStore ?? defaultAccountBackupStore
+    : null;
   const authService = options.authService ?? (options.operationalStores
     ? createServerAuthService({
         users: options.operationalStores.users,
@@ -736,22 +742,56 @@ export const createBrokerApiApplication = (
     handler: BrokerApiRoute['handle']) => route(path, method, async (request, response) => {
       try { await handler(request, response); } catch (error) { jsonOpenBankingError(response, error, operation); }
     });
+  const requireAuxiliaryAuthentication = (handler: BrokerApiRoute['handle']) =>
+    async (request: IncomingMessage, response: ServerResponse) => {
+      await requireAuthenticatedServerUser(request, authService);
+      await handler(request, response);
+    };
+  const disabledAccountBackup = async (_request: IncomingMessage, response: ServerResponse) => {
+    json(response, 503, {
+      error: 'Server account backup is disabled.',
+      code: 'ACCOUNT_BACKUP_DISABLED',
+    });
+  };
+  const disabledAccountCreation = async (_request: IncomingMessage, response: ServerResponse) => {
+    json(response, 403, {
+      error: 'Public account creation is disabled.',
+      code: 'AUTH_ACCOUNT_CREATION_DISABLED',
+    });
+  };
 
   const routes: BrokerApiRoute[] = [
     route('/api/health', 'GET', async (_request, response) => {
-      json(response, 200, { status: 'ready' });
+      try {
+        await options.operationalStores?.assertReady();
+        json(response, 200, { status: 'ready' });
+      } catch {
+        json(response, 503, { status: 'unavailable' });
+      }
     }),
-    route('/api/brokers/etoro/account', 'GET', handleEtoroAccount),
-    route('/api/brokers/etoro/test', 'GET', handleEtoroTest),
-    route('/api/fx/rates', 'GET', handleFxRates),
+    route('/api/config', 'GET', async (_request, response) => {
+      json(response, 200, { accountBackupMode: accountBackupEnabled ? 'enabled' : 'disabled' });
+    }),
+    authRoute('/api/brokers/etoro/account', 'GET', production
+      ? requireAuxiliaryAuthentication(handleEtoroAccount) : handleEtoroAccount),
+    authRoute('/api/brokers/etoro/test', 'GET', production
+      ? requireAuxiliaryAuthentication(handleEtoroTest) : handleEtoroTest),
+    authRoute('/api/fx/rates', 'GET', production
+      ? requireAuxiliaryAuthentication(handleFxRates) : handleFxRates),
     accountRoute('/api/account-backup/save', (request, response) =>
-      handleSaveAccountBackup(request, response, authService, accountBackupStore)),
+      accountBackupEnabled
+        ? handleSaveAccountBackup(request, response, authService, accountBackupStore!)
+        : disabledAccountBackup(request, response)),
     accountRoute('/api/account-backup/load', (request, response) =>
-      handleLoadAccountBackup(request, response, authService, accountBackupStore)),
+      accountBackupEnabled
+        ? handleLoadAccountBackup(request, response, authService, accountBackupStore!)
+        : disabledAccountBackup(request, response)),
     authRoute('/api/auth/register', 'POST', (request, response) =>
-      handleAuthRegister(request, response, authService)),
+      production ? disabledAccountCreation(request, response) :
+        handleAuthRegister(request, response, authService)),
     authRoute('/api/auth/enroll', 'POST', (request, response) =>
-      handleAuthEnroll(request, response, authService)),
+      production ? disabledAccountCreation(request, response) :
+        handleAuthEnroll(request, response, authService)),
     authRoute('/api/auth/login', 'POST', (request, response) =>
       handleAuthLogin(request, response, authService)),
     authRoute('/api/auth/session', 'GET', (request, response) =>

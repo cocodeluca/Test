@@ -1,5 +1,6 @@
 import { UserAccountBackup } from './localAccountStore';
 import { tracePortfolioPersistence } from './portfolioPersistenceTrace';
+import { isRemoteAccountBackupEnabled } from './runtimeConfiguration';
 
 const ensureOk = async <T>(response: Response): Promise<T> => {
   const payload = (await response.json()) as T & { error?: string };
@@ -12,7 +13,10 @@ const ensureOk = async <T>(response: Response): Promise<T> => {
 };
 
 const remoteWrites = new Map<string, Promise<unknown>>();
-export const saveBackupToServer = (backup: UserAccountBackup) => {
+export const saveBackupToServer = async (backup: UserAccountBackup) => {
+  if (!(await isRemoteAccountBackupEnabled())) {
+    return { ok: false as const, disabled: true as const };
+  }
   const ownerKey = 'authenticated-session';
   const body = JSON.stringify({ backup });
   const next = (remoteWrites.get(ownerKey) ?? Promise.resolve()).catch(() => undefined).then(async () => {
@@ -35,6 +39,9 @@ export const saveBackupToServer = (backup: UserAccountBackup) => {
 };
 
 export const loadBackupFromServer = async () => {
+  if (!(await isRemoteAccountBackupEnabled())) {
+    throw new Error('Server account backup is disabled.');
+  }
   tracePortfolioPersistence('backup:remote-load', {});
   const response = await fetch('/api/account-backup/load', {
     method: 'POST',
