@@ -96,6 +96,22 @@ const translations: Record<string, string> = {
 
 const t = (key: string) => translations[key] ?? key;
 
+test('unmatched posted debit offers categorization alongside Ignore, while inflow does not', () => {
+  const property = { id: 'synthetic-property', name: 'Test Property' } as Property;
+  const html = renderToStaticMarkup(React.createElement(BankTransactionsView, {
+    transactions: [transaction({ id: 'outgoing', amount: -42, description: 'Electric Utility Direct Debit' }),
+      transaction({ id: 'incoming', amount: 42 })],
+    cashAccounts: [account], reconciliations: [],
+    reconciliationContext: { properties: [property], rentReceivables: [], rentPayments: [],
+      expenseObligations: [], expensePayments: [], cashAccounts: [account] },
+    selectedAccountId: 'all', onSelectedAccountIdChange: () => undefined,
+    onCategorize: () => undefined, onIgnore: () => undefined,
+    isSyncing: false, language: 'en', t,
+  }));
+  assert.equal((html.match(/cashAccounts\.reconciliationCategorize/g) ?? []).length, 1);
+  assert.equal((html.match(/>Ignore</g) ?? []).length, 2);
+});
+
 const renderView = (
   transactions: BankTransaction[],
   cashAccounts: CashAccount[] = [account],

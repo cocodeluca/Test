@@ -106,6 +106,36 @@ const cashAccount = (overrides: Partial<CashAccount>): CashAccount => ({
   ...overrides,
 });
 
+test('only a confirmed one-off payment changes its property and month once, without changing mortgage cost', () => {
+  const base = {
+    properties: [property('one', 'occupied'), property('two', 'occupied')],
+    propertyMetrics: [propertyMetric('one', { monthlyRent: 1000, monthlyExpenses: 100,
+      totalMonthlyExpenses: 400, netMonthlyCashflow: 600 }),
+    propertyMetric('two', { monthlyRent: 1000, monthlyExpenses: 100 })],
+    cashAccounts: [], alerts: [], debtPaydown,
+    valuationDisplayCurrency: 'EUR' as const, operatingDisplayCurrency: 'EUR' as const,
+    fxRates: Object.freeze({ EUR: 1, USD: 0.9, ARS: 0.001, GBP: 1.2 }),
+    asOfMonth: '2026-09',
+  };
+  const obligation = { id: 'bank-expense:synthetic-1', propertyId: 'one', category: 'WATER' as const,
+    label: 'WATER', dueDate: '2026-09-03', expectedAmount: 75, currency: 'EUR' as const };
+  const payment = { id: 'bank-payment:synthetic-1', propertyId: 'one', paidDate: '2026-09-03',
+    amount: 75, currency: 'EUR' as const, source: 'bank_sync' as const,
+    allocations: [{ obligationId: obligation.id, amount: 75 }] };
+  const before = buildPropertiesOnlyDashboardViewModel(base);
+  const after = buildPropertiesOnlyDashboardViewModel({ ...base,
+    expenseObligations: [obligation], expensePayments: [payment] });
+  assert.equal(after.properties[0].monthlyOperatingExpenses, before.properties[0].monthlyOperatingExpenses! + 75);
+  assert.equal(after.properties[0].monthlyOperatingResult, before.properties[0].monthlyOperatingResult! - 75);
+  assert.equal(after.properties[0].monthlyNetCashflow, before.properties[0].monthlyNetCashflow! - 75);
+  assert.equal(after.properties[1].monthlyNetCashflow, before.properties[1].monthlyNetCashflow);
+  assert.equal(buildPropertiesOnlyDashboardViewModel({ ...base, asOfMonth: '2026-10',
+    expenseObligations: [obligation], expensePayments: [payment] }).operating.noi.value,
+    before.operating.noi.value);
+  assert.equal(buildPropertiesOnlyDashboardViewModel({ ...base, expenseObligations: [obligation],
+    expensePayments: [] }).operating.noi.value, before.operating.noi.value);
+});
+
 test('derives operating KPIs and table totals from the exact same converted rows', () => {
   const properties = [property('one', 'occupied'), property('two', 'vacant')];
   const metrics = [

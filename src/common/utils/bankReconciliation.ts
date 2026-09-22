@@ -14,7 +14,7 @@ import type {
   RentReceivable,
 } from '../types';
 import { isCashAccountIncludedInPortfolio } from './cashAccounts';
-import { createManualExpensePayment } from './propertyExpenses';
+import { createManualExpensePayment, createOneTimeExpenseObligation } from './propertyExpenses';
 import { createManualRentPayment } from './rentCollection';
 import { deriveBankReconciliationTargets } from './bankReconciliationTargets';
 import {
@@ -29,6 +29,7 @@ export type BankReconciliationReason =
   | 'exact-amount'
   | 'similar-amount'
   | 'partial-amount'
+  | 'variable-amount'
   | 'existing-manual-payment'
   | 'same-currency'
   | 'date-proximity'
@@ -48,6 +49,7 @@ export interface BankReconciliationSuggestion {
   propertyId: string;
   propertyName: string;
   targetLabel: string;
+  expenseCategory?: PropertyExpenseCategory;
   period?: string | null;
   dueDate: string;
   expectedAmount: number;
@@ -79,13 +81,15 @@ export interface BankReconciliationContext {
 
 interface Candidate {
   suggestion: BankReconciliationSuggestion;
-  amountReason: Extract<BankReconciliationReason, 'exact-amount' | 'similar-amount' | 'partial-amount'>;
+  amountReason: Extract<BankReconciliationReason, 'exact-amount' | 'similar-amount' | 'partial-amount' | 'variable-amount'>;
   hasPropertyTextMatch: boolean;
   hasSpecificDescriptionMatch: boolean;
   hasHistoricalPatternMatch: boolean;
 }
 
 const MAX_DATE_DISTANCE_DAYS = 14;
+const variableExpenseCategories = new Set<PropertyExpenseCategory>(['UTILITIES', 'ELECTRICITY', 'WATER', 'GAS', 'INTERNET']);
+const categorizedTargetId = (transaction: BankTransaction) => `bank-expense:${encodeURIComponent(transaction.id)}`;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const TEXT_TOKEN_MIN_LENGTH = 4;
 const GENERIC_PROPERTY_TOKENS = new Set([
@@ -103,6 +107,11 @@ const EXPENSE_CATEGORY_KEYWORDS: Record<PropertyExpenseCategory, string[]> = {
   PROPERTY_MANAGEMENT: ['management fee', 'property management', 'gestion alquiler', 'gestión alquiler', 'gestion inmobiliaria', 'gestão imobiliária'],
   MAINTENANCE: ['maintenance', 'repair', 'mantenimiento', 'reparacion', 'reparación', 'manutencao', 'manutenção', 'reparo'],
   UTILITIES: ['utilities', 'utility', 'electricity', 'water', 'gas', 'electricidad', 'agua', 'luz', 'energia'],
+  ELECTRICITY: ['electricity', 'electricidad', 'luz', 'eletricidade'],
+  WATER: ['water', 'agua'],
+  GAS: ['gas'],
+  INTERNET: ['internet', 'telecom', 'telecommunications', 'telecomunicaciones'],
+  MUNICIPAL_TAX: ['municipal tax', 'local fee', 'tasas municipales', 'taxas municipais'],
   SPECIAL_ASSESSMENT: ['special assessment', 'assessment', 'derrama'],
   OTHER: [],
 };
@@ -450,17 +459,24 @@ export const suggestBankTransactionMatch = (
       !isExpenseRuleEligible(obligation, transaction, context.propertyExpenseRules) ||
       (propertyContextId && obligation.propertyId !== propertyContextId)
     ) return [];
-    const amountMatch = getAmountReason(amount, obligation.outstandingAmount);
+    const historicalCategories: PropertyExpenseCategory[] = obligation.category === 'UTILITIES'
+      ? ['UTILITIES', 'ELECTRICITY', 'WATER', 'GAS'] : [obligation.category];
+    const learnedCategories = historicalCategories.filter((category) =>
+      getExpenseHistoricalPatternEvidence(transaction, historicalPatterns.expense,
+        historicalPatterns.ambiguousExpenseFingerprints, obligation.propertyId, category)
+    );
+    const learnedCategory = learnedCategories.length === 1 ? learnedCategories[0] : null;
+    const historicalEvidence = learnedCategory ? getExpenseHistoricalPatternEvidence(
+      transaction, historicalPatterns.expense, historicalPatterns.ambiguousExpenseFingerprints,
+      obligation.propertyId, learnedCategory
+    ) : null;
+    const amountMatch = getAmountReason(amount, obligation.outstandingAmount) ??
+      (variableExpenseCategories.has(obligation.category) && historicalEvidence
+        ? { reason: 'variable-amount' as const, difference: Math.abs(amount - obligation.outstandingAmount) }
+        : null);
     const dateDistance = daysBetween(transaction.bookingDate, obligation.dueDate);
     if (!amountMatch || dateDistance > MAX_DATE_DISTANCE_DAYS) return [];
     const descriptionEvidence = getExpenseDescriptionEvidence(transaction, obligation);
-    const historicalEvidence = getExpenseHistoricalPatternEvidence(
-      transaction,
-      historicalPatterns.expense,
-      historicalPatterns.ambiguousExpenseFingerprints,
-      obligation.propertyId,
-      obligation.category
-    );
     if (!descriptionEvidence.matches && !historicalEvidence) return [];
     const propertyTextMatch = Boolean(property && hasPropertyTextMatch(transaction, property));
     const rule = obligation.expenseRuleId
@@ -477,6 +493,7 @@ export const suggestBankTransactionMatch = (
         propertyId: obligation.propertyId,
         propertyName: property?.name ?? obligation.propertyId,
         targetLabel: obligation.label,
+        expenseCategory: learnedCategory ?? obligation.category,
         period: obligation.period,
         dueDate: obligation.dueDate,
         expectedAmount: obligation.expectedAmount,
@@ -496,7 +513,44 @@ export const suggestBankTransactionMatch = (
       },
     }];
   });
-  return selectConservativeCandidate(candidates);
+  const canonical = selectConservativeCandidate(candidates);
+  // Only a confirmed expense can teach this exact merchant/description relation.
+  // No canonical bill is inferred from that history.
+  const learned = historicalPatterns.expense.filter((pattern) =>
+    Boolean(getExpenseHistoricalPatternEvidence(
+      transaction, historicalPatterns.expense, historicalPatterns.ambiguousExpenseFingerprints,
+      pattern.propertyId, pattern.category
+    )) && (!propertyContextId || propertyContextId === pattern.propertyId)
+  );
+  const relations = new Set(learned.map((pattern) => `${pattern.propertyId}|${pattern.category}`));
+  if (relations.size > 1) return null;
+  if (canonical) {
+    const obligation = targets.expenseObligations.find((item) => item.id === canonical.targetId);
+    if (relations.size === 1 && obligation) {
+      const pattern = learned[0];
+      if (obligation.category !== pattern.category &&
+        !(obligation.category === 'UTILITIES' && ['ELECTRICITY', 'WATER', 'GAS'].includes(pattern.category))) return null;
+      return { ...canonical, expenseCategory: pattern.category };
+    }
+    return canonical;
+  }
+  if (candidates.length > 1 || relations.size !== 1) return null;
+  const pattern = learned[0];
+  const property = propertiesById.get(pattern.propertyId);
+  if (!property) return null;
+  const evidence = getExpenseHistoricalPatternEvidence(
+    transaction, historicalPatterns.expense, historicalPatterns.ambiguousExpenseFingerprints,
+    pattern.propertyId, pattern.category
+  );
+  if (!evidence) return null;
+  return {
+    targetType: 'expense-obligation', targetId: categorizedTargetId(transaction),
+    propertyId: property.id, propertyName: property.name, targetLabel: pattern.category,
+    expenseCategory: pattern.category,
+    dueDate: transaction.bookingDate, expectedAmount: amount, outstandingAmount: amount,
+    transactionAmount: amount, dateDistanceDays: 0, currency: transaction.currency,
+    reasons: getHistoricalReasons(evidence, 'merchant'),
+  };
 };
 
 export const getBankReconciliationView = (
@@ -556,13 +610,27 @@ export const confirmBankTransactionMatch = (args: {
   if (existing?.status === 'matched') {
     return {
       reconciliations: args.reconciliations,
+      rentReceivables: args.context.rentReceivables,
       rentPayments: args.context.rentPayments,
+      expenseObligations: args.context.expenseObligations,
       expensePayments: args.context.expensePayments,
     };
   }
   const suggestion = suggestBankTransactionMatch(args.transaction, args.context, args.reconciliations);
   if (!suggestion || suggestion.targetType !== args.targetType || suggestion.targetId !== args.targetId) {
     return null;
+  }
+  if (suggestion.targetId === categorizedTargetId(args.transaction)) {
+    const patterns = extractConfirmedBankTransactionPatterns(args.context, args.reconciliations);
+    const pattern = patterns.expense.find((item) =>
+      item.propertyId === suggestion.propertyId &&
+      getExpenseHistoricalPatternEvidence(args.transaction, patterns.expense,
+        patterns.ambiguousExpenseFingerprints, item.propertyId, item.category)
+    );
+    return pattern ? categorizeBankTransaction({
+      transaction: args.transaction, propertyId: pattern.propertyId, category: pattern.category,
+      reconciliations: args.reconciliations, context: args.context, timestamp: args.timestamp,
+    }) : null;
   }
 
   const timestamp = args.timestamp ?? new Date().toISOString();
@@ -621,6 +689,10 @@ export const confirmBankTransactionMatch = (args: {
       status: 'matched',
       targetType: suggestion.targetType,
       targetId: suggestion.targetId,
+      ...(suggestion.targetType === 'expense-obligation'
+        ? { expenseCategory: suggestion.expenseCategory ??
+            targets.expenseObligations.find((item) => item.id === suggestion.targetId)?.category }
+        : {}),
       paymentId,
       paymentLinkType: suggestion.existingPaymentId ? 'linked-manual' : 'created-bank-sync',
     }, timestamp),
@@ -628,6 +700,101 @@ export const confirmBankTransactionMatch = (args: {
     rentPayments,
     expenseObligations,
     expensePayments,
+  };
+};
+
+/** An explicit one-off classification. Never changes a recurring rule or invents future bills. */
+export const categorizeBankTransaction = (args: {
+  transaction: BankTransaction;
+  propertyId: string;
+  category: PropertyExpenseCategory;
+  reconciliations: BankTransactionReconciliation[];
+  context: BankReconciliationContext;
+  timestamp?: string;
+}) => {
+  const { transaction, context } = args;
+  const property = context.properties.find((item) => item.id === args.propertyId);
+  const account = context.cashAccounts?.find((item) => item.id === transaction.cashAccountId);
+  const existing = args.reconciliations.find((item) => item.bankTransactionId === transaction.id);
+  if (!property || transaction.amount >= 0 || transaction.pending ||
+    (transaction.lifecycleStatus && transaction.lifecycleStatus !== 'active') ||
+    (context.cashAccounts && (!account || !isCashAccountIncludedInPortfolio(account))) ||
+    existing?.status === 'ignored' || existing?.status === 'removed' || existing?.status === 'reversed') return null;
+  const previousObligation = existing?.targetType === 'expense-obligation'
+    ? context.expenseObligations.find((item) => item.id === existing.targetId) : undefined;
+  if (existing?.status === 'matched' && previousObligation?.propertyId === args.propertyId &&
+    (existing.expenseCategory ?? previousObligation.category) === args.category) return {
+    reconciliations: args.reconciliations, rentReceivables: context.rentReceivables,
+    rentPayments: context.rentPayments, expenseObligations: context.expenseObligations,
+    expensePayments: context.expensePayments,
+  };
+  // A rent match cannot be recategorized as a debit; direction validation above
+  // also protects legacy/corrupt links.
+  if (existing?.status === 'matched' && existing.targetType !== 'expense-obligation') return null;
+  const previousOneTimeId = categorizedTargetId(transaction);
+  if (existing?.status === 'matched' && previousObligation?.id === previousOneTimeId &&
+    context.expensePayments.some((payment) => payment.id !== existing.paymentId &&
+      payment.allocations.some((allocation) => allocation.obligationId === previousOneTimeId))) return null;
+
+  const undone = unmatchBankTransaction({ bankTransactionId: transaction.id,
+    reconciliations: args.reconciliations, rentPayments: context.rentPayments,
+    expensePayments: context.expensePayments });
+  const obligations = context.expenseObligations.filter((item) => item.id !== previousOneTimeId);
+  const currentContext = { ...context, expenseObligations: obligations, expensePayments: undone.expensePayments };
+  const derived = deriveBankReconciliationTargets(currentContext);
+  const matchesCategory = (category: PropertyExpenseCategory) => category === args.category ||
+    (category === 'UTILITIES' && ['ELECTRICITY', 'WATER', 'GAS'].includes(args.category));
+  const linkedIds = new Set(undone.reconciliations.filter((item) => item.status === 'matched')
+    .map((item) => item.paymentId));
+  const manualLinks = derived.expenseObligations.flatMap((item) => {
+    if (item.propertyId !== property.id || !matchesCategory(item.category) ||
+      item.currency !== transaction.currency ||
+      !isExpenseRuleEligible(item, transaction, context.propertyExpenseRules) ||
+      daysBetween(item.dueDate, transaction.bookingDate) > MAX_DATE_DISTANCE_DAYS) return [];
+    return undone.expensePayments.filter((payment) => payment.source === 'manual' &&
+      !linkedIds.has(payment.id) && payment.propertyId === property.id &&
+      payment.currency === transaction.currency &&
+      payment.allocations.length === 1 && payment.allocations[0].obligationId === item.id &&
+      Math.abs(payment.amount - Math.abs(transaction.amount)) <= 0.01 &&
+      Math.abs(payment.allocations[0].amount - Math.abs(transaction.amount)) <= 0.01 &&
+      daysBetween(payment.paidDate, transaction.bookingDate) <= MAX_DATE_DISTANCE_DAYS
+    ).map((payment) => ({ obligation: item, payment }));
+  });
+  if (manualLinks.length > 1) return null;
+  const candidates = derived.expenseObligationViews.filter((item) =>
+    item.id !== previousOneTimeId && item.propertyId === property.id &&
+    matchesCategory(item.category) &&
+    item.currency === transaction.currency && item.outstandingAmount >= Math.abs(transaction.amount) - 0.01 &&
+    daysBetween(transaction.bookingDate, item.dueDate) <= MAX_DATE_DISTANCE_DAYS &&
+    isExpenseRuleEligible(item, transaction, context.propertyExpenseRules)
+  );
+  const target = manualLinks[0]?.obligation ?? (candidates.length === 1
+    ? derived.expenseObligations.find((item) => item.id === candidates[0].id)
+    : undefined);
+  // Ambiguous configured bills are never selected by a confirmation of just
+  // property/category; retain the classification as a one-off instead.
+  const obligation = target ?? createOneTimeExpenseObligation({
+    id: previousOneTimeId, propertyId: property.id, category: args.category,
+    label: args.category, expectedAmount: Math.abs(transaction.amount),
+    currency: transaction.currency, dueDate: transaction.bookingDate,
+  });
+  const timestamp = args.timestamp ?? new Date().toISOString();
+  const paymentId = manualLinks[0]?.payment.id ?? `bank-payment:${encodeURIComponent(transaction.id)}`;
+  const payment = { ...createManualExpensePayment({
+    id: paymentId, obligation, paidDate: transaction.bookingDate,
+    amount: Math.abs(transaction.amount), createdAt: timestamp,
+  }), source: 'bank_sync' as const };
+  return {
+    reconciliations: upsertReconciliation(undone.reconciliations, {
+      bankTransactionId: transaction.id, status: 'matched', targetType: 'expense-obligation',
+      targetId: obligation.id, expenseCategory: args.category,
+      paymentId, paymentLinkType: manualLinks.length ? 'linked-manual' : 'created-bank-sync',
+    }, timestamp),
+    rentReceivables: context.rentReceivables,
+    rentPayments: context.rentPayments,
+    expenseObligations: obligations.some((item) => item.id === obligation.id) ? obligations : [...obligations, obligation],
+    expensePayments: manualLinks.length ? undone.expensePayments
+      : [...undone.expensePayments.filter((item) => item.id !== paymentId), payment],
   };
 };
 
@@ -648,6 +815,7 @@ export const unmatchBankTransaction = (args: {
   reconciliations: BankTransactionReconciliation[];
   rentPayments: RentPayment[];
   expensePayments: ExpensePayment[];
+  expenseObligations?: ExpenseObligation[];
 }) => {
   const reconciliation = args.reconciliations.find(
     (item) => item.bankTransactionId === args.bankTransactionId && item.status === 'matched'
@@ -657,6 +825,7 @@ export const unmatchBankTransaction = (args: {
       reconciliations: args.reconciliations,
       rentPayments: args.rentPayments,
       expensePayments: args.expensePayments,
+      expenseObligations: args.expenseObligations,
     };
   }
 
@@ -683,6 +852,10 @@ export const unmatchBankTransaction = (args: {
     expensePayments: filteredExpensePayments.length === args.expensePayments.length
       ? args.expensePayments
       : filteredExpensePayments,
+    expenseObligations: args.expenseObligations?.filter((obligation) =>
+      obligation.id !== `bank-expense:${encodeURIComponent(args.bankTransactionId)}` ||
+      filteredExpensePayments.some((payment) => payment.allocations.some((allocation) => allocation.obligationId === obligation.id))
+    ),
   };
 };
 
@@ -691,11 +864,13 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
   reconciliations: BankTransactionReconciliation[];
   rentPayments: RentPayment[];
   expensePayments: ExpensePayment[];
+  expenseObligations?: ExpenseObligation[];
   timestamp?: string;
 }) => {
   let reconciliations = args.reconciliations;
   let rentPayments = args.rentPayments;
   let expensePayments = args.expensePayments;
+  let expenseObligations = args.expenseObligations;
   const timestamp = args.timestamp ?? new Date().toISOString();
 
   for (const event of args.lifecycleEvents) {
@@ -717,6 +892,10 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
       } else if (reconciliation.targetType === 'expense-obligation') {
         expensePayments = expensePayments.filter(
           (payment) => payment.id !== reconciliation.paymentId || payment.source !== 'bank_sync'
+        );
+        expenseObligations = expenseObligations?.filter((obligation) =>
+          obligation.id !== `bank-expense:${encodeURIComponent(event.bankTransactionId)}` ||
+          expensePayments.some((payment) => payment.allocations.some((allocation) => allocation.obligationId === obligation.id))
         );
       }
     }
@@ -746,5 +925,5 @@ export const applyBankTransactionLifecycleToReconciliation = (args: {
     } : item);
   }
 
-  return { reconciliations, rentPayments, expensePayments };
+  return { reconciliations, rentPayments, expensePayments, expenseObligations };
 };

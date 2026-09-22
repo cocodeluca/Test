@@ -1,10 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Receipt, RefreshCw } from 'lucide-react';
 import type {
   BankReconciliationTargetType,
   BankTransaction,
   BankTransactionReconciliation,
   CashAccount,
+  PropertyExpenseCategory,
 } from '../../../common/types';
 import type { AppLanguage } from '../../../common/types/settings';
 import {
@@ -34,6 +35,7 @@ interface BankTransactionsViewProps {
   onConfirmMatch?: (transaction: BankTransaction, targetType: BankReconciliationTargetType, targetId: string) => void;
   onIgnore?: (transaction: BankTransaction) => void;
   onUnmatch?: (transaction: BankTransaction) => void;
+  onCategorize?: (transaction: BankTransaction, propertyId: string, category: PropertyExpenseCategory) => void;
   isSyncing: boolean;
   language: AppLanguage;
   t: (key: string, replacements?: Record<string, string | number>) => string;
@@ -44,6 +46,12 @@ const localeByLanguage: Record<AppLanguage, string> = {
   es: 'es-ES',
   pt: 'pt-PT',
 };
+
+const expenseCategories: PropertyExpenseCategory[] = [
+  'COMMUNITY', 'PROPERTY_TAX', 'HOME_INSURANCE', 'RENT_DEFAULT_INSURANCE',
+  'PROPERTY_MANAGEMENT', 'MAINTENANCE', 'ELECTRICITY', 'WATER', 'GAS',
+  'UTILITIES', 'INTERNET', 'MUNICIPAL_TAX', 'SPECIAL_ASSESSMENT', 'OTHER',
+];
 
 const formatTransactionDate = (date: string, language: AppLanguage) => {
   const parsed = new Date(/^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T12:00:00` : date);
@@ -63,10 +71,14 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
   onConfirmMatch,
   onIgnore,
   onUnmatch,
+  onCategorize,
   isSyncing,
   language,
   t,
 }) => {
+  const [assignment, setAssignment] = useState<{
+    transaction: BankTransaction; propertyId: string; category: PropertyExpenseCategory;
+  } | null>(null);
   const accountsById = useMemo(
     () => new Map(cashAccounts.map((account) => [account.id, account])),
     [cashAccounts]
@@ -162,6 +174,18 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                 const reconciliation = reconciliationContext
                   ? getBankReconciliationView(transaction, reconciliations, reconciliationContext)
                   : null;
+                const matchedObligation = reconciliation?.reconciliation?.targetType === 'expense-obligation'
+                  ? reconciliationContext?.expenseObligations.find((item) => item.id === reconciliation.reconciliation?.targetId)
+                  : null;
+                const suggestedObligation = reconciliation?.suggestion?.targetType === 'expense-obligation'
+                  ? reconciliationContext?.expenseObligations.find((item) => item.id === reconciliation.suggestion?.targetId)
+                  : null;
+                const openAssignment = () => setAssignment({
+                  transaction, propertyId: matchedObligation?.propertyId ?? reconciliation?.suggestion?.propertyId ?? '',
+                  category: reconciliation?.reconciliation?.expenseCategory ?? matchedObligation?.category ?? reconciliation?.suggestion?.expenseCategory ?? suggestedObligation?.category ??
+                    (expenseCategories.includes(reconciliation?.suggestion?.targetLabel as PropertyExpenseCategory)
+                      ? reconciliation!.suggestion!.targetLabel as PropertyExpenseCategory : 'OTHER'),
+                });
                 return (
                   <tr
                     key={transaction.id}
@@ -200,7 +224,13 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                           {reconciliation.suggestion ? (
                             <div className="mt-3">
                               <p className={`text-sm font-medium ${appTextStrongClass}`}>
-                                {t(`cashAccounts.reconciliationTarget.${reconciliation.suggestion.targetType}`)}: {reconciliation.suggestion.propertyName} · {reconciliation.suggestion.targetLabel}
+                                {t(`cashAccounts.reconciliationTarget.${reconciliation.suggestion.targetType}`)}: {reconciliation.suggestion.propertyName} · {reconciliation.suggestion.expenseCategory
+                                  ? t(`cashAccounts.expenseCategory.${reconciliation.suggestion.expenseCategory}`)
+                                  : suggestedObligation
+                                  ? t(`cashAccounts.expenseCategory.${suggestedObligation.category}`)
+                                  : expenseCategories.includes(reconciliation.suggestion.targetLabel as PropertyExpenseCategory)
+                                    ? t(`cashAccounts.expenseCategory.${reconciliation.suggestion.targetLabel}`)
+                                    : reconciliation.suggestion.targetLabel}
                               </p>
                               <p className={`mt-1 text-xs ${appTextMutedClass}`} data-reconciliation-obligation-details>
                                 {reconciliation.suggestion.period
@@ -221,6 +251,11 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                               </p>
                             </div>
                           ) : null}
+                          {reconciliation.status === 'matched' && matchedObligation ? (
+                            <p className={`mt-3 text-sm ${appTextStrongClass}`}>
+                              {reconciliationContext?.properties.find((item) => item.id === matchedObligation.propertyId)?.name ?? matchedObligation.propertyId} · {t(`cashAccounts.expenseCategory.${reconciliation.reconciliation?.expenseCategory ?? matchedObligation.category}`)}
+                            </p>
+                          ) : null}
                           {(reconciliation.status === 'unmatched' || reconciliation.status === 'suggested') && onIgnore ? (
                             <div className="mt-3 flex flex-wrap gap-2">
                               {reconciliation.suggestion && onConfirmMatch ? (
@@ -232,6 +267,12 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                                   {t('cashAccounts.reconciliationConfirm')}
                                 </button>
                               ) : null}
+                              {isOutflow && !transaction.pending && transactionState === 'posted' && onCategorize ? (
+                                <button type="button" onClick={openAssignment}
+                                  className={`rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}>
+                                  {t(reconciliation.status === 'suggested' ? 'cashAccounts.reconciliationChange' : 'cashAccounts.reconciliationCategorize')}
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 onClick={() => onIgnore(transaction)}
@@ -241,14 +282,17 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
                               </button>
                             </div>
                           ) : null}
-                          {reconciliation.status === 'matched' && onUnmatch ? (
-                            <button
+                          {reconciliation.status === 'matched' && (onUnmatch || (matchedObligation && onCategorize)) ? (
+                            <div className="mt-3 flex gap-2">{matchedObligation && onCategorize ? <button type="button" onClick={openAssignment}
+                              className={`rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}>
+                              {t('cashAccounts.reconciliationChange')}
+                            </button> : null}{onUnmatch ? <button
                               type="button"
                               onClick={() => onUnmatch(transaction)}
-                              className={`mt-3 rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}
+                              className={`rounded-lg px-3 py-1.5 text-xs ${appButtonMutedClass} ${appTextStrongClass}`}
                             >
                               {t('cashAccounts.reconciliationUnmatch')}
-                            </button>
+                            </button> : null}</div>
                           ) : null}
                         </div>
                       ) : (
@@ -262,6 +306,36 @@ export const BankTransactionsView: React.FC<BankTransactionsViewProps> = ({
           </table>
         </div>
       )}
+      {assignment && reconciliationContext && onCategorize ? (
+        <div role="dialog" aria-modal="true" aria-label={t('cashAccounts.assignExpense')}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className={`w-full max-w-md rounded-2xl p-5 ${appPanelInsetClass}`}>
+            <h3 className={`text-lg font-semibold ${appTextStrongClass}`}>{t('cashAccounts.assignExpense')}</h3>
+            <p className={`mt-3 text-sm ${appTextMutedClass}`}>{formatTransactionDate(assignment.transaction.bookingDate, language)} · {formatCurrencyValue(Math.abs(assignment.transaction.amount), assignment.transaction.currency)}</p>
+            <p className={`mt-1 text-sm ${appTextStrongClass}`}>{assignment.transaction.description}</p>
+            <label className={`mt-4 block text-sm ${appTextStrongClass}`}>{t('cashAccounts.expenseProperty')}
+              <select className={`mt-1 w-full ${appInputClass}`} value={assignment.propertyId}
+                onChange={(event) => setAssignment({ ...assignment, propertyId: event.target.value })}>
+                <option value="">{t('cashAccounts.selectProperty')}</option>
+                {reconciliationContext.properties.map((property) => <option key={property.id} value={property.id}>{property.name}</option>)}
+              </select>
+            </label>
+            <label className={`mt-3 block text-sm ${appTextStrongClass}`}>{t('cashAccounts.expenseCategoryLabel')}
+              <select className={`mt-1 w-full ${appInputClass}`} value={assignment.category}
+                onChange={(event) => setAssignment({ ...assignment, category: event.target.value as PropertyExpenseCategory })}>
+                {expenseCategories.map((category) => <option key={category} value={category}>{t(`cashAccounts.expenseCategory.${category}`)}</option>)}
+              </select>
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setAssignment(null)} className={`rounded-lg px-3 py-2 text-sm ${appButtonMutedClass} ${appTextStrongClass}`}>{t('cashAccounts.reconciliationCancel')}</button>
+              <button type="button" disabled={!assignment.propertyId} onClick={() => {
+                onCategorize(assignment.transaction, assignment.propertyId, assignment.category);
+                setAssignment(null);
+              }} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{t('cashAccounts.reconciliationConfirm')}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

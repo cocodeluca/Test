@@ -1,8 +1,9 @@
-import type { CashAccount, Property, PropertyMetrics } from '../../../common/types';
+import type { CashAccount, ExpenseObligation, ExpensePayment, Property, PropertyMetrics } from '../../../common/types';
 import type { DisplayCurrency } from '../../../common/types/settings';
 import type { PortfolioAlert } from '../../../common/utils/alerts';
 import type { MortgageDebtPaydownSummary } from '../../../common/utils/calculations';
 import { isActiveCashAccountIncludedInPortfolio } from '../../../common/utils/cashAccounts';
+import { toCivilDate } from '../../../common/utils/civilDate';
 import {
   convertCurrencyWithCoverage,
   type CurrencyRates,
@@ -86,6 +87,9 @@ export interface PropertiesOnlyDashboardViewModel {
 }
 
 interface BuildPropertiesOnlyDashboardViewModelArgs {
+  expenseObligations?: ExpenseObligation[];
+  expensePayments?: ExpensePayment[];
+  asOfMonth?: string;
   properties: Property[];
   propertyMetrics: PropertyMetrics[];
   cashAccounts: CashAccount[];
@@ -157,6 +161,9 @@ const combineCoverage = (...coverages: DashboardCoverage[]): DashboardCoverage =
 
 export const buildPropertiesOnlyDashboardViewModel = ({
   properties,
+  expenseObligations = [],
+  expensePayments = [],
+  asOfMonth = (() => { const today = toCivilDate(new Date()); return `${today.year}-${String(today.month).padStart(2, '0')}`; })(),
   propertyMetrics,
   cashAccounts,
   alerts,
@@ -224,14 +231,29 @@ export const buildPropertiesOnlyDashboardViewModel = ({
         )
       : { value: null, available: false };
     const monthlyRent = convertedRent.available ? convertedRent.value : null;
-    const monthlyOperatingExpenses = convertedExpenses.available
-      ? convertedExpenses.value
+    // One-off canonical expense payments are actual costs for their payment month.
+    // Payments against configured recurring bills are already in the projected
+    // property expense baseline and must not be added a second time.
+    const oneTimeIds = new Set(expenseObligations.filter((item) =>
+      item.propertyId === property.id && !item.expenseRuleId
+    ).map((item) => item.id));
+    const oneTimeCosts = expensePayments.filter((payment) =>
+      payment.propertyId === property.id &&
+      payment.paidDate.startsWith(asOfMonth) &&
+      payment.allocations.some((allocation) => oneTimeIds.has(allocation.obligationId))
+    ).reduce((sum, payment) => {
+      const converted = convertCurrencyWithCoverage(payment.amount, payment.currency,
+        operatingDisplayCurrency, fxRates);
+      return converted.available ? sum + (converted.value ?? 0) : Number.NaN;
+    }, 0);
+    const monthlyOperatingExpenses = convertedExpenses.available && Number.isFinite(oneTimeCosts)
+      ? (convertedExpenses.value ?? 0) + oneTimeCosts
       : null;
-    const monthlyNetCashflow = convertedNetMonthlyCashflow.available
-      ? convertedNetMonthlyCashflow.value
+    const monthlyNetCashflow = convertedNetMonthlyCashflow.available && Number.isFinite(oneTimeCosts)
+      ? (convertedNetMonthlyCashflow.value ?? 0) - oneTimeCosts
       : null;
-    const monthlyTotalExpenses = convertedTotalExpenses.available
-      ? convertedTotalExpenses.value
+    const monthlyTotalExpenses = convertedTotalExpenses.available && Number.isFinite(oneTimeCosts)
+      ? (convertedTotalExpenses.value ?? 0) + oneTimeCosts
       : null;
     const grossYield =
       hasValidCurrentValue && typeof metric?.grossYield === 'number' && Number.isFinite(metric.grossYield)

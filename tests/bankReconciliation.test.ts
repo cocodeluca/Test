@@ -10,6 +10,7 @@ import type {
 } from '../src/common/types';
 import {
   applyBankTransactionLifecycleToReconciliation,
+  categorizeBankTransaction,
   confirmBankTransactionMatch,
   getBankReconciliationView,
   ignoreBankTransaction,
@@ -93,6 +94,161 @@ test.beforeEach(() => {
       },
     },
   });
+});
+
+test('manual one-off classification is canonical, editable, undoable and survives IndexedDB', async () => {
+  const outgoing = transaction({ id: 'expense-a', amount: -83, description: 'Insurance Provider Monthly Premium', counterparty: 'Synthetic Insurer' });
+  const base = context({ expenseObligations: [], bankTransactions: [outgoing] });
+  assert.equal(getBankReconciliationView(outgoing, [], base).status, 'unmatched');
+  assert.equal(categorizeBankTransaction({ transaction: transaction({ amount: 83 }), propertyId: property.id,
+    category: 'RENT_DEFAULT_INSURANCE', reconciliations: [], context: base }), null);
+  const confirmed = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'RENT_DEFAULT_INSURANCE', reconciliations: [], context: base });
+  assert.ok(confirmed);
+  assert.equal(confirmed.expenseObligations.length, 1);
+  assert.equal(confirmed.expensePayments.length, 1);
+  assert.equal(confirmed.expensePayments[0].amount, 83);
+  assert.equal(buildExpenseObligationViews(confirmed.expenseObligations, confirmed.expensePayments)[0].status, 'PAID');
+  const changed = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'HOME_INSURANCE', reconciliations: confirmed.reconciliations,
+    context: { ...base, expenseObligations: confirmed.expenseObligations, expensePayments: confirmed.expensePayments } });
+  assert.ok(changed);
+  assert.equal(changed.expenseObligations.length, 1);
+  assert.equal(changed.expensePayments.length, 1);
+  assert.equal(changed.expenseObligations[0].category, 'HOME_INSURANCE');
+  await saveUserPortfolio('categorized-expense-user', { ...structuredClone(emptyPortfolioData),
+    properties: [property], bankTransactions: [outgoing],
+    bankTransactionReconciliations: changed.reconciliations,
+    expenseObligations: changed.expenseObligations, expensePayments: changed.expensePayments });
+  const loaded = await loadUserPortfolio('categorized-expense-user');
+  assert.equal(loaded.bankTransactions?.[0]?.id, outgoing.id);
+  assert.deepEqual(loaded.bankTransactionReconciliations, changed.reconciliations);
+  const undone = unmatchBankTransaction({ bankTransactionId: outgoing.id,
+    reconciliations: loaded.bankTransactionReconciliations ?? [], rentPayments: [],
+    expensePayments: loaded.expensePayments ?? [], expenseObligations: loaded.expenseObligations ?? [] });
+  assert.equal(undone.expensePayments.length, 0);
+  assert.equal(undone.expenseObligations?.length, 0);
+});
+
+test('confirmed imported utility teaches amount-independent suggestion, never auto-posts', () => {
+  const first = transaction({ id: 'utility-1', amount: -67, description: 'Electric Utility Direct Debit', counterparty: 'Utility Provider' });
+  const next = transaction({ id: 'utility-2', amount: -132, description: first.description,
+    counterparty: first.counterparty, externalTransactionId: 'second' });
+  const account = { ...createLinkedCashAccount({ id: first.cashAccountId, connectionId: first.connectionId,
+    providerName: first.providerName }), sourceType: 'statement-import' as const };
+  const base = context({ expenseObligations: [], cashAccounts: [account], bankTransactions: [first, next] });
+  const matched = categorizeBankTransaction({ transaction: first, propertyId: property.id,
+    category: 'ELECTRICITY', reconciliations: [], context: base });
+  assert.ok(matched);
+  const history = { ...base, expenseObligations: matched.expenseObligations, expensePayments: matched.expensePayments };
+  const suggested = getBankReconciliationView(next, matched.reconciliations, history);
+  assert.equal(suggested.status, 'suggested');
+  assert.equal(suggested.suggestion?.propertyId, property.id);
+  assert.equal(suggested.suggestion?.targetId, `bank-expense:${encodeURIComponent(next.id)}`);
+  assert.equal(history.expensePayments.length, 1);
+  assert.equal(getBankReconciliationView(next, ignoreBankTransaction(matched.reconciliations, next.id), history).status, 'ignored');
+  const second = confirmBankTransactionMatch({ transaction: next, targetType: 'expense-obligation',
+    targetId: suggested.suggestion!.targetId, reconciliations: matched.reconciliations, context: history });
+  assert.ok(second);
+  assert.equal(second.expensePayments.length, 2);
+  assert.equal(second.expenseObligations.length, 2);
+});
+
+test('fixed one-off learned classification requires an amount near the confirmed premium', () => {
+  const first = transaction({ id: 'premium-1', amount: -80,
+    description: 'Insurance Provider Monthly Premium', counterparty: 'Synthetic Insurer' });
+  const future = transaction({ id: 'premium-2', amount: -210,
+    description: first.description, counterparty: first.counterparty });
+  const account = createLinkedCashAccount({ id: first.cashAccountId,
+    connectionId: first.connectionId, providerName: first.providerName });
+  const base = context({ expenseObligations: [], cashAccounts: [account], bankTransactions: [first, future] });
+  const confirmed = categorizeBankTransaction({ transaction: first, propertyId: property.id,
+    category: 'HOME_INSURANCE', reconciliations: [], context: base })!;
+  assert.equal(suggestBankTransactionMatch(future,
+    { ...base, expenseObligations: confirmed.expenseObligations, expensePayments: confirmed.expensePayments },
+    confirmed.reconciliations), null);
+});
+
+test('conflicting confirmed expense fingerprints and inflows cannot suggest an expense', () => {
+  const first = transaction({ id: 'conflict-1', amount: -40, description: 'Municipal Property Tax', counterparty: 'Municipal Office' });
+  const second = transaction({ ...first, id: 'conflict-2', externalTransactionId: 'other' });
+  const future = transaction({ ...first, id: 'conflict-3', externalTransactionId: 'future' });
+  const other = { ...property, id: 'property-2', name: 'Second Property' };
+  const account = createLinkedCashAccount({ id: first.cashAccountId, connectionId: first.connectionId,
+    providerName: first.providerName });
+  const base = context({ properties: [property, other], expenseObligations: [],
+    cashAccounts: [account], bankTransactions: [first, second, future] });
+  const a = categorizeBankTransaction({ transaction: first, propertyId: property.id,
+    category: 'PROPERTY_TAX', reconciliations: [], context: base })!;
+  const b = categorizeBankTransaction({ transaction: second, propertyId: other.id,
+    category: 'PROPERTY_TAX', reconciliations: a.reconciliations,
+    context: { ...base, expenseObligations: a.expenseObligations, expensePayments: a.expensePayments } })!;
+  const history = { ...base, expenseObligations: b.expenseObligations, expensePayments: b.expensePayments };
+  assert.equal(suggestBankTransactionMatch(future, history, b.reconciliations), null);
+  assert.equal(suggestBankTransactionMatch({ ...future, amount: 40 }, history, b.reconciliations)?.targetType === 'expense-obligation', false);
+});
+
+test('specific electricity classification reuses one unique configured utilities bill', () => {
+  const outgoing = transaction({ id: 'utility-bill', amount: -185,
+    description: 'Electric Utility Direct Debit', counterparty: 'Utility Provider' });
+  const configured = { ...expenseObligation, id: 'configured-utilities', category: 'UTILITIES' as const,
+    label: 'Owner-paid utilities' };
+  const result = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'ELECTRICITY', reconciliations: [],
+    context: context({ expenseObligations: [configured] }) });
+  assert.ok(result);
+  assert.equal(result.expenseObligations.length, 1);
+  assert.equal(result.reconciliations[0].targetId, configured.id);
+  assert.equal(result.reconciliations[0].expenseCategory, 'ELECTRICITY');
+  assert.equal(result.expensePayments[0].allocations[0].obligationId, configured.id);
+});
+
+test('classification links one existing manual expense payment without posting a duplicate', () => {
+  const outgoing = transaction({ id: 'manual-bill-bank', amount: -185, bookingDate: '2026-09-09' });
+  const manual = { id: 'manual-expense', propertyId: property.id, paidDate: '2026-09-09',
+    amount: 185, currency: 'EUR' as const, source: 'manual' as const,
+    allocations: [{ obligationId: expenseObligation.id, amount: 185 }] };
+  const result = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'HOME_INSURANCE', reconciliations: [],
+    context: context({ expensePayments: [manual] }) });
+  assert.ok(result);
+  assert.deepEqual(result.expensePayments, [manual]);
+  assert.equal(result.reconciliations[0].paymentLinkType, 'linked-manual');
+  const undone = unmatchBankTransaction({ bankTransactionId: outgoing.id,
+    reconciliations: result.reconciliations, rentPayments: [],
+    expensePayments: result.expensePayments, expenseObligations: result.expenseObligations });
+  assert.deepEqual(undone.expensePayments, [manual]);
+});
+
+test('changing property moves the one-off bill and payment exactly once', () => {
+  const outgoing = transaction({ id: 'move-bill', amount: -44, description: 'Municipal Property Tax' });
+  const other = { ...property, id: 'second-property', name: 'Second Property' };
+  const base = context({ properties: [property, other], expenseObligations: [] });
+  const first = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'MUNICIPAL_TAX', reconciliations: [], context: base })!;
+  const moved = categorizeBankTransaction({ transaction: outgoing, propertyId: other.id,
+    category: 'MUNICIPAL_TAX', reconciliations: first.reconciliations,
+    context: { ...base, expenseObligations: first.expenseObligations, expensePayments: first.expensePayments } })!;
+  assert.equal(moved.expenseObligations.length, 1);
+  assert.equal(moved.expenseObligations[0].propertyId, other.id);
+  assert.equal(moved.expensePayments.length, 1);
+  assert.equal(moved.expensePayments[0].propertyId, other.id);
+});
+
+test('provider removal clears a confirmed one-off payment and its bill but retains audit history', () => {
+  const outgoing = transaction({ id: 'removed-one-off', amount: -40,
+    description: 'Municipal Property Tax' });
+  const confirmed = categorizeBankTransaction({ transaction: outgoing, propertyId: property.id,
+    category: 'MUNICIPAL_TAX', reconciliations: [],
+    context: context({ expenseObligations: [] }) })!;
+  const removed = applyBankTransactionLifecycleToReconciliation({
+    lifecycleEvents: [{ bankTransactionId: outgoing.id, reason: 'provider-removed' }],
+    reconciliations: confirmed.reconciliations, rentPayments: [],
+    expensePayments: confirmed.expensePayments, expenseObligations: confirmed.expenseObligations,
+  });
+  assert.equal(removed.reconciliations[0].status, 'removed');
+  assert.equal(removed.expensePayments.length, 0);
+  assert.equal(removed.expenseObligations?.length, 0);
 });
 
 test('a transaction without a candidate is unmatched', () => {

@@ -5,6 +5,7 @@ import type {
   BankTransactionSyncState,
   CashAccount,
   ExpensePayment,
+  ExpenseObligation,
   RentPayment,
 } from '../types';
 import {
@@ -28,6 +29,7 @@ export interface BankingConnectionOperationState {
   bankTransactionSyncStates: BankTransactionSyncState[];
   rentPayments: RentPayment[];
   expensePayments: ExpensePayment[];
+  expenseObligations?: ExpenseObligation[];
 }
 
 export type BankConnectionDeletionBlockReason =
@@ -126,6 +128,7 @@ export const applyBankConnectionTransactionResult = (
     reconciliations: state.bankTransactionReconciliations,
     rentPayments: state.rentPayments,
     expensePayments: state.expensePayments,
+    expenseObligations: state.expenseObligations,
     timestamp: args.syncedAt,
   });
 
@@ -135,6 +138,7 @@ export const applyBankConnectionTransactionResult = (
     bankTransactionReconciliations: reconciliationLifecycle.reconciliations,
     rentPayments: reconciliationLifecycle.rentPayments,
     expensePayments: reconciliationLifecycle.expensePayments,
+    expenseObligations: reconciliationLifecycle.expenseObligations,
     bankTransactionSyncStates: upsertBankTransactionSyncState(
       state.bankTransactionSyncStates,
       {

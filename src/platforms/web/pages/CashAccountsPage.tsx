@@ -27,6 +27,7 @@ import type {
   OpenBankingProviderName,
   Property,
   PropertyExpenseRule,
+  PropertyExpenseCategory,
   RentPayment,
   RentReceivable,
 } from '../../../common/types';
@@ -48,6 +49,7 @@ import { applySantanderStatementImport, getSantanderImportPreview, parseSantande
   type SantanderStatement } from '../../../common/utils/santanderSpainStatement';
 import {
   confirmBankTransactionMatch,
+  categorizeBankTransaction,
   ignoreBankTransaction,
   unmatchBankTransaction,
 } from '../../../common/utils/bankReconciliation';
@@ -191,6 +193,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     bankTransactionSyncStates,
     rentPayments,
     expensePayments,
+    expenseObligations,
   });
   bankingStateRef.current = {
     cashAccounts,
@@ -200,6 +203,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     bankTransactionSyncStates,
     rentPayments,
     expensePayments,
+    expenseObligations,
   };
 
   const commitBankingState = (
@@ -221,8 +225,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     if (next.rentPayments !== current.rentPayments) {
       onUpdateRentCollection(targets.rentReceivables ?? rentReceivables, next.rentPayments);
     }
-    if (next.expensePayments !== current.expensePayments) {
-      onUpdatePropertyExpenses(propertyExpenseRules, targets.expenseObligations ?? expenseObligations, next.expensePayments);
+    if (next.expensePayments !== current.expensePayments || next.expenseObligations !== current.expenseObligations) {
+      onUpdatePropertyExpenses(propertyExpenseRules, targets.expenseObligations ?? next.expenseObligations ?? expenseObligations, next.expensePayments);
     }
     return next;
   };
@@ -346,7 +350,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         rentReceivables,
         rentPayments: current.rentPayments,
         propertyExpenseRules,
-        expenseObligations,
+        expenseObligations: current.expenseObligations ?? expenseObligations,
         expensePayments: current.expensePayments,
         cashAccounts,
         bankTransactions: current.bankTransactions,
@@ -358,6 +362,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       bankTransactionReconciliations: result.reconciliations,
       rentPayments: result.rentPayments,
       expensePayments: result.expensePayments,
+      expenseObligations: result.expenseObligations,
     }), {
       rentReceivables: result.rentReceivables,
       expenseObligations: result.expenseObligations,
@@ -374,6 +379,25 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
     }));
   };
 
+  const handleCategorizeTransaction = (
+    transaction: BankTransaction, propertyId: string, category: PropertyExpenseCategory
+  ) => {
+    const current = bankingStateRef.current;
+    const result = categorizeBankTransaction({ transaction, propertyId, category,
+      reconciliations: current.bankTransactionReconciliations,
+      context: { properties, rentReceivables, rentPayments: current.rentPayments,
+        propertyExpenseRules, expenseObligations: current.expenseObligations ?? expenseObligations,
+        expensePayments: current.expensePayments,
+        cashAccounts: current.cashAccounts, bankTransactions: current.bankTransactions },
+    });
+    if (!result) return;
+    commitBankingState((latest) => ({ ...latest,
+      bankTransactionReconciliations: result.reconciliations,
+      expensePayments: result.expensePayments,
+      expenseObligations: result.expenseObligations,
+    }), { expenseObligations: result.expenseObligations });
+  };
+
   const handleUnmatchTransaction = (transaction: BankTransaction) => {
     const current = bankingStateRef.current;
     const reconciliation = current.bankTransactionReconciliations.find(
@@ -384,6 +408,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       reconciliations: current.bankTransactionReconciliations,
       rentPayments: current.rentPayments,
       expensePayments: current.expensePayments,
+      expenseObligations: current.expenseObligations ?? expenseObligations,
     });
     commitBankingState((latest) => ({
       ...latest,
@@ -394,7 +419,8 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
       expensePayments: reconciliation?.targetType === 'expense-obligation'
         ? result.expensePayments
         : latest.expensePayments,
-    }));
+      expenseObligations: result.expenseObligations ?? latest.expenseObligations,
+    }), { expenseObligations: result.expenseObligations });
   };
 
   const syncProviderTransactions = async (connection: BankConnection) => {
@@ -1037,6 +1063,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                onSyncMock={bankingAvailable === true && mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
               isSyncing={Boolean(mockConnection && refreshingConnectionIds.has(mockConnection.id))}
               onConfirmMatch={handleConfirmTransaction}
+              onCategorize={handleCategorizeTransaction}
               onIgnore={handleIgnoreTransaction}
               onUnmatch={handleUnmatchTransaction}
               language={settings.language}

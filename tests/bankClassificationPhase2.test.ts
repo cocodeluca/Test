@@ -335,7 +335,7 @@ test('currency, amount, date, and active-target rules still fail closed', () => 
   ), null);
 });
 
-test('historical merchant evidence cannot manufacture an expense obligation', () => {
+test('historical merchant evidence previews a one-off classification without manufacturing a bill', () => {
   const standaloneHistoricalObligation = { ...augustCommunityA, expenseRuleId: undefined };
   const historical = bankTransaction('history-expense', {
     bookingDate: '2026-08-10', amount: -90, normalizedAmount: -90,
@@ -353,10 +353,14 @@ test('historical merchant evidence cannot manufacture an expense obligation', ()
     propertyExpenseRules: [],
     expenseObligations: [standaloneHistoricalObligation],
   });
-  assert.equal(suggestBankTransactionMatch(bankTransaction('future-expense', {
+  const before = structuredClone(context.expenseObligations);
+  const suggestion = suggestBankTransactionMatch(bankTransaction('future-expense', {
     bookingDate: '2026-09-10', amount: -90, normalizedAmount: -90,
     description: 'Debit', counterparty: 'Known Manager',
-  }), context, [reconciliation]), null);
+  }), context, [reconciliation]);
+  assert.equal(suggestion?.targetId, 'bank-expense:future-expense');
+  assert.equal(suggestion?.propertyId, propertyA.id);
+  assert.deepEqual(context.expenseObligations, before);
 });
 
 test('pattern extraction is deterministic, normalized, and non-mutating', () => {

@@ -236,6 +236,11 @@ export type PropertyExpenseCategory =
   | 'PROPERTY_MANAGEMENT'
   | 'MAINTENANCE'
   | 'UTILITIES'
+  | 'ELECTRICITY'
+  | 'WATER'
+  | 'GAS'
+  | 'INTERNET'
+  | 'MUNICIPAL_TAX'
   | 'SPECIAL_ASSESSMENT'
   | 'OTHER';
 export type PropertyExpenseFrequency = 'MONTHLY' | 'QUARTERLY' | 'ANNUAL' | 'ONE_TIME';
@@ -650,6 +655,8 @@ export interface BankTransactionReconciliation {
   status: BankReconciliationStatus;
   targetType?: BankReconciliationTargetType | null;
   targetId?: string | null;
+  /** Explicit user classification, potentially more specific than a configured utilities bill. */
+  expenseCategory?: PropertyExpenseCategory | null;
   paymentId?: string | null;
   paymentLinkType?: BankReconciliationPaymentLinkType | null;
   historicalPaymentId?: string | null;

@@ -31,6 +31,7 @@ export interface ConfirmedRentPattern extends ConfirmedPatternBase {
 export interface ConfirmedExpensePattern extends ConfirmedPatternBase {
   targetType: 'expense-obligation';
   category: PropertyExpenseCategory;
+  confirmedAmounts: number[];
 }
 
 export interface ConfirmedBankTransactionPatterns {
@@ -58,6 +59,7 @@ interface PatternObservation {
   propertyId: string;
   leaseId?: string;
   category?: PropertyExpenseCategory;
+  amount?: number;
 }
 
 export const normalizeBankPatternText = (value: string | null | undefined) => {
@@ -97,7 +99,7 @@ const isCanonicalConfirmedTransaction = (
   const account = context.cashAccounts?.find((candidate) => candidate.id === transaction.cashAccountId);
   return Boolean(
     account &&
-    account.sourceType === 'linked' &&
+    (account.sourceType === 'linked' || account.sourceType === 'statement-import') &&
     account.connectionId === transaction.connectionId &&
     account.providerName === transaction.providerName &&
     isCashAccountIncludedInPortfolio(account)
@@ -146,7 +148,8 @@ const retainUniqueRelations = (
   return {
     unique: grouped
       .filter((group) => new Set(group.map(relationKey)).size === 1)
-      .map((group) => ({ ...group[0], confirmationCount: group.length }))
+      .map((group) => ({ ...group[0], confirmationCount: group.length,
+        confirmedAmounts: [...new Set(group.map((item) => item.amount).filter((value): value is number => value !== undefined))] }))
       .sort((left, right) => observationKey(left).localeCompare(observationKey(right))),
     ambiguous: grouped
       .filter((group) => new Set(group.map(relationKey)).size > 1)
@@ -260,7 +263,8 @@ export const extractConfirmedBankTransactionPatterns = (
         direction,
         currency: transaction.currency,
         propertyId: obligation.propertyId,
-        category: obligation.category,
+        category: reconciliation.expenseCategory ?? obligation.category,
+        amount: Math.abs(transaction.amount),
       }));
     }
   });
@@ -286,6 +290,7 @@ export const extractConfirmedBankTransactionPatterns = (
       currency: observation.currency,
       propertyId: observation.propertyId,
       category: observation.category!,
+      confirmedAmounts: observation.confirmedAmounts,
       confirmationCount: observation.confirmationCount,
     })),
     ambiguousRentFingerprints: rent.ambiguous,
@@ -339,6 +344,10 @@ export const getExpenseHistoricalPatternEvidence = (
   if (new Set(matching.map((pattern) => `${pattern.propertyId}|${pattern.category}`)).size !== 1) return null;
   const relation = matching[0];
   if (!relation || relation.propertyId !== propertyId || relation.category !== category) return null;
+  if (!['UTILITIES', 'ELECTRICITY', 'WATER', 'GAS', 'INTERNET'].includes(category) &&
+    !matching.some((pattern) => pattern.confirmedAmounts.some((amount) =>
+      Math.abs(amount - Math.abs(transaction.amount)) <= Math.min(5, amount * 0.01)
+    ))) return null;
   return {
     fingerprintTypes: [...new Set(matching.map((pattern) => pattern.fingerprintType))].sort(),
     confirmationCount: Math.max(...matching.map((pattern) => pattern.confirmationCount)),

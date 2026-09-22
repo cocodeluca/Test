@@ -661,6 +661,8 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
     () => buildPropertiesOnlyDashboardViewModel({
       properties,
       propertyMetrics,
+      expenseObligations,
+      expensePayments,
       cashAccounts,
       alerts,
       debtPaydown,
@@ -673,6 +675,8 @@ export const PropertiesOnlyDashboard: React.FC<PropertiesOnlyDashboardProps> = (
       alerts,
       cashAccounts,
       debtPaydown,
+      expenseObligations,
+      expensePayments,
       fxSnapshot,
       monthlyAfterTaxCashflow,
       operatingDisplayCurrency,
