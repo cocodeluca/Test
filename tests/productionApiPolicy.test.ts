@@ -33,7 +33,7 @@ const invoke = async (
     end(value?: string) { body = value ?? ''; },
   } as unknown as ServerResponse;
   const application = createBrokerApiApplication({
-    environment: { NODE_ENV: 'production', ACCOUNT_BACKUP_MODE: 'disabled' },
+    environment: { NODE_ENV: 'production', ACCOUNT_BACKUP_MODE: 'disabled', OPEN_BANKING_MODE: 'disabled' },
     authService: authService(),
     openBankingService: {} as never,
     operationalStores: { assertReady: ready } as never,
@@ -46,6 +46,7 @@ test('Production runtime configuration exposes disabled backup pilot mode', asyn
   const result = await invoke('/api/config', 'GET');
   assert.equal(result.statusCode, 200);
   assert.equal(result.body.accountBackupMode, 'disabled');
+  assert.equal(result.body.openBankingAvailable, false);
 });
 
 test('Production public registration and enrollment are disabled', async () => {

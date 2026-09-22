@@ -222,6 +222,7 @@ export const esExtra = {
     heroBody: 'Consulta el efectivo manual junto con los saldos sincronizados de tus cuentas bancarias conectadas.',
     addManualAccount: 'Anadir cuenta manual',
     connectBankAccount: 'Conectar cuenta bancaria',
+    openBankingUnavailable: 'Las conexiones bancarias no están disponibles en este entorno de pruebas. Puedes seguir usando cuentas manuales.',
     totalCash: 'Caja total',
     linkedCash: 'Caja conectada',
     manualCash: 'Caja manual',

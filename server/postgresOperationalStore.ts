@@ -19,6 +19,7 @@ import {
   type OpenBankingLinkSessionStore,
 } from './openBankingLinkSessions';
 import { readPlaidPilotConfiguration } from './openBankingPolicy';
+import { readOpenBankingMode } from './openBankingMode';
 import {
   OpenBankingConnectionOwnershipError,
   OpenBankingCursorStateError,
@@ -718,7 +719,12 @@ export const createPostgresOperationalStoresWithPool = async (options: {
   close?: () => Promise<void>;
 }): Promise<OperationalStores> => {
   const key = parseMasterKey(options.environment.OPEN_BANKING_VAULT_KEY);
-  const plaidEnvironment = readPlaidPilotConfiguration(options.environment).environment;
+  const openBankingEnabled = readOpenBankingMode(options.environment) === 'enabled';
+  const plaidEnvironment = openBankingEnabled
+    ? readPlaidPilotConfiguration(options.environment).environment : null;
+  const disabledBankingStore = <T extends object>(): T => new Proxy({} as T, {
+    get: () => async () => { throw new OperationalStoreConfigurationError('Open Banking is disabled.'); },
+  });
   await assertCurrentDatabaseMigrations(options.pool);
   const now = options.now ?? (() => new Date());
   return {
@@ -735,9 +741,10 @@ export const createPostgresOperationalStoresWithPool = async (options: {
     }),
     users: createUsers(options.pool),
     sessions: createSessions(options.pool, now),
-    linkSessions: createLinkSessions(options.pool, now),
-    providerConnections: createProviderConnections(options.pool, key, plaidEnvironment),
-    oauthRecovery: createOAuthRecovery(options.pool, key),
+    linkSessions: openBankingEnabled ? createLinkSessions(options.pool, now) : disabledBankingStore(),
+    providerConnections: plaidEnvironment
+      ? createProviderConnections(options.pool, key, plaidEnvironment) : disabledBankingStore(),
+    oauthRecovery: openBankingEnabled ? createOAuthRecovery(options.pool, key) : disabledBankingStore(),
     async assertReady() {
       await options.pool.query('SELECT 1');
       await assertCurrentDatabaseMigrations(options.pool);

@@ -156,6 +156,14 @@ test('trusted HTTPS proxy headers drive secure cookies without weakening canonic
       ...request,
       headers: { ...request.headers, origin: 'https://attacker.example.com' },
     } as IncomingMessage));
+    assert.throws(() => assertSameOriginRequest({
+      ...request,
+      headers: { ...request.headers, 'x-forwarded-proto': 'http' },
+    } as unknown as IncomingMessage));
+    assert.throws(() => assertSameOriginRequest({
+      ...request,
+      headers: { ...request.headers, 'x-forwarded-proto': undefined },
+    } as unknown as IncomingMessage));
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
@@ -333,6 +341,7 @@ test('Production startup rejects unsafe storage and keeps Transactions disabled'
     OPERATIONAL_STORE_MODULE: './production-store.mjs',
     DATABASE_URL: 'postgresql://database.invalid/portfolio',
     ACCOUNT_BACKUP_MODE: 'disabled',
+    OPEN_BANKING_MODE: 'enabled',
     PLAID_CLIENT_ID: 'configured', PLAID_SECRET: 'configured', PLAID_ENV: 'production',
     PLAID_PRODUCTS: 'auth', PLAID_COUNTRY_CODES: 'ES',
     PLAID_REDIRECT_URI: 'https://portfolio.example.com/oauth/plaid',

@@ -15,6 +15,7 @@ export const ptExtra: TranslationTree = {
     connectAgain: 'Conectar novamente',
   },
   cashAccounts: {
+    openBankingUnavailable: 'As conexões bancárias não estão disponíveis neste ambiente de teste. Pode continuar a usar contas manuais.',
     ...(esExtra.cashAccounts as TranslationTree),
     heroBody: 'Acompanhe o dinheiro registado manualmente juntamente com os saldos sincronizados das suas contas bancárias ligadas.',
     startWithManualHelp: 'Comece com uma conta manual ou ligue uma conta bancária.',

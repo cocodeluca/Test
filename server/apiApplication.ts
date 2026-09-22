@@ -36,6 +36,7 @@ import {
 import {
   OpenBankingConfigurationError,
 } from './openBankingPolicy';
+import { readOpenBankingMode } from './openBankingMode';
 import {
   OpenBankingAccountScopeError,
   OpenBankingConnectionStateError,
@@ -703,6 +704,7 @@ export const createBrokerApiApplication = (
 ): BrokerApiApplication => {
   const environment = options.environment ?? process.env;
   const production = environment.NODE_ENV === 'production';
+  const openBankingAvailable = readOpenBankingMode(environment) === 'enabled';
   const accountBackupEnabled = environment.ACCOUNT_BACKUP_MODE !== 'disabled';
   const accountBackupStore = accountBackupEnabled
     ? options.accountBackupStore ?? defaultAccountBackupStore
@@ -715,8 +717,9 @@ export const createBrokerApiApplication = (
     : createDefaultServerAuthService());
   const openBankingAuthenticator = options.openBankingAuthenticator ??
     createServerSessionOpenBankingAuthenticator(authService);
-  const openBankingService = options.openBankingService ??
-    createDefaultOpenBankingService(options.operationalStores);
+  const openBankingService = openBankingAvailable
+    ? options.openBankingService ?? createDefaultOpenBankingService(options.operationalStores)
+    : null;
 
   const route = (
     path: string,
@@ -739,9 +742,16 @@ export const createBrokerApiApplication = (
       try { await handler(request, response); } catch (error) { jsonAuthError(response, error); }
     });
   const bankingRoute = (path: string, method: 'GET' | 'POST', operation: string,
-    handler: BrokerApiRoute['handle']) => route(path, method, async (request, response) => {
+    handler: BrokerApiRoute['handle']): BrokerApiRoute => ({ path, method, async handle(request, response) {
+      if (!openBankingAvailable) {
+        json(response, 503, {
+          error: 'Open Banking is unavailable.', code: 'OPEN_BANKING_DISABLED',
+        });
+        return;
+      }
+      if (request.method !== method) return methodNotAllowed(response);
       try { await handler(request, response); } catch (error) { jsonOpenBankingError(response, error, operation); }
-    });
+    } });
   const requireAuxiliaryAuthentication = (handler: BrokerApiRoute['handle']) =>
     async (request: IncomingMessage, response: ServerResponse) => {
       await requireAuthenticatedServerUser(request, authService);
@@ -770,7 +780,11 @@ export const createBrokerApiApplication = (
       }
     }),
     route('/api/config', 'GET', async (_request, response) => {
-      json(response, 200, { accountBackupMode: accountBackupEnabled ? 'enabled' : 'disabled' });
+      response.setHeader('Cache-Control', 'no-store');
+      json(response, 200, {
+        accountBackupMode: accountBackupEnabled ? 'enabled' : 'disabled',
+        openBankingAvailable,
+      });
     }),
     authRoute('/api/brokers/etoro/account', 'GET', production
       ? requireAuxiliaryAuthentication(handleEtoroAccount) : handleEtoroAccount),
@@ -800,31 +814,31 @@ export const createBrokerApiApplication = (
       handleAuthLogout(request, response, authService)),
     bankingRoute('/api/open-banking/session/create', 'POST', 'session-create',
       (request, response) => handleCreateOpenBankingSession(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/complete', 'POST', 'connection-complete',
       (request, response) => handleCompleteOpenBankingConnection(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/oauth/resume', 'POST', 'oauth-resume',
       (request, response) => handleResumeOpenBankingOAuth(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/refresh', 'POST', 'connection-refresh',
       (request, response) => handleRefreshOpenBankingConnection(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/disconnect', 'POST', 'connection-disconnect',
       (request, response) => handleDisconnectOpenBankingConnection(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/transactions/sync', 'POST', 'transactions-sync',
       (request, response) => handleSyncOpenBankingTransactions(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connection/delete', 'POST', 'connection-delete',
       (request, response) => handleDeleteOpenBankingConnection(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/preflight', 'POST', 'preflight',
       (request, response) => handleOpenBankingPreflight(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
     bankingRoute('/api/open-banking/connections', 'GET', 'connections-list',
       (request, response) => handleListOwnedOpenBankingConnections(
-        request, response, openBankingService, openBankingAuthenticator)),
+        request, response, openBankingService!, openBankingAuthenticator)),
   ];
 
   const routeByPath = new Map(routes.map((candidate) => [candidate.path, candidate]));

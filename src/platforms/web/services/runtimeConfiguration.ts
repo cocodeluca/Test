@@ -1,5 +1,6 @@
 export interface RuntimeConfiguration {
   accountBackupMode: 'enabled' | 'disabled';
+  openBankingAvailable: boolean;
 }
 
 let pendingConfiguration: Promise<RuntimeConfiguration> | null = null;
@@ -15,7 +16,10 @@ export const getRuntimeConfiguration = (): Promise<RuntimeConfiguration> => {
     if (value.accountBackupMode !== 'enabled' && value.accountBackupMode !== 'disabled') {
       throw new Error('Runtime configuration is invalid.');
     }
-    return { accountBackupMode: value.accountBackupMode };
+    return {
+      accountBackupMode: value.accountBackupMode,
+      openBankingAvailable: value.openBankingAvailable === true,
+    };
   }).catch((error) => {
     pendingConfiguration = null;
     throw error;

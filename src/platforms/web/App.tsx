@@ -112,6 +112,7 @@ import {
   resumePlaidOAuthReturn,
 } from './services/openBanking';
 import { applyRecoveredBankConnectionResults } from '../../common/utils/bankingConnectionOperations';
+import { getRuntimeConfiguration } from './services/runtimeConfiguration';
 
 const Layout = lazy(() => import('../web/components/Layout').then((module) => ({ default: module.Layout })));
 const AuthScreen = lazy(() =>
@@ -1134,6 +1135,8 @@ const WebAppShell = ({ user, portfolioHydration, onLogout }: WebAppShellProps) =
     if (!isBootSettled || appRecoveryMode || openBankingRecoveryStartedRef.current) return;
     openBankingRecoveryStartedRef.current = true;
     const recover = async () => {
+      const configuration = await getRuntimeConfiguration().catch(() => null);
+      if (!configuration?.openBankingAvailable) return;
       const recoveredResults = [];
       const isOAuthReturn = typeof window !== 'undefined' &&
         window.location.pathname === '/oauth/plaid';

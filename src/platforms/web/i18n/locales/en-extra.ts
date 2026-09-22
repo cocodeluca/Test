@@ -222,6 +222,7 @@ export const enExtra = {
     heroBody: 'Track manual cash alongside balances synced securely from connected bank accounts.',
     addManualAccount: 'Add Manual Account',
     connectBankAccount: 'Connect Bank Account',
+    openBankingUnavailable: 'Bank connections are unavailable in this staging environment. Manual accounts remain available.',
     totalCash: 'Total Cash',
     linkedCash: 'Linked Cash',
     manualCash: 'Manual Cash',

@@ -30,6 +30,28 @@ const createDatabase = async () => {
   return pool;
 };
 
+test('disabled PostgreSQL adapter keeps auth ready without Plaid and blocks provider stores', async () => {
+  const pool = await createDatabase();
+  const stores = await createPostgresOperationalStoresWithPool({
+    pool,
+    environment: {
+      NODE_ENV: 'production', OPEN_BANKING_MODE: 'disabled',
+      OPEN_BANKING_VAULT_KEY: environment.OPEN_BANKING_VAULT_KEY,
+    },
+  });
+  await stores.assertReady();
+  await assert.rejects(() => stores.linkSessions.create({
+    ownerUserId: OWNER_ID, environment: 'production',
+  }));
+  await assert.rejects(() => stores.providerConnections.listOwned({
+    userId: OWNER_ID, providerName: 'plaid', environment: 'production',
+  }));
+  await assert.rejects(() => stores.oauthRecovery.listOwned({
+    ownerUserId: OWNER_ID, environment: 'production',
+  }));
+  await pool.end();
+});
+
 const seedUser = async (pool: DatabasePool) => {
   const stores = await createPostgresOperationalStoresWithPool({ pool, environment });
   await stores.users.create({

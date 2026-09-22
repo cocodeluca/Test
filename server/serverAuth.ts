@@ -619,6 +619,7 @@ export const assertSameOriginRequest = (request: IncomingMessage) => {
     if (
       parsed.host !== host ||
       (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') ||
+      (process.env.NODE_ENV === 'production' && !isSecureRequest(request)) ||
       (configuredOrigin && parsed.origin !== new URL(configuredOrigin).origin)
     ) {
       throw new Error('mismatch');

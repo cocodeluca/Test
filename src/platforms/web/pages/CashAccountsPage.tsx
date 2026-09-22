@@ -76,6 +76,7 @@ import {
 import { CompactEditModal } from '../components/CompactEditModal';
 import { BankTransactionsView } from '../components/BankTransactionsView';
 import { useSettings } from '../context/SettingsContext';
+import { getRuntimeConfiguration } from '../services/runtimeConfiguration';
 import {
   getOpenBankingProviderErrorCode,
   OpenBankingRequestError,
@@ -165,6 +166,14 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   const [institutionName, setInstitutionName] = useState('Linked institution');
   const [mockScenario, setMockScenario] = useState<'success' | 'needs-reauth' | 'error'>('success');
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [bankingAvailable, setBankingAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    let active = true;
+    void getRuntimeConfiguration()
+      .then((configuration) => { if (active) setBankingAvailable(configuration.openBankingAvailable); })
+      .catch(() => { if (active) setBankingAvailable(false); });
+    return () => { active = false; };
+  }, []);
   const connectionOperationQueuesRef = useRef(new Map<string, Promise<void>>());
   const bankingStateRef = useRef<BankingConnectionOperationState>({
     cashAccounts,
@@ -327,6 +336,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const syncProviderTransactions = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     const adapter = openBankingAdapters[connection.providerName];
     if (!adapter.fetchTransactions) {
       return;
@@ -462,6 +472,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleConnectProvider = async () => {
+    if (bankingAvailable !== true) return;
     setIsConnecting(true);
     setConnectionMessage(null);
     try {
@@ -501,6 +512,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleRefreshConnection = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     if (!canRefreshBankConnection(connection)) return;
     setConnectionMessage(null);
     try {
@@ -531,6 +543,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleReconnectConnection = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     setConnectionMessage(null);
     try {
       await runConnectionOperation(connection.id, async () => {
@@ -571,6 +584,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleEnableTransactions = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     setConnectionMessage(null);
     try {
       await runConnectionOperation(connection.id, async () => {
@@ -633,6 +647,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleDisconnectConnection = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     setConnectionMessage(null);
     try {
       await runConnectionOperation(connection.id, async () => {
@@ -655,6 +670,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   };
 
   const handleDeleteConnection = async (connection: BankConnection) => {
+    if (bankingAvailable !== true) return;
     setConnectionMessage(null);
     const initialEligibility = getBankConnectionDeletionEligibility(
       bankingStateRef.current,
@@ -721,7 +737,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={openManualCreate} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Plus className="h-4 w-4" />{t('cashAccounts.addManualAccount')}</button>
-              <button type="button" onClick={() => setShowConnectModal(true)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><Link2 className="h-4 w-4" />{t('cashAccounts.connectBankAccount')}</button>
+              <button type="button" disabled={bankingAvailable !== true} onClick={() => setShowConnectModal(true)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><Link2 className="h-4 w-4" />{t('cashAccounts.connectBankAccount')}</button>
             </div>
           </div>
 
@@ -745,6 +761,9 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             <div className="mt-4 rounded-[18px] border border-amber-300/70 bg-amber-50/80 px-4 py-3 text-sm text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300">
               {connectionMessage}
             </div>
+          ) : null}
+          {bankingAvailable === false ? (
+            <p className={`mt-4 text-sm ${appTextMutedClass}`}>{t('cashAccounts.openBankingUnavailable')}</p>
           ) : null}
         </section>
 
@@ -776,7 +795,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                 <p className={`mx-auto mt-3 max-w-xl text-sm leading-6 ${appTextMutedClass}`}>{t('cashAccounts.emptyBody')}</p>
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
                   <button type="button" onClick={openManualCreate} className={`rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}>{t('cashAccounts.addManualAccount')}</button>
-                  <button type="button" onClick={() => setShowConnectModal(true)} className={`rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}>{t('cashAccounts.connectBankAccount')}</button>
+                  <button type="button" disabled={bankingAvailable !== true} onClick={() => setShowConnectModal(true)} className={`rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}>{t('cashAccounts.connectBankAccount')}</button>
                 </div>
               </div>
             ) : (
@@ -877,7 +896,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                           </>
                         ) : (
                           <>
-                            <button type="button" disabled={!selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
+                             <button type="button" disabled={bankingAvailable !== true || !selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
                             {selectedAccount.status === 'active' ? (
                               <button type="button" onClick={() => handleSetPortfolioInclusion(selectedAccount, !isCashAccountIncludedInPortfolio(selectedAccount))} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${isCashAccountIncludedInPortfolio(selectedAccount) ? 'text-amber-700 dark:text-amber-300' : appTextStrongClass}`}>
                                 {isCashAccountIncludedInPortfolio(selectedAccount) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -924,11 +943,11 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                       <p className={`mt-2 text-sm ${appTextMutedClass}`}>{providerLabels[connection.providerName]} · {connection.linkedAccountIds.length} linked account{connection.linkedAccountIds.length === 1 ? '' : 's'}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" disabled={refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
-                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t(getBankConnectionReconnectMode(connection) === 'connect-again' ? 'common.connectAgain' : 'common.reconnect')}</button>
-                      {transactionsConsentRequired && connection.connectionStatus !== 'disconnected' ? <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleEnableTransactions(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><ShieldCheck className="h-4 w-4" />{t('cashAccounts.enableTransactions')}</button> : null}
-                      <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
-                      {connection.connectionStatus === 'disconnected' ? <button type="button" disabled={refreshingConnectionIds.has(connection.id)} onClick={() => void handleDeleteConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('cashAccounts.deleteConnection')}</button> : null}
+                       <button type="button" disabled={bankingAvailable !== true || refreshingConnectionIds.has(connection.id) || !canRefreshBankConnection(connection)} onClick={() => void handleRefreshConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('common.refresh')}</button>
+                       <button type="button" disabled={bankingAvailable !== true || refreshingConnectionIds.has(connection.id)} onClick={() => void handleReconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Link2 className="h-4 w-4" />{t(getBankConnectionReconnectMode(connection) === 'connect-again' ? 'common.connectAgain' : 'common.reconnect')}</button>
+                       {transactionsConsentRequired && connection.connectionStatus !== 'disconnected' ? <button type="button" disabled={bankingAvailable !== true || refreshingConnectionIds.has(connection.id)} onClick={() => void handleEnableTransactions(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><ShieldCheck className="h-4 w-4" />{t('cashAccounts.enableTransactions')}</button> : null}
+                       <button type="button" disabled={bankingAvailable !== true || refreshingConnectionIds.has(connection.id)} onClick={() => void handleDisconnectConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Unlink className="h-4 w-4" />{t('common.disconnect')}</button>
+                       {connection.connectionStatus === 'disconnected' ? <button type="button" disabled={bankingAvailable !== true || refreshingConnectionIds.has(connection.id)} onClick={() => void handleDeleteConnection(connection)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} text-rose-600 dark:text-rose-300`}><Trash2 className="h-4 w-4" />{t('cashAccounts.deleteConnection')}</button> : null}
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-4">
@@ -951,7 +970,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
               reconciliationContext={reconciliationContext}
               selectedAccountId={transactionAccountId}
               onSelectedAccountIdChange={setTransactionAccountId}
-              onSyncMock={mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
+               onSyncMock={bankingAvailable === true && mockConnection ? () => void handleRefreshConnection(mockConnection) : undefined}
               isSyncing={Boolean(mockConnection && refreshingConnectionIds.has(mockConnection.id))}
               onConfirmMatch={handleConfirmTransaction}
               onIgnore={handleIgnoreTransaction}
@@ -1018,7 +1037,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
         </CompactEditModal>
       ) : null}
 
-      {showConnectModal ? (
+      {showConnectModal && bankingAvailable === true ? (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/56 p-4 backdrop-blur-sm">
           <div className={`${appPanelClass} w-full max-w-2xl rounded-[30px] p-5 sm:p-6`}>
             <div className="flex items-center justify-between gap-3 border-b pb-4">
