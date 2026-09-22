@@ -44,6 +44,8 @@ import {
   syncStatusLabels,
 } from '../../../common/utils/cashAccounts';
 import { normalizeProviderTransactions } from '../../../common/utils/bankTransactions';
+import { applySantanderStatementImport, getSantanderImportPreview, parseSantanderSpainXls,
+  type SantanderStatement } from '../../../common/utils/santanderSpainStatement';
 import {
   confirmBankTransactionMatch,
   ignoreBankTransaction,
@@ -166,6 +168,12 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
   const [institutionName, setInstitutionName] = useState('Linked institution');
   const [mockScenario, setMockScenario] = useState<'success' | 'needs-reauth' | 'error'>('success');
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [showStatementImport, setShowStatementImport] = useState(false);
+  const [statement, setStatement] = useState<SantanderStatement | null>(null);
+  const [statementError, setStatementError] = useState<string | null>(null);
+  const [statementBusy, setStatementBusy] = useState(false);
+  const statementFileInputRef = useRef<HTMLInputElement>(null);
+  const statementParseGenerationRef = useRef(0);
   const [bankingAvailable, setBankingAvailable] = useState<boolean | null>(null);
   useEffect(() => {
     let active = true;
@@ -239,6 +247,60 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           return next;
         });
       }
+    }
+  };
+
+  const selectStatementFile = async (file: File | null) => {
+    const generation = ++statementParseGenerationRef.current;
+    setStatement(null);
+    setStatementError(null);
+    setStatementBusy(false);
+    if (!file) return;
+    if (!/\.xls$/i.test(file.name) || file.size === 0 || file.size > 5 * 1024 * 1024) {
+      setStatementError(t('cashAccounts.statementImport.errors.unsupported-file'));
+      return;
+    }
+    setStatementBusy(true);
+    try {
+      const parsed = await parseSantanderSpainXls(await file.arrayBuffer());
+      if (generation === statementParseGenerationRef.current) setStatement(parsed);
+    } catch (error) {
+      if (generation !== statementParseGenerationRef.current) return;
+      const code = error instanceof Error ? error.message : 'invalid-workbook';
+      const supported = ['unsupported-file', 'invalid-workbook', 'missing-headers', 'ambiguous-sheet',
+        'ambiguous-headers', 'missing-account', 'empty-table', 'invalid-balance'];
+      setStatementError(t(`cashAccounts.statementImport.errors.${supported.includes(code) ? code : 'invalid-workbook'}`));
+    } finally {
+      if (generation === statementParseGenerationRef.current) {
+        setStatementBusy(false);
+        if (statementFileInputRef.current) statementFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const confirmStatementImport = () => {
+    if (!statement || statementBusy) return;
+    setStatementBusy(true);
+    try {
+      const next = commitBankingState((current) => {
+        const result = applySantanderStatementImport(statement, current.cashAccounts,
+          current.bankTransactions, userId, settings.currency, getSettingsCurrencyRates(settings),
+          new Date().toISOString(), t('cashAccounts.statementImport.accountName', { mask: statement.maskedReference }));
+        return { ...current, cashAccounts: result.accounts, bankTransactions: result.transactions };
+      });
+      const imported = next.cashAccounts.find((account) => account.sourceType === 'statement-import' &&
+        account.statementAccountFingerprint === statement.accountFingerprint);
+      if (imported) {
+        setSelectedAccountId(imported.id);
+        setTransactionAccountId(imported.id);
+      }
+      setActiveTab('transactions');
+      setStatement(null);
+      setShowStatementImport(false);
+    } catch {
+      setStatementError(t('cashAccounts.statementImport.errors.confirm'));
+    } finally {
+      setStatementBusy(false);
     }
   };
 
@@ -737,6 +799,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             </div>
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={openManualCreate} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><Plus className="h-4 w-4" />{t('cashAccounts.addManualAccount')}</button>
+              <button type="button" onClick={() => { setStatement(null); setStatementError(null); setStatementBusy(false); setShowStatementImport(true); }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}>{t('cashAccounts.statementImport.action')}</button>
               <button type="button" disabled={bankingAvailable !== true} onClick={() => setShowConnectModal(true)} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}><Link2 className="h-4 w-4" />{t('cashAccounts.connectBankAccount')}</button>
             </div>
           </div>
@@ -745,6 +808,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
             <SummaryCard label={t('cashAccounts.totalCash')} value={buildSummaryValue(summary.totalsByCurrency)} subtitle={formatCurrencyBreakdown(summary.totalsByCurrency) || t('cashAccounts.addLiquidityHelp')} />
             <SummaryCard label={t('cashAccounts.linkedCash')} value={buildSummaryValue(summary.linkedTotalsByCurrency)} subtitle={summary.linkedCount > 0 ? t('cashAccounts.linkedAccountsCount', { count: summary.linkedCount }) : t('cashAccounts.noLinkedAccounts')} />
             <SummaryCard label={t('cashAccounts.manualCash')} value={buildSummaryValue(summary.manualTotalsByCurrency)} subtitle={summary.manualCount > 0 ? t('cashAccounts.manualAccountsCount', { count: summary.manualCount }) : t('cashAccounts.noManualAccounts')} />
+            {summary.statementCount > 0 ? <SummaryCard label={t('cashAccounts.statementImport.summary')} value={buildSummaryValue(summary.statementTotalsByCurrency)} subtitle={t('cashAccounts.statementImport.accountCount', { count: summary.statementCount })} /> : null}
             <SummaryCard label={t('cashAccounts.numberOfAccounts')} value={String(summary.totalAccounts)} subtitle={summary.totalAccounts > 0 ? t('cashAccounts.workspaceUpdateHelp') : t('cashAccounts.startWithManualHelp')} />
           </div>
 
@@ -814,7 +878,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className={`truncate text-base font-semibold ${appTextStrongClass}`}>{getCashAccountDisplayName(account)}</p>
-                              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${account.sourceType === 'manual' ? 'border border-slate-300/80 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-950/50 dark:text-slate-300' : 'border border-cyan-300/70 bg-cyan-50/80 text-cyan-700 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-300'}`}>{account.sourceType === 'manual' ? t('cashAccounts.sourceOptions.manual') : t('cashAccounts.sourceOptions.linked')}</span>
+                              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${account.sourceType === 'manual' ? 'border border-slate-300/80 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-950/50 dark:text-slate-300' : 'border border-cyan-300/70 bg-cyan-50/80 text-cyan-700 dark:border-cyan-500/25 dark:bg-cyan-500/10 dark:text-cyan-300'}`}>{t(`cashAccounts.sourceOptions.${account.sourceType === 'statement-import' ? 'statementImport' : account.sourceType}`)}</span>
                               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${account.syncStatus === 'error' ? 'border border-rose-300/70 bg-rose-50/80 text-rose-700 dark:border-rose-500/25 dark:bg-rose-500/10 dark:text-rose-300' : account.syncStatus === 'needs-reauth' ? 'border border-amber-300/70 bg-amber-50/80 text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300' : 'border border-emerald-300/70 bg-emerald-50/80 text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>{syncStatusLabels[account.syncStatus]}</span>
                             </div>
                             <p className={`mt-2 text-sm ${appTextMutedClass}`}>{account.institutionName}</p>
@@ -877,7 +941,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                         {[
                           [t('cashAccounts.currentBalance'), formatNativeCurrency(getCashAccountBalance(selectedAccount), selectedAccount.currency)],
                           [t('cashAccounts.availableBalance'), selectedAccount.availableBalance === null || selectedAccount.availableBalance === undefined ? t('common.notProvided') : formatNativeCurrency(selectedAccount.availableBalance, selectedAccount.currency)],
-                          [t('cashAccounts.source'), selectedAccount.sourceType === 'manual' ? t('cashAccounts.manualAccount') : t('cashAccounts.linkedVia', { provider: providerLabels[selectedAccount.providerName ?? 'mock-bank'] })],
+                          [t('cashAccounts.source'), selectedAccount.sourceType === 'manual' ? t('cashAccounts.manualAccount') : selectedAccount.sourceType === 'statement-import' ? t('cashAccounts.sourceOptions.statementImport') : t('cashAccounts.linkedVia', { provider: providerLabels[selectedAccount.providerName ?? 'mock-bank'] })],
                           [t('cashAccounts.maskedReference'), selectedAccount.maskedReference || t('common.notProvided')],
                           [t('cashAccounts.syncStatus'), syncStatusLabels[selectedAccount.syncStatus]],
                         ].map(([label, value]) => (
@@ -896,7 +960,7 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
                           </>
                         ) : (
                           <>
-                             <button type="button" disabled={bankingAvailable !== true || !selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button>
+                             {selectedAccount.sourceType === 'linked' ? <button type="button" disabled={bankingAvailable !== true || !selectedAccountConnection || !canRefreshBankConnection(selectedAccountConnection)} onClick={() => { if (selectedAccountConnection) { void handleRefreshConnection(selectedAccountConnection); } }} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}><RefreshCw className="h-4 w-4" />{t('cashAccounts.refreshLinkedBalance')}</button> : null}
                             {selectedAccount.status === 'active' ? (
                               <button type="button" onClick={() => handleSetPortfolioInclusion(selectedAccount, !isCashAccountIncludedInPortfolio(selectedAccount))} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${isCashAccountIncludedInPortfolio(selectedAccount) ? 'text-amber-700 dark:text-amber-300' : appTextStrongClass}`}>
                                 {isCashAccountIncludedInPortfolio(selectedAccount) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -992,6 +1056,70 @@ export const CashAccountsPage: React.FC<CashAccountsPageProps> = ({
           )}
         </section>
       </div>
+
+      {showStatementImport ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-label={t('cashAccounts.statementImport.title')}>
+          <div className={`${appPanelClass} max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[26px] p-5 sm:p-6`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className={`text-xl font-semibold ${appTextStrongClass}`}>{t('cashAccounts.statementImport.title')}</h2>
+                <p className={`mt-2 text-sm ${appTextMutedClass}`}>{t('cashAccounts.statementImport.provider')}</p>
+              </div>
+              <button type="button" aria-label={t('common.close')} onClick={() => { statementParseGenerationRef.current++; setStatement(null); setStatementBusy(false); setShowStatementImport(false); }}><X className="h-5 w-5" /></button>
+            </div>
+            <p className={`mt-4 text-sm ${appTextMutedClass}`}>{t('cashAccounts.statementImport.localPrivacy')}</p>
+            <input ref={statementFileInputRef} type="file" accept=".xls,application/vnd.ms-excel" className="hidden"
+              aria-label={t('cashAccounts.statementImport.chooseFile')}
+              onChange={(event) => void selectStatementFile(event.target.files?.[0] ?? null)} />
+            <div className={`mt-5 rounded-[18px] border border-dashed p-6 text-center ${appBorderClass}`}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); void selectStatementFile(event.dataTransfer.files[0] ?? null); }}>
+              <p className={`text-sm ${appTextMutedClass}`}>{t('cashAccounts.statementImport.dropFile')}</p>
+              <button type="button" disabled={statementBusy} onClick={() => statementFileInputRef.current?.click()}
+                className={`mt-3 rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}>{t('cashAccounts.statementImport.chooseFile')}</button>
+            </div>
+            {statementBusy ? <p className={`mt-4 text-sm ${appTextMutedClass}`}>{t('cashAccounts.statementImport.processing')}</p> : null}
+            {statementError ? <p role="alert" className="mt-4 text-sm text-rose-600 dark:text-rose-300">{statementError}</p> : null}
+            {statement ? (() => {
+              const preview = getSantanderImportPreview(statement, bankTransactions);
+              const existingAccount = cashAccounts.find((account) => account.sourceType === 'statement-import' &&
+                account.statementAccountFingerprint === statement.accountFingerprint);
+              const dates = statement.rows.map((row) => row.operationDate).sort();
+              return <div className="mt-5 space-y-4">
+                <h3 className={`text-lg font-semibold ${appTextStrongClass}`}>{t('cashAccounts.statementImport.preview')}</h3>
+                <p className={`text-sm ${appTextStrongClass}`}>{t('cashAccounts.statementImport.accountName', { mask: statement.maskedReference })} · EUR</p>
+                <p className={`text-sm ${appTextMutedClass}`}>{t(existingAccount ? 'cashAccounts.statementImport.existingAccount' : 'cashAccounts.statementImport.newAccount')}</p>
+                <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                  {[
+                    ['statementAt', statement.statementAt?.replace('T', ' ') ?? t('common.notProvided')],
+                    ['dateRange', `${dates[0]} — ${dates[dates.length - 1]}`],
+                    ['totalRows', String(statement.rows.length + statement.rejectedRows)],
+                    ['newRows', String(preview.newRows.length)],
+                    ['duplicates', String(preview.duplicateCount)],
+                    ['rejected', String(statement.rejectedRows)],
+                    ['inflows', formatNativeCurrency(preview.inflowMinorUnits / 100, 'EUR')],
+                    ['outflows', formatNativeCurrency(preview.outflowMinorUnits / 100, 'EUR')],
+                    ['balance', statement.statementBalanceMinorUnits === null ? t('common.notProvided') : formatNativeCurrency(statement.statementBalanceMinorUnits / 100, 'EUR')],
+                  ].map(([key, value]) => <div key={key} className={`${appPanelInsetClass} rounded-xl p-3`}>
+                    <p className={appTextMutedClass}>{t(`cashAccounts.statementImport.${key}`)}</p><p className={`mt-1 font-semibold ${appTextStrongClass}`}>{value}</p>
+                  </div>)}
+                </div>
+                {statement.balanceCompatible === false ? <p className="text-sm text-amber-700 dark:text-amber-300">{t('cashAccounts.statementImport.balanceWarning')}</p> : null}
+                {statement.statementBalanceMinorUnits !== null && !statement.statementAt ? <p className="text-sm text-amber-700 dark:text-amber-300">{t('cashAccounts.statementImport.noSnapshotTime')}</p> : null}
+                <div className="max-h-44 overflow-y-auto rounded-xl border p-3">
+                  {statement.rows.slice(0, 8).map((row) => <p key={row.externalTransactionId} className={`flex justify-between gap-3 py-1 text-sm ${appTextMutedClass}`}>
+                    <span>{row.operationDate} · {row.description}</span><span>{formatNativeCurrency(row.amountMinorUnits / 100, 'EUR')}</span>
+                  </p>)}
+                </div>
+              </div>;
+            })() : null}
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => { statementParseGenerationRef.current++; setStatement(null); setStatementBusy(false); setShowStatementImport(false); }} className={`rounded-xl px-4 py-2.5 ${appButtonMutedClass} ${appTextStrongClass}`}>{t('cashAccounts.statementImport.cancel')}</button>
+              <button type="button" disabled={!statement || statementBusy} onClick={confirmStatementImport} className={`rounded-xl px-4 py-2.5 ${appButtonPrimaryClass}`}>{t('cashAccounts.statementImport.confirm')}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showManualModal && editingAccount ? (
         <CompactEditModal

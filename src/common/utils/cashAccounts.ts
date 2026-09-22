@@ -75,6 +75,8 @@ export const normalizeCashAccount = (account: Partial<CashAccount> & { id: strin
     externalAccountId: account.externalAccountId ?? null,
     institutionId: account.institutionId ?? null,
     maskedReference: account.maskedReference ?? null,
+    statementAccountFingerprint: account.statementAccountFingerprint ?? null,
+    balanceSnapshotAt: account.balanceSnapshotAt ?? null,
     connectionId: account.connectionId ?? null,
     isIncludedInPortfolio: account.isIncludedInPortfolio ?? true,
     status: account.status ?? 'active',
@@ -208,7 +210,7 @@ export const setLinkedCashAccountPortfolioInclusion = (
   timestamp = new Date().toISOString()
 ): CashAccount[] =>
   accounts.map((account) =>
-    account.id === accountId && account.sourceType === 'linked' && account.status === 'active'
+    account.id === accountId && account.sourceType !== 'manual' && account.status === 'active'
       ? normalizeCashAccount({
           ...account,
           isIncludedInPortfolio,
@@ -348,14 +350,17 @@ export const calculateCashAccountSummary = (accounts: CashAccount[]) => {
   const activeAccounts = accounts.filter(isActiveCashAccountIncludedInPortfolio);
   const manualAccounts = activeAccounts.filter((account) => account.sourceType === 'manual');
   const linkedAccounts = activeAccounts.filter((account) => account.sourceType === 'linked');
+  const statementAccounts = activeAccounts.filter((account) => account.sourceType === 'statement-import');
 
   return {
     totalAccounts: activeAccounts.length,
     manualCount: manualAccounts.length,
     linkedCount: linkedAccounts.length,
+    statementCount: statementAccounts.length,
     totalsByCurrency: groupCashAccountsByCurrency(activeAccounts),
     manualTotalsByCurrency: groupCashAccountsByCurrency(manualAccounts),
     linkedTotalsByCurrency: groupCashAccountsByCurrency(linkedAccounts),
+    statementTotalsByCurrency: groupCashAccountsByCurrency(statementAccounts),
   };
 };
 

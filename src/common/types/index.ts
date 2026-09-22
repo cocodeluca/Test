@@ -67,7 +67,7 @@ export type CashAccountType =
   | 'brokerage-cash'
   | 'wallet'
   | 'other';
-export type CashAccountSourceType = 'manual' | 'linked';
+export type CashAccountSourceType = 'manual' | 'linked' | 'statement-import';
 export type CashAccountStatus = 'active' | 'inactive' | 'archived';
 export type OpenBankingProviderName =
   | 'mock-bank'
@@ -554,6 +554,10 @@ export interface CashAccount {
   externalAccountId?: string | null;
   institutionId?: string | null;
   maskedReference?: string | null;
+  /** SHA-256 of the normalized account identifier; no full IBAN is stored. */
+  statementAccountFingerprint?: string | null;
+  /** ISO timestamp of the newest imported balance snapshot. */
+  balanceSnapshotAt?: string | null;
   connectionId?: string | null;
   /** Linked accounts default to included when absent for backward compatibility. */
   isIncludedInPortfolio?: boolean;

@@ -137,9 +137,11 @@ test('cash-account summaries include active accounts and preserve inactive histo
     totalAccounts: 4,
     manualCount: 1,
     linkedCount: 3,
+    statementCount: 0,
     totalsByCurrency: { USD: 12_380, EUR: 80_000 },
     manualTotalsByCurrency: { EUR: 80_000 },
     linkedTotalsByCurrency: { USD: 12_380 },
+    statementTotalsByCurrency: {},
   });
   assert.deepEqual(accounts, persistedHistory);
   assert.equal(accounts.filter((account) => account.status === 'inactive').length, 4);
@@ -171,9 +173,11 @@ test('linked account exclusion preserves provider identity, refreshes balances, 
     totalAccounts: 2,
     manualCount: 1,
     linkedCount: 1,
+    statementCount: 0,
     totalsByCurrency: { EUR: 2_500 },
     manualTotalsByCurrency: { EUR: 500 },
     linkedTotalsByCurrency: { EUR: 2_000 },
+    statementTotalsByCurrency: {},
   });
 
   const refreshed = upsertLinkedCashAccounts(excluded, [linkedAccount({
