@@ -6,11 +6,14 @@ import { TaxAssumptionsEditModal } from '../components/TaxAssumptionsEditModal';
 import { QuickPropertyCreateModal } from '../components/QuickPropertyCreateModal';
 import { PropertyCard } from '../components/PropertyCardExpanded';
 import { PortfolioItemSelect } from '../components/PortfolioItemSelect';
+import { PropertyDirectory } from '../components/PropertyDirectory';
 import type { PropertyTab } from '../components/PropertyCardExpanded';
 import { useSettings } from '../context/SettingsContext';
 import { SectionCrashBoundary } from '../components/SectionCrashBoundary';
 import { ExpenseObligation, ExpensePayment, Mortgage, Property, PropertyExpenseRule, RentPayment, RentReceivable } from '../../../common/types';
-import { findMortgageByProperty } from '../../../common/utils/calculations';
+import { calculateAllPropertyMetrics, findMortgageByProperty } from '../../../common/utils/calculations';
+import { getSettingsCurrencyRates } from '../../../common/utils/fxRates';
+import { buildPropertyDirectoryItems } from './propertiesDirectoryViewModel';
 import {
   appButtonPrimaryClass,
   appPanelClass,
@@ -129,6 +132,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(
     propertyNavigationTarget?.propertyId ?? safeProperties[0]?.id ?? null
   );
+  const [showPropertyDetail, setShowPropertyDetail] = useState(Boolean(propertyNavigationTarget));
   const [dueDaySetupIndex, setDueDaySetupIndex] = useState(propertyNavigationTarget?.currentIndex ?? 0);
   const [urlPropertyTab, setUrlPropertyTab] = useState<PropertyTab>(() => readPropertyTabFromUrl() ?? 'overview');
 
@@ -173,6 +177,7 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
     }
 
     setSelectedPropertyId(propertyNavigationTarget.propertyId);
+    setShowPropertyDetail(true);
     setDueDaySetupIndex(propertyNavigationTarget.currentIndex);
     setUrlPropertyTab('overview');
     writePropertyTabToUrl('overview');
@@ -195,6 +200,15 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
   const selectedProperty = useMemo(
     () => safeProperties.find((property) => property.id === selectedPropertyId) ?? null,
     [safeProperties, selectedPropertyId]
+  );
+
+  const propertyMetrics = useMemo(
+    () => calculateAllPropertyMetrics(safeProperties, safeMortgages, settings.currency, getSettingsCurrencyRates(settings)),
+    [safeMortgages, safeProperties, settings]
+  );
+  const directoryItems = useMemo(
+    () => buildPropertyDirectoryItems(safeProperties, propertyMetrics, safeMortgages),
+    [propertyMetrics, safeMortgages, safeProperties]
   );
 
   useEffect(() => {
@@ -365,6 +379,11 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
     onRequestPropertyTabChange?.(tab);
   };
 
+  const handleOpenProperty = (propertyId: string) => {
+    setSelectedPropertyId(propertyId);
+    setShowPropertyDetail(true);
+  };
+
   return (
     <div className="space-y-4 md:space-y-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:gap-4">
@@ -380,14 +399,14 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
             - {t('properties.managePortfolio')}
           </p>
         </div>
-        <div className="flex min-w-0 flex-1 justify-start md:justify-start">
+        {showPropertyDetail ? <div className="flex min-w-0 flex-1 justify-start md:justify-start">
           <PortfolioItemSelect
             ariaLabel={t('properties.selectorTitle')}
             options={selectorItems.map((option) => ({ id: option.id, label: option.title }))}
             selectedId={selectedPropertyId}
             onSelect={setSelectedPropertyId}
           />
-        </div>
+        </div> : <div className="hidden flex-1 md:block" />}
         <div className="relative flex shrink-0 md:justify-end">
           <details className="group relative">
             <summary
@@ -420,7 +439,13 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
         </div>
       </div>
 
-      {safeProperties.length === 0 || !selectedProperty ? (
+      {!showPropertyDetail ? (
+        <PropertyDirectory
+          items={directoryItems}
+          onOpenProperty={handleOpenProperty}
+          onAddProperty={openQuickForm}
+        />
+      ) : safeProperties.length === 0 || !selectedProperty ? (
         <div className={`${appPanelClass} px-6 py-16 text-center sm:px-10 sm:py-20`}>
           <div className="mx-auto max-w-2xl">
             <h2 className={`text-[2rem] font-semibold tracking-[-0.04em] sm:text-[2.5rem] ${appTextStrongClass}`}>
@@ -454,6 +479,13 @@ export const PropertiesPage: React.FC<PropertiesPageProps> = ({
         </div>
       ) : (
         <div className="min-w-0">
+          <button
+            type="button"
+            onClick={() => setShowPropertyDetail(false)}
+            className={`mb-3 text-sm font-semibold ${appTextMutedClass} transition hover:text-sky-700 dark:hover:text-sky-300`}
+          >
+            {t('properties.directory.backToList')}
+          </button>
           {selectedProperty ? (
             <SectionCrashBoundary sectionName="property-expanded card">
               <PropertyExpandedMountLogger />

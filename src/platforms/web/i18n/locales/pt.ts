@@ -65,6 +65,22 @@ export const pt: TranslationTree = {
   },
   properties: {
     ...es.properties,
+    directory: {
+      title: 'As suas propriedades',
+      subtitle: 'Consulte a carteira e abra uma propriedade para gerir os detalhes.',
+      searchLabel: 'Pesquisar propriedades',
+      searchPlaceholder: 'Pesquisar por nome, cidade ou morada...',
+      sortLabel: 'Ordenar propriedades',
+      sort: { name: 'Nome (A-Z)', value: 'Valor estimado', cashflow: 'Fluxo de caixa mensal', rent: 'Renda mensal' },
+      filters: { all: 'Todas' },
+      occupancy: { occupied: 'Ocupada', vacant: 'Vazia', 'tenant-to-be-confirmed': 'Inquilino pendente' },
+      metrics: { value: 'Valor estimado', rent: 'Renda mensal', cashflow: 'Fluxo líquido', ltv: 'LTV', equity: 'Capital próprio' },
+      open: 'Abrir propriedade',
+      openDetails: 'Ver detalhes',
+      backToList: 'Voltar às propriedades',
+      noResultsTitle: 'Nenhuma propriedade corresponde aos filtros',
+      noResultsBody: 'Tente outra pesquisa ou limpe o filtro de ocupação.',
+    },
     form: {
       ...es.properties.form,
       rentDueDayHelper: 'Necessário para gerar recibos mensais de renda.',

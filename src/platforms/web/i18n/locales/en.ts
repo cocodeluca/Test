@@ -336,6 +336,22 @@ export const en = {
     selectPropertyHelp: 'Choose a property from the selector to inspect, edit, or delete it.',
     propertyCount_one: '{{count}} property',
     propertyCount_other: '{{count}} properties',
+    directory: {
+      title: 'Your properties',
+      subtitle: 'Scan your portfolio, then open a property to manage its details.',
+      searchLabel: 'Search properties',
+      searchPlaceholder: 'Search by name, city, or address...',
+      sortLabel: 'Sort properties',
+      sort: { name: 'Name (A-Z)', value: 'Estimated value', cashflow: 'Monthly cash flow', rent: 'Monthly rent' },
+      filters: { all: 'All' },
+      occupancy: { occupied: 'Occupied', vacant: 'Vacant', 'tenant-to-be-confirmed': 'Tenant pending' },
+      metrics: { value: 'Est. value', rent: 'Monthly rent', cashflow: 'Net cash flow', ltv: 'LTV', equity: 'Equity' },
+      open: 'Open property',
+      openDetails: 'View details',
+      backToList: 'Back to properties',
+      noResultsTitle: 'No properties match your filters',
+      noResultsBody: 'Try another search or clear the occupancy filter.',
+    },
     status:
     {
       occupied: 'Occupied',
